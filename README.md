@@ -1,65 +1,162 @@
-# Money System App - Draft Spec
+# System Block Chain
 
-This document captures the initial model and UX behaviors for a flowchart app focused on money flow.
+A visual flowchart-based trading algorithm builder that allows users to construct trading strategies using a hierarchical tree structure with different node types.
 
-## Core Concepts
-- Root chart holds a `name` and `startAmount` (e.g., `$10,000`). One root, no incoming edges.
-- Nodes are “bubbles” with `id`, `title`, `kind` (`asset | indicator | function | group`), optional `metadata`.
-- Edges carry allocations from parent to child. Allocation is stored on the edge, not the node.
-- Nested graphs are allowed via `group` nodes, which can contain their own nodes/edges and be collapsible in the UI.
+## Overview
 
-## Data Model (proposed)
-```ts
-type Allocation = { mode: 'percent'; value: number }; // percent authoring; absolute is computed for display
+System Block Chain enables users to visually design trading strategies by connecting different types of nodes in a flowchart. Each node represents a step in the trading logic, from filtering and ranking stocks to making position allocation decisions.
 
-type Edge = {
-  id: string;
-  from: string; // parent node id
-  to: string;   // child node id
-  allocation: Allocation; // percent of parent inflow
-};
+## Features
 
-type Node = {
-  id: string;
-  title: string;
-  kind: 'asset' | 'indicator' | 'function' | 'group';
-  metadata?: Record<string, any>;
-  children?: Chart; // present when kind === 'group' for nested subgraph
-};
+- **Visual Flowchart Builder**: Drag-and-drop interface for building trading algorithms
+- **Multiple Node Types**:
+  - **Basic**: Simple weighted allocation nodes
+  - **Function**: Filter/ranking functions (e.g., "Pick bottom 2 by 10d RSI")
+  - **Indicator**: Conditional branching with then/else paths for decision logic
+  - **Position**: Leaf nodes holding actual ticker positions (BIL, SPY, or Empty)
+- **Market Data Integration**: Download and query historical ticker data from Yahoo Finance
+- **Undo/Redo**: Full history-based state management
+- **Copy/Paste**: Clone node subtrees with a single click
+- **Live Data Visualization**: View candlestick charts for tickers using DuckDB-powered queries
 
-type Chart = {
-  id: string;
-  name: string;
-  startAmount: number; // root inflow
-  nodes: Node[];
-  edges: Edge[];
-};
+## Tech Stack
+
+### Frontend
+- **React** with TypeScript
+- **Vite** for fast development and building
+- **Tailwind CSS** for styling
+
+### Backend
+- **Express.js** API server
+- **DuckDB** for efficient Parquet file querying
+- **Python** for data download (Yahoo Finance)
+
+## Project Structure
+
+```
+Flowchart/
+├── System.app/              # Main application directory
+│   ├── src/
+│   │   ├── App.tsx         # Primary application logic (832 lines)
+│   │   └── main.tsx        # React entry point
+│   ├── server/
+│   │   └── index.mjs       # Express API server
+│   ├── ticker-data/
+│   │   ├── download.py     # Python script to download ticker data
+│   │   ├── tickers.txt     # List of stock tickers
+│   │   └── data/ticker_data_parquet/  # Parquet files for each ticker
+│   └── package.json
+├── App.tsx                 # Initial prototype (outdated)
+└── README.md
 ```
 
-### Derived values
-- For any node, inflow = sum of incoming edges’ computed amounts (root uses `startAmount`).
-- For each outgoing edge, computed amount = `parentInflow * allocation.value / 100`.
-- Display both percent (authoring) and computed absolute amounts on edges/nodes.
+## Getting Started
 
-### Validation rules
-- Outgoing allocations from a node must sum to exactly 100% (always full allocation).
-- No cycles (treat the graph as a DAG).
-- A `group` node’s internal subgraph obeys the same rules; collapse/expand should not break flow integrity.
+### Prerequisites
 
-## UI/Interaction Requirements
-- Canvas: pan/zoom (mouse/touch), scrollable space; minimap optional later.
-- Fit-to-root button to recenter/zoom to the root node if the user gets lost.
-- Node actions: add/edit title/kind, delete, drag to move, connect edges by drag from handle.
-- Edge actions: set allocation percent; show computed amount when known.
-- Nested graphs: group nodes are collapsible/expandable; when collapsed, show aggregated allocation in/out.
-- Editing safety: prevent saving invalid allocation sums; surface validation messages per node.
+- Node.js (v16 or higher)
+- Python 3.x
+- Git
 
-## Implementation Steps (high level)
-1) Scaffold app (e.g., React + TS + React Flow), set up state for `Chart/Node/Edge`.
-2) Render root chart with pan/zoom and fit-to-root control.
-3) Add node/edge creation with percent allocations; compute/display absolute amounts.
-4) Enforce validation: 100% outgoing per node, no cycles.
-5) Add `group` nodes with collapsible nested charts.
-6) Persist/load chart JSON (local-first), then consider backend syncing later.
+### Installation
 
-Future: define behaviors for `asset`, `indicator`, `function` kinds; add keyboard shortcuts, minimap, theming, and auto-layout.
+1. Clone the repository:
+```bash
+git clone https://github.com/Belfering/Flowchart.git
+cd Flowchart/System.app
+```
+
+2. Install dependencies:
+```bash
+npm install
+```
+
+### Running the Application
+
+You need to run both the frontend and backend servers concurrently:
+
+**Terminal 1 - Frontend Development Server:**
+```bash
+npm run dev
+```
+This starts the Vite dev server at `http://localhost:5173`
+
+**Terminal 2 - Backend API Server:**
+```bash
+npm run api
+```
+This starts the Express API server on port 8787
+
+The Vite dev server automatically proxies `/api/*` requests to the backend server.
+
+### Downloading Ticker Data
+
+**Option 1: Via Python script directly**
+```bash
+cd ticker-data
+python download.py --tickers-file tickers.txt --out-dir data/ticker_data_parquet
+```
+
+**Option 2: Via API endpoint**
+```bash
+POST http://localhost:8787/api/download
+```
+
+## API Endpoints
+
+The backend provides the following REST API endpoints:
+
+- `GET /api/status` - Check ticker data paths and existence
+- `GET /api/tickers` - Get parsed list of tickers
+- `GET /api/tickers/raw` - Get raw tickers.txt content
+- `PUT /api/tickers` - Update tickers list
+- `GET /api/parquet-tickers` - List available parquet files
+- `GET /api/candles/:ticker?limit=N` - Fetch OHLC candlestick data
+- `POST /api/download` - Start Python download job for ticker data
+
+## Building for Production
+
+```bash
+npm run build
+```
+
+This runs TypeScript checks and builds the production bundle to `dist/`
+
+Preview the production build:
+```bash
+npm run preview
+```
+
+## Data Flow
+
+1. Tickers are managed in `ticker-data/tickers.txt`
+2. Python script downloads historical data from Yahoo Finance
+3. Data is stored as Parquet files in `ticker-data/data/ticker_data_parquet/`
+4. DuckDB queries Parquet files on-demand for candle data
+5. Frontend displays data and allows users to build trading logic
+
+## Development
+
+### Code Style
+
+```bash
+npm run lint
+```
+
+### Environment Variables
+
+The backend supports these environment variables:
+
+- `SYSTEM_TICKER_DATA_ROOT` or `TICKER_DATA_MINI_ROOT` - Override default ticker-data path
+- `TICKERS_PATH` - Override tickers.txt location
+- `PARQUET_DIR` - Override parquet data directory
+- `PYTHON` - Python executable (default: `python`)
+- `PORT` - API server port (default: 8787)
+
+## Contributing
+
+For detailed development guidelines and architecture information, see [CLAUDE.md](./CLAUDE.md).
+
+## License
+
+This project is open source and available under the MIT License.
