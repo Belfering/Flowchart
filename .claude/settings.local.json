@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find:*)",
+      "Bash(git init:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$(cat <<''EOF''\nInitial commit: Flowchart-based trading algorithm builder\n\nAdd System Block Chain application with React frontend and Express backend.\nIncludes ticker data management, DuckDB integration, and visual flowchart builder\nwith support for basic, function, indicator, and position node types.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n)\")",
+      "Bash(gh repo create:*)",
+      "Bash(gh api:*)",
+      "Bash(git commit -m \"$(cat <<''EOF''\nUpdate README to reflect actual implementation\n\nReplace outdated money flow allocation spec with accurate documentation\nfor System Block Chain - a visual trading algorithm flowchart builder.\n\nIncludes:\n- Project overview and features\n- Tech stack (React, TypeScript, Vite, Express, DuckDB)\n- Getting started guide with installation and setup\n- API endpoints documentation\n- Development and build instructions\n- Data flow architecture\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n)\")",
+      "Bash(git push:*)",
+      "Bash(git commit:*)"
+    ]
+  }
+}
