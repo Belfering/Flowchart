@@ -224,7 +224,7 @@ const createNode = (kind: BlockKind): FlowNode => {
         : undefined,
     metric: kind === 'function' ? 'Relative Strength Index' : undefined,
     window: undefined,
-    bottom: kind === 'function' ? 2 : undefined,
+  bottom: kind === 'function' ? 1 : undefined,
     rank: kind === 'function' ? 'Bottom' : undefined,
     collapsed: false,
   }
@@ -2187,6 +2187,7 @@ type CardProps = {
   depth: number
   inheritedWeight?: number
   weightMode?: WeightMode
+  isSortChild?: boolean
   errorNodeIds?: Set<string>
   focusNodeId?: string | null
   tickerOptions: string[]
@@ -2239,6 +2240,7 @@ const NodeCard = ({
   depth,
   inheritedWeight,
   weightMode,
+  isSortChild,
   errorNodeIds,
   focusNodeId,
   tickerOptions,
@@ -2415,6 +2417,7 @@ const NodeCard = ({
                     depth={depth + 1}
                     inheritedWeight={autoShare}
                     weightMode={slotWeighting}
+                    isSortChild={node.kind === 'function' && slot === 'next'}
                     errorNodeIds={errorNodeIds}
                     focusNodeId={focusNodeId}
                     tickerOptions={tickerOptions}
@@ -2926,7 +2929,7 @@ const NodeCard = ({
                     />
                   )
                 })()}{' '}
-                % {node.title}
+                {isSortChild ? '%?' : '%'} {node.title}
               </>
             )}
           </div>
@@ -3522,7 +3525,7 @@ const NodeCard = ({
                           <input
                             className="inline-number"
                             type="number"
-                            value={node.bottom ?? 2}
+                          value={node.bottom ?? 1}
                             onChange={(e) => onFunctionBottom(node.id, Number(e.target.value))}
                           />
                         </div>
