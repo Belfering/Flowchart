@@ -2317,7 +2317,7 @@ const NodeCard = ({
     // otherwise fall back to splitting by actual child count.
     const targetCount =
       node.kind === 'function' && slot === 'next'
-        ? Math.max(1, Number(node.bottom ?? childCount || 1))
+        ? Math.max(1, Number((node.bottom ?? childCount) || 1))
         : Math.max(1, childCount || 1)
     const autoShare = slotWeighting === 'equal' ? Number((100 / targetCount).toFixed(2)) : undefined
     if (childCount === 0) {
