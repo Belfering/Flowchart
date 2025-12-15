@@ -2313,8 +2313,13 @@ const NodeCard = ({
           : node.weightingElse ?? node.weighting
         : node.weighting
     const childCount = indexedChildren.length
-    const autoShare =
-      slotWeighting === 'equal' ? (childCount > 0 ? Number((100 / childCount).toFixed(2)) : 100) : undefined
+    // For Sort (function) nodes, default equal share is 100 / bottom (Top/Bottom N),
+    // otherwise fall back to splitting by actual child count.
+    const targetCount =
+      node.kind === 'function' && slot === 'next'
+        ? Math.max(1, Number(node.bottom ?? childCount || 1))
+        : Math.max(1, childCount || 1)
+    const autoShare = slotWeighting === 'equal' ? Number((100 / targetCount).toFixed(2)) : undefined
     if (childCount === 0) {
       const key = `${slot}-empty`
       return (
