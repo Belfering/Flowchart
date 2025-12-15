@@ -2156,7 +2156,6 @@ const buildLines = (node: FlowNode): LineView[] => {
       ]
     case 'function':
       return [
-        { id: `${node.id}-tag1`, depth: 0, kind: 'text', text: 'Equal Weight', tone: 'tag' },
         { id: `${node.id}-desc`, depth: 1, kind: 'text', text: 'Of the 10d RSIs Pick the Bottom 2' },
         { id: `${node.id}-slot`, depth: 2, kind: 'slot', slot: 'next' },
       ]
