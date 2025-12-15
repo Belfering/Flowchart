@@ -4656,7 +4656,7 @@ function BacktesterPanel({
 }: BacktesterPanelProps) {
   const [tab, setTab] = useState<'Overview' | 'Allocations' | 'Rebalances' | 'Warnings'>('Overview')
   const [selectedRange, setSelectedRange] = useState<VisibleRange | null>(null)
-  const [logScale, setLogScale] = useState(false)
+  const [logScale, setLogScale] = useState(true)
   const [rangePickerOpen, setRangePickerOpen] = useState(false)
   const [rangeStart, setRangeStart] = useState<string>('')
   const [rangeEnd, setRangeEnd] = useState<string>('')
