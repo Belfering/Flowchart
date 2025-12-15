@@ -823,7 +823,7 @@ function EquityChart({
       return
     }
     chart.timeScale().fitContent()
-  }, [points, benchmarkPoints, markers, visibleRange])
+  }, [points, benchmarkPoints, markers, visibleRange, logScale])
 
   return (
     <div
