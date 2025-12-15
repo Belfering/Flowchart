@@ -2463,87 +2463,89 @@ const NodeCard = ({
                 ) : null}
               </div>
             </div>
-            <div className="line">
-              <div
-                className="indent with-line"
-                style={{
-                  width:
-                    depthPx * 1 +
-                    8,
-                }}
-              />
-              <div className="add-row">
-                <button
-                  className="add-more"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    const key = `${slot}-ins-${originalIndex}`
-                    setAddRowOpen((v) => (v === key ? null : key))
+            {!(node.kind === 'function' && slot === 'next' && index < indexedChildren.length - 1) ? (
+              <div className="line">
+                <div
+                  className="indent with-line"
+                  style={{
+                    width:
+                      depthPx * 1 +
+                      8,
                   }}
-                >
-                  + insert Node here
-                </button>
-                {addRowOpen === `${slot}-ins-${originalIndex}` ? (
-                  <div
-                    className="menu"
+                />
+                <div className="add-row">
+                  <button
+                    className="add-more"
                     onClick={(e) => {
                       e.stopPropagation()
+                      const key = `${slot}-ins-${originalIndex}`
+                      setAddRowOpen((v) => (v === key ? null : key))
                     }}
                   >
-                    <button
-                      onClick={() => {
-                        onAdd(node.id, slot, originalIndex + 1, 'basic')
-                        setAddRowOpen(null)
+                    + insert Node here
+                  </button>
+                  {addRowOpen === `${slot}-ins-${originalIndex}` ? (
+                    <div
+                      className="menu"
+                      onClick={(e) => {
+                        e.stopPropagation()
                       }}
                     >
-                      Add Basic
-                    </button>
-                    <button
-                      onClick={() => {
-                        onAdd(node.id, slot, originalIndex + 1, 'function')
-                        setAddRowOpen(null)
-                      }}
-                    >
-                    Add Sort
-                    </button>
-                    <button
-                      onClick={() => {
-                        onAdd(node.id, slot, originalIndex + 1, 'indicator')
-                        setAddRowOpen(null)
-                      }}
-                    >
-                      Add Indicator
-                    </button>
-                    <button
-                      onClick={() => {
-                        onAdd(node.id, slot, originalIndex + 1, 'numbered')
-                        setAddRowOpen(null)
-                      }}
-                    >
-                      Add Numbered
-                    </button>
-                    <button
-                      onClick={() => {
-                        onAdd(node.id, slot, originalIndex + 1, 'position')
-                        setAddRowOpen(null)
-                      }}
-                    >
-                      Add Position
-                    </button>
-                    {clipboard && (
                       <button
                         onClick={() => {
-                          onPaste(node.id, slot, originalIndex + 1, clipboard)
+                          onAdd(node.id, slot, originalIndex + 1, 'basic')
                           setAddRowOpen(null)
                         }}
                       >
-                        Paste
+                        Add Basic
                       </button>
-                    )}
-                  </div>
-                ) : null}
+                      <button
+                        onClick={() => {
+                          onAdd(node.id, slot, originalIndex + 1, 'function')
+                          setAddRowOpen(null)
+                        }}
+                      >
+                      Add Sort
+                      </button>
+                      <button
+                        onClick={() => {
+                          onAdd(node.id, slot, originalIndex + 1, 'indicator')
+                          setAddRowOpen(null)
+                        }}
+                      >
+                        Add Indicator
+                      </button>
+                      <button
+                        onClick={() => {
+                          onAdd(node.id, slot, originalIndex + 1, 'numbered')
+                          setAddRowOpen(null)
+                        }}
+                      >
+                        Add Numbered
+                      </button>
+                      <button
+                        onClick={() => {
+                          onAdd(node.id, slot, originalIndex + 1, 'position')
+                          setAddRowOpen(null)
+                        }}
+                      >
+                        Add Position
+                      </button>
+                      {clipboard && (
+                        <button
+                          onClick={() => {
+                            onPaste(node.id, slot, originalIndex + 1, clipboard)
+                            setAddRowOpen(null)
+                          }}
+                        >
+                          Paste
+                        </button>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
               </div>
-            </div>
+            ) : null}
           </div>
         ))}
       </div>
