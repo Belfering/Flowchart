@@ -2410,7 +2410,14 @@ const NodeCard = ({
         {indexedChildren.map(({ c: child, i: originalIndex }, index) => (
           <div key={`${slot}-${originalIndex}`}>
             <div className="line">
-              <div className="indent with-line" style={{ width: depthPx * 1 }} />
+              <div
+                className="indent with-line"
+                style={{
+                  width:
+                    depthPx * 1 -
+                    (node.kind === 'indicator' && (slot === 'then' || slot === 'else') ? 4 : 0),
+                }}
+              />
               <div className="slot-body">
                   <NodeCard
                     node={child}
