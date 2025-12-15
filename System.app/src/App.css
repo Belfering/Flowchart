@@ -17,6 +17,14 @@
   z-index: 5;
 }
 
+.api-warning {
+  padding: 10px 18px;
+  border-bottom: 1px solid #fecaca;
+  background: #fef2f2;
+  color: #991b1b;
+  font-weight: 700;
+}
+
 .header-actions {
   display: flex;
   gap: 8px;
@@ -162,6 +170,91 @@ h1 {
   padding: 18px;
 }
 
+.build-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.backtester-card {
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 14px;
+  padding: 12px 12px;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.12);
+  display: inline-block;
+  width: max(1000px, 100%);
+  min-width: 1000px;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.backtester-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.backtester-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.backtester-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.backtester-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: #475569;
+  font-weight: 800;
+}
+
+.backtester-field select,
+.backtester-field input {
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  padding: 6px 8px;
+  border-radius: 10px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.backtester-body {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.backtester-chart-placeholder {
+  border: 1px dashed #cbd5e1;
+  background: #f8fafc;
+  border-radius: 12px;
+  padding: 18px;
+  color: #475569;
+  font-weight: 800;
+}
+
+.backtester-message {
+  border: 1px solid #bae6fd;
+  background: #e0f2fe;
+  color: #075985;
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-weight: 800;
+}
+
 .node-card {
   background: #ffffff;
   border: 1px solid #cbd5e1;
@@ -172,6 +265,16 @@ h1 {
   width: max(1000px, fit-content);
   min-width: 1000px;
   max-width: 100%;
+}
+
+.node-card.backtest-error {
+  border-color: #ef4444;
+  box-shadow: 0 12px 28px rgba(239, 68, 68, 0.18);
+}
+
+.node-card.backtest-focus {
+  outline: 3px solid #f59e0b;
+  outline-offset: 2px;
 }
 
 .node-head {
@@ -385,6 +488,20 @@ h1 {
   padding: 6px 12px;
   border-radius: 10px;
   cursor: pointer;
+  font-weight: 700;
+}
+
+.capped-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.capped-chip input {
+  padding: 2px 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #ffffff;
   font-weight: 700;
 }
 

@@ -63,6 +63,22 @@ async function writeTickersFile(input) {
   return out
 }
 
+async function listParquetTickers() {
+  let entries = []
+  try {
+    entries = await fs.readdir(PARQUET_DIR, { withFileTypes: true })
+  } catch (e) {
+    if (String(e?.code || '') === 'ENOENT') return []
+    throw e
+  }
+  return entries
+    .filter((e) => e.isFile() && e.name.toLowerCase().endsWith('.parquet'))
+    .map((e) => e.name.replace(/\.parquet$/i, ''))
+    .map((t) => normalizeTicker(t))
+    .filter(Boolean)
+    .sort()
+}
+
 app.get('/api/status', async (_req, res) => {
   const exists = async (p) => {
     try {
@@ -182,7 +198,13 @@ app.get('/api/download/:jobId', async (req, res) => {
 
 app.get('/api/tickers', async (_req, res) => {
   try {
-    const tickers = await readTickersFile()
+    let tickers = []
+    try {
+      tickers = await readTickersFile()
+    } catch (e) {
+      if (String(e?.code || '') !== 'ENOENT') throw e
+    }
+    if (tickers.length === 0) tickers = await listParquetTickers()
     res.json({ tickers })
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) })
@@ -211,23 +233,7 @@ app.put('/api/tickers', async (req, res) => {
 
 app.get('/api/parquet-tickers', async (_req, res) => {
   try {
-    let entries = []
-    try {
-      entries = await fs.readdir(PARQUET_DIR, { withFileTypes: true })
-    } catch (e) {
-      if (String(e?.code || '') === 'ENOENT') {
-        res.json({ tickers: [] })
-        return
-      }
-      throw e
-    }
-    const tickers = entries
-      .filter((e) => e.isFile() && e.name.toLowerCase().endsWith('.parquet'))
-      .map((e) => e.name.replace(/\.parquet$/i, ''))
-      .map((t) => normalizeTicker(t))
-      .filter(Boolean)
-      .sort()
-    res.json({ tickers })
+    res.json({ tickers: await listParquetTickers() })
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) })
   }
@@ -235,7 +241,7 @@ app.get('/api/parquet-tickers', async (_req, res) => {
 
 app.get('/api/candles/:ticker', async (req, res) => {
   const ticker = normalizeTicker(req.params.ticker)
-  const limit = Math.max(50, Math.min(5000, Number(req.query.limit || 1500)))
+  const limit = Math.max(50, Math.min(20000, Number(req.query.limit || 1500)))
   if (!ticker) {
     res.status(400).json({ error: 'Missing ticker' })
     return

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
-import { CandlestickSeries, ColorType, createChart, type CandlestickData, type IChartApi, type ISeriesApi, type UTCTimestamp } from 'lightweight-charts'
+import { CandlestickSeries, ColorType, LineSeries, createChart, type CandlestickData, type IChartApi, type ISeriesApi, type UTCTimestamp } from 'lightweight-charts'
 
 type BlockKind = 'basic' | 'function' | 'indicator' | 'numbered' | 'position'
 type SlotId = 'next' | 'then' | 'else'
@@ -107,6 +107,12 @@ type FlowNode = {
   weighting: WeightMode
   weightingThen?: WeightMode
   weightingElse?: WeightMode
+  cappedFallback?: PositionChoice
+  cappedFallbackThen?: PositionChoice
+  cappedFallbackElse?: PositionChoice
+  volWindow?: number
+  volWindowThen?: number
+  volWindowElse?: number
   bgColor?: string
   collapsed?: boolean
   conditions?: ConditionLine[]
@@ -157,6 +163,12 @@ const createNode = (kind: BlockKind): FlowNode => {
     weighting: 'equal',
     weightingThen: kind === 'indicator' || kind === 'numbered' ? 'equal' : undefined,
     weightingElse: kind === 'indicator' || kind === 'numbered' ? 'equal' : undefined,
+    cappedFallback: undefined,
+    cappedFallbackThen: undefined,
+    cappedFallbackElse: undefined,
+    volWindow: undefined,
+    volWindowThen: undefined,
+    volWindowElse: undefined,
     bgColor: undefined,
     conditions:
       kind === 'indicator'
@@ -446,6 +458,61 @@ function CandlesChart({ candles }: { candles: CandlestickData[] }) {
     seriesRef.current.setData(candles)
     chartRef.current?.timeScale().fitContent()
   }, [candles])
+
+  return <div ref={containerRef} style={{ width: '100%', borderRadius: 14, border: '1px solid #cbd5e1', overflow: 'hidden' }} />
+}
+
+type EquityPoint = { time: UTCTimestamp; value: number }
+type EquityMarker = { time: UTCTimestamp; text: string }
+
+function EquityChart({ points, markers }: { points: EquityPoint[]; markers: EquityMarker[] }) {
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const chartRef = useRef<IChartApi | null>(null)
+  const seriesRef = useRef<ISeriesApi<'Line'> | null>(null)
+
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+
+    const chart = createChart(el, {
+      height: 260,
+      layout: { background: { type: ColorType.Solid, color: '#ffffff' }, textColor: '#0f172a' },
+      grid: { vertLines: { color: '#eef2f7' }, horzLines: { color: '#eef2f7' } },
+      rightPriceScale: { borderColor: '#cbd5e1' },
+      timeScale: { borderColor: '#cbd5e1' },
+    })
+    const series = chart.addSeries(LineSeries, { color: '#0ea5e9', lineWidth: 2 })
+    chartRef.current = chart
+    seriesRef.current = series
+
+    const ro = new ResizeObserver(() => {
+      const { width } = el.getBoundingClientRect()
+      chart.applyOptions({ width: Math.floor(width) })
+    })
+    ro.observe(el)
+
+    return () => {
+      ro.disconnect()
+      chart.remove()
+      chartRef.current = null
+      seriesRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!seriesRef.current) return
+    seriesRef.current.setData(points as any)
+    ;(seriesRef.current as any).setMarkers?.(
+      (markers || []).slice(0, 80).map((m) => ({
+        time: m.time,
+        position: 'aboveBar',
+        color: '#b91c1c',
+        shape: 'circle',
+        text: m.text,
+      })) as any,
+    )
+    chartRef.current?.timeScale().fitContent()
+  }, [points, markers])
 
   return <div ref={containerRef} style={{ width: '100%', borderRadius: 14, border: '1px solid #cbd5e1', overflow: 'hidden' }} />
 }
@@ -863,14 +930,55 @@ const updateTitle = (node: FlowNode, id: string, title: string): FlowNode => {
 const updateWeight = (node: FlowNode, id: string, weighting: WeightMode, branch?: 'then' | 'else'): FlowNode => {
   if (node.id === id) {
     if ((node.kind === 'indicator' || node.kind === 'numbered') && branch) {
-      return branch === 'then' ? { ...node, weightingThen: weighting } : { ...node, weightingElse: weighting }
+      if (branch === 'then') {
+        const next: FlowNode = { ...node, weightingThen: weighting }
+        if (weighting === 'capped' && !next.cappedFallbackThen) next.cappedFallbackThen = 'Empty'
+        if ((weighting === 'inverse' || weighting === 'pro') && !next.volWindowThen) next.volWindowThen = 20
+        return next
+      }
+      const next: FlowNode = { ...node, weightingElse: weighting }
+      if (weighting === 'capped' && !next.cappedFallbackElse) next.cappedFallbackElse = 'Empty'
+      if ((weighting === 'inverse' || weighting === 'pro') && !next.volWindowElse) next.volWindowElse = 20
+      return next
     }
-    return { ...node, weighting }
+    const next: FlowNode = { ...node, weighting }
+    if (weighting === 'capped' && !next.cappedFallback) next.cappedFallback = 'Empty'
+    if ((weighting === 'inverse' || weighting === 'pro') && !next.volWindow) next.volWindow = 20
+    return next
   }
   const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
   SLOT_ORDER[node.kind].forEach((s) => {
     const arr = node.children[s]
     children[s] = arr ? arr.map((c) => (c ? updateWeight(c, id, weighting, branch) : c)) : arr
+  })
+  return { ...node, children }
+}
+
+const updateCappedFallback = (node: FlowNode, id: string, choice: PositionChoice, branch?: 'then' | 'else'): FlowNode => {
+  if (node.id === id) {
+    if (branch === 'then') return { ...node, cappedFallbackThen: choice }
+    if (branch === 'else') return { ...node, cappedFallbackElse: choice }
+    return { ...node, cappedFallback: choice }
+  }
+  const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
+  SLOT_ORDER[node.kind].forEach((s) => {
+    const arr = node.children[s]
+    children[s] = arr ? arr.map((c) => (c ? updateCappedFallback(c, id, choice, branch) : c)) : arr
+  })
+  return { ...node, children }
+}
+
+const updateVolWindow = (node: FlowNode, id: string, days: number, branch?: 'then' | 'else'): FlowNode => {
+  if (node.id === id) {
+    const nextDays = Math.max(1, Math.floor(Number(days) || 0))
+    if (branch === 'then') return { ...node, volWindowThen: nextDays }
+    if (branch === 'else') return { ...node, volWindowElse: nextDays }
+    return { ...node, volWindow: nextDays }
+  }
+  const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
+  SLOT_ORDER[node.kind].forEach((s) => {
+    const arr = node.children[s]
+    children[s] = arr ? arr.map((c) => (c ? updateVolWindow(c, id, days, branch) : c)) : arr
   })
   return { ...node, children }
 }
@@ -1185,6 +1293,12 @@ const cloneNode = (node: FlowNode): FlowNode => {
     weighting: node.weighting,
     weightingThen: node.weightingThen,
     weightingElse: node.weightingElse,
+    cappedFallback: node.cappedFallback,
+    cappedFallbackThen: node.cappedFallbackThen,
+    cappedFallbackElse: node.cappedFallbackElse,
+    volWindow: node.volWindow,
+    volWindowThen: node.volWindowThen,
+    volWindowElse: node.volWindowElse,
     conditions: node.conditions ? node.conditions.map((c) => ({ ...c })) : undefined,
     numbered: node.numbered
       ? {
@@ -1266,6 +1380,8 @@ type CardProps = {
   depth: number
   inheritedWeight?: number
   weightMode?: WeightMode
+  errorNodeIds?: Set<string>
+  focusNodeId?: string | null
   tickerOptions: string[]
   onAdd: (parentId: string, slot: SlotId, index: number, kind: BlockKind) => void
   onAppend: (parentId: string, slot: SlotId) => void
@@ -1275,6 +1391,8 @@ type CardProps = {
   onPaste: (parentId: string, slot: SlotId, index: number, child: FlowNode) => void
   onRename: (id: string, title: string) => void
   onWeightChange: (id: string, weight: WeightMode, branch?: 'then' | 'else') => void
+  onUpdateCappedFallback: (id: string, choice: PositionChoice, branch?: 'then' | 'else') => void
+  onUpdateVolWindow: (id: string, days: number, branch?: 'then' | 'else') => void
   onColorChange: (id: string, color?: string) => void
   onToggleCollapse: (id: string, collapsed: boolean) => void
   onNumberedQuantifier: (id: string, quantifier: NumberedQuantifier) => void
@@ -1314,6 +1432,8 @@ const NodeCard = ({
   depth,
   inheritedWeight,
   weightMode,
+  errorNodeIds,
+  focusNodeId,
   tickerOptions,
   onAdd,
   onAppend,
@@ -1323,6 +1443,8 @@ const NodeCard = ({
   onPaste,
   onRename,
   onWeightChange,
+  onUpdateCappedFallback,
+  onUpdateVolWindow,
   onColorChange,
   onToggleCollapse,
   onNumberedQuantifier,
@@ -1476,38 +1598,42 @@ const NodeCard = ({
             <div className="line">
               <div className="indent with-line" style={{ width: depthPx * 1 }} />
               <div className="slot-body">
-                <NodeCard
-                  node={child}
-                  depth={depth + 1}
-                  inheritedWeight={autoShare}
-                  weightMode={slotWeighting}
-                  tickerOptions={tickerOptions}
-                  onAdd={onAdd}
-                  onAppend={onAppend}
-                  onRemoveSlotEntry={onRemoveSlotEntry}
-                  onDelete={onDelete}
-                  onCopy={onCopy}
-                  onPaste={onPaste}
-                  onRename={onRename}
-                  onWeightChange={onWeightChange}
-                  onColorChange={onColorChange}
-                  onToggleCollapse={onToggleCollapse}
-                  onNumberedQuantifier={onNumberedQuantifier}
-                  onNumberedN={onNumberedN}
-                  onAddNumberedItem={onAddNumberedItem}
-                  onDeleteNumberedItem={onDeleteNumberedItem}
-                  onAddCondition={onAddCondition}
-                  onDeleteCondition={onDeleteCondition}
-                  onFunctionWindow={onFunctionWindow}
-                  onFunctionBottom={onFunctionBottom}
-                  onFunctionMetric={onFunctionMetric}
-                  onFunctionRank={onFunctionRank}
-                  onUpdateCondition={onUpdateCondition}
-                  onAddPosition={onAddPosition}
-                  onRemovePosition={onRemovePosition}
-                  onChoosePosition={onChoosePosition}
-                  clipboard={clipboard}
-                />
+                  <NodeCard
+                    node={child}
+                    depth={depth + 1}
+                    inheritedWeight={autoShare}
+                    weightMode={slotWeighting}
+                    errorNodeIds={errorNodeIds}
+                    focusNodeId={focusNodeId}
+                    tickerOptions={tickerOptions}
+                    onAdd={onAdd}
+                    onAppend={onAppend}
+                    onRemoveSlotEntry={onRemoveSlotEntry}
+                    onDelete={onDelete}
+                    onCopy={onCopy}
+                    onPaste={onPaste}
+                    onRename={onRename}
+                    onWeightChange={onWeightChange}
+                    onUpdateCappedFallback={onUpdateCappedFallback}
+                    onUpdateVolWindow={onUpdateVolWindow}
+                    onColorChange={onColorChange}
+                    onToggleCollapse={onToggleCollapse}
+                    onNumberedQuantifier={onNumberedQuantifier}
+                    onNumberedN={onNumberedN}
+                    onAddNumberedItem={onAddNumberedItem}
+                    onDeleteNumberedItem={onDeleteNumberedItem}
+                    onAddCondition={onAddCondition}
+                    onDeleteCondition={onDeleteCondition}
+                    onFunctionWindow={onFunctionWindow}
+                    onFunctionBottom={onFunctionBottom}
+                    onFunctionMetric={onFunctionMetric}
+                    onFunctionRank={onFunctionRank}
+                    onUpdateCondition={onUpdateCondition}
+                    onAddPosition={onAddPosition}
+                    onRemovePosition={onRemovePosition}
+                    onChoosePosition={onChoosePosition}
+                    clipboard={clipboard}
+                  />
                 {node.kind === 'function' && slot === 'next' && index > 0 ? (
                   <button className="icon-btn delete inline" onClick={() => onRemoveSlotEntry(node.id, slot, index)}>
                     X
@@ -1679,6 +1805,104 @@ const NodeCard = ({
     )
   }
 
+  const renderWeightDetailChip = (branch?: 'then' | 'else') => {
+    const mode =
+      branch === 'then'
+        ? node.weightingThen ?? node.weighting
+        : branch === 'else'
+          ? node.weightingElse ?? node.weighting
+          : node.weighting
+    if (mode !== 'capped' && mode !== 'inverse' && mode !== 'pro') return null
+
+    const volDays =
+      mode === 'inverse' || mode === 'pro'
+        ? branch === 'then'
+          ? node.volWindowThen ?? node.volWindow ?? 20
+          : branch === 'else'
+            ? node.volWindowElse ?? node.volWindow ?? 20
+            : node.volWindow ?? 20
+        : null
+
+    if (mode === 'capped') {
+      const choice =
+        branch === 'then'
+          ? node.cappedFallbackThen ?? 'Empty'
+          : branch === 'else'
+            ? node.cappedFallbackElse ?? 'Empty'
+            : node.cappedFallback ?? 'Empty'
+
+      const key = `${node.id}-capfb-${branch ?? 'main'}`
+      const draftValue = Object.prototype.hasOwnProperty.call(positionDrafts, key) ? positionDrafts[key] : undefined
+      const shown = draftValue ?? choice
+      const commit = (raw: string) => {
+        const normalized = String(raw || '').trim().toUpperCase()
+        const next = !normalized ? 'Empty' : normalized === 'EMPTY' ? 'Empty' : normalized
+        onUpdateCappedFallback(node.id, next, branch)
+      }
+
+      return (
+        <div className="chip tag capped-chip">
+          <span>Fallback</span>
+          <input
+            list={TICKER_DATALIST_ID}
+            value={shown}
+            onClick={(e) => e.stopPropagation()}
+            onFocus={(e) => {
+              e.stopPropagation()
+              e.currentTarget.select()
+              if ((draftValue ?? choice) === 'Empty') {
+                setPositionDrafts((prev) => ({ ...prev, [key]: '' }))
+              }
+            }}
+            onChange={(e) => {
+              e.stopPropagation()
+              setPositionDrafts((prev) => ({ ...prev, [key]: e.target.value }))
+            }}
+            onBlur={(e) => {
+              e.stopPropagation()
+              commit(e.target.value)
+              setPositionDrafts((prev) => {
+                const next = { ...prev }
+                delete next[key]
+                return next
+              })
+            }}
+            onKeyDown={(e) => {
+              e.stopPropagation()
+              if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur()
+              if (e.key === 'Escape') {
+                setPositionDrafts((prev) => {
+                  const next = { ...prev }
+                  delete next[key]
+                  return next
+                })
+              }
+            }}
+            placeholder="Ticker"
+            spellCheck={false}
+            style={{ width: 120 }}
+          />
+        </div>
+      )
+    }
+
+    return (
+      <div className="chip tag capped-chip">
+        <span>of the last</span>
+        <input
+          className="inline-number"
+          type="number"
+          value={volDays ?? 20}
+          onClick={(e) => e.stopPropagation()}
+          onChange={(e) => onUpdateVolWindow(node.id, Number(e.target.value), branch)}
+          style={{ width: 70 }}
+          min={1}
+        />
+        <span>days</span>
+      </div>
+    )
+  }
+
   const renderConditionRow = (
     ownerId: string,
     cond: ConditionLine,
@@ -1819,8 +2043,15 @@ const NodeCard = ({
     )
   }
 
+  const hasBacktestError = Boolean(errorNodeIds?.has(node.id))
+  const hasBacktestFocus = Boolean(focusNodeId && focusNodeId === node.id)
+
   return (
-    <div className="node-card" style={{ marginLeft: depth * 18, background: node.bgColor || undefined }}>
+    <div
+      id={`node-${node.id}`}
+      className={`node-card${hasBacktestError ? ' backtest-error' : ''}${hasBacktestFocus ? ' backtest-focus' : ''}`}
+      style={{ marginLeft: depth * 18, background: node.bgColor || undefined }}
+    >
       <div className="node-head">
         {editing ? (
           <input
@@ -2126,41 +2357,44 @@ const NodeCard = ({
                 <div className="line">
                   <div className="indent with-line" style={{ width: 3 * 14 }} />
                   <div className="weight-wrap">
-                    <button
-                      className="chip tag"
+                  <button
+                    className="chip tag"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setWeightThenOpen((v) => !v)
+                      setWeightElseOpen(false)
+                      setWeightMainOpen(false)
+                    }}
+                  >
+                    {weightLabel(node.weightingThen ?? node.weighting)}
+                  </button>
+                  {renderWeightDetailChip('then')}
+                  {weightThenOpen ? (
+                    <div
+                      className="menu"
                       onClick={(e) => {
                         e.stopPropagation()
-                        setWeightThenOpen((v) => !v)
-                        setWeightElseOpen(false)
-                        setWeightMainOpen(false)
                       }}
                     >
-                      {weightLabel(node.weightingThen ?? node.weighting)}
-                    </button>
-                    {weightThenOpen ? (
-                      <div
-                        className="menu"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                        }}
-                      >
-                        {(['equal', 'defined', 'inverse', 'pro', 'capped'] as WeightMode[]).map((w) => (
-                          <button
-                            key={w}
-                            onClick={() => {
-                              onWeightChange(node.id, w, 'then')
+                      {(['equal', 'defined', 'inverse', 'pro', 'capped'] as WeightMode[]).map((w) => (
+                        <button
+                          key={w}
+                          onClick={() => {
+                            onWeightChange(node.id, w, 'then')
+                            if (w !== 'capped') {
                               setWeightThenOpen(false)
                               setWeightElseOpen(false)
                               setWeightMainOpen(false)
-                            }}
-                          >
-                            {weightLabel(w)}
-                          </button>
-                        ))}
-                      </div>
-                    ) : null}
-                  </div>
+                            }
+                          }}
+                        >
+                          {weightLabel(w)}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
+              </div>
                 {renderSlot('then', 3 * 14)}
                 <div className="line">
                   <div className="indent with-line" style={{ width: 2 * 14 }} />
@@ -2169,41 +2403,44 @@ const NodeCard = ({
                 <div className="line">
                   <div className="indent with-line" style={{ width: 3 * 14 }} />
                   <div className="weight-wrap">
-                    <button
-                      className="chip tag"
+                  <button
+                    className="chip tag"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setWeightElseOpen((v) => !v)
+                      setWeightThenOpen(false)
+                      setWeightMainOpen(false)
+                    }}
+                  >
+                    {weightLabel(node.weightingElse ?? node.weighting)}
+                  </button>
+                  {renderWeightDetailChip('else')}
+                  {weightElseOpen ? (
+                    <div
+                      className="menu"
                       onClick={(e) => {
                         e.stopPropagation()
-                        setWeightElseOpen((v) => !v)
-                        setWeightThenOpen(false)
-                        setWeightMainOpen(false)
                       }}
                     >
-                      {weightLabel(node.weightingElse ?? node.weighting)}
-                    </button>
-                    {weightElseOpen ? (
-                      <div
-                        className="menu"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                        }}
-                      >
-                        {(['equal', 'defined', 'inverse', 'pro', 'capped'] as WeightMode[]).map((w) => (
-                          <button
-                            key={w}
-                            onClick={() => {
-                              onWeightChange(node.id, w, 'else')
+                      {(['equal', 'defined', 'inverse', 'pro', 'capped'] as WeightMode[]).map((w) => (
+                        <button
+                          key={w}
+                          onClick={() => {
+                            onWeightChange(node.id, w, 'else')
+                            if (w !== 'capped') {
                               setWeightElseOpen(false)
                               setWeightThenOpen(false)
                               setWeightMainOpen(false)
-                            }}
-                          >
-                            {weightLabel(w)}
-                          </button>
-                        ))}
-                      </div>
-                    ) : null}
-                  </div>
+                            }
+                          }}
+                        >
+                          {weightLabel(w)}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
+              </div>
                 {renderSlot('else', 3 * 14)}
               </>
             ) : node.kind === 'numbered' ? (
@@ -2312,6 +2549,7 @@ const NodeCard = ({
                     >
                       {weightLabel(node.weightingThen ?? node.weighting)}
                     </button>
+                    {renderWeightDetailChip('then')}
                     {weightThenOpen ? (
                       <div
                         className="menu"
@@ -2324,9 +2562,11 @@ const NodeCard = ({
                             key={w}
                             onClick={() => {
                               onWeightChange(node.id, w, 'then')
-                              setWeightThenOpen(false)
-                              setWeightElseOpen(false)
-                              setWeightMainOpen(false)
+                              if (w !== 'capped') {
+                                setWeightThenOpen(false)
+                                setWeightElseOpen(false)
+                                setWeightMainOpen(false)
+                              }
                             }}
                           >
                             {weightLabel(w)}
@@ -2356,6 +2596,7 @@ const NodeCard = ({
                     >
                       {weightLabel(node.weightingElse ?? node.weighting)}
                     </button>
+                    {renderWeightDetailChip('else')}
                     {weightElseOpen ? (
                       <div
                         className="menu"
@@ -2368,9 +2609,11 @@ const NodeCard = ({
                             key={w}
                             onClick={() => {
                               onWeightChange(node.id, w, 'else')
-                              setWeightElseOpen(false)
-                              setWeightThenOpen(false)
-                              setWeightMainOpen(false)
+                              if (w !== 'capped') {
+                                setWeightElseOpen(false)
+                                setWeightThenOpen(false)
+                                setWeightMainOpen(false)
+                              }
                             }}
                           >
                             {weightLabel(w)}
@@ -2403,6 +2646,7 @@ const NodeCard = ({
                           >
                             {weightLabel(node.weighting)}
                           </button>
+                          {renderWeightDetailChip()}
                           {weightMainOpen ? (
                             <div
                               className="menu"
@@ -2415,9 +2659,11 @@ const NodeCard = ({
                                   key={w}
                                   onClick={() => {
                                     onWeightChange(node.id, w)
-                                    setWeightMainOpen(false)
-                                    setWeightThenOpen(false)
-                                    setWeightElseOpen(false)
+                                    if (w !== 'capped') {
+                                      setWeightMainOpen(false)
+                                      setWeightThenOpen(false)
+                                      setWeightElseOpen(false)
+                                    }
                                   }}
                                 >
                                   {weightLabel(w)}
@@ -2501,27 +2747,963 @@ const weightLabel = (mode: WeightMode) => {
   }
 }
 
+type BacktestMode = 'CC' | 'OO' | 'OC' | 'CO'
+
+type BacktestError = {
+  nodeId: string
+  field: string
+  message: string
+}
+
+type BacktestWarning = {
+  time: UTCTimestamp
+  date: string
+  message: string
+}
+
+type BacktestAllocationRow = {
+  date: string
+  entries: Array<{ ticker: string; weight: number }>
+}
+
+type BacktestResult = {
+  points: EquityPoint[]
+  markers: EquityMarker[]
+  metrics: { cagr: number; maxDrawdown: number; sharpe: number; days: number }
+  allocations: BacktestAllocationRow[]
+  warnings: BacktestWarning[]
+}
+
+const formatPct = (v: number) => (Number.isFinite(v) ? `${(v * 100).toFixed(2)}%` : '—')
+
+const normalizeChoice = (raw: PositionChoice): string => {
+  const s = String(raw ?? '').trim().toUpperCase()
+  if (!s || s === 'EMPTY') return 'Empty'
+  return s
+}
+
+const isEmptyChoice = (raw: PositionChoice) => normalizeChoice(raw) === 'Empty'
+
+type Allocation = Record<string, number>
+
+const allocEntries = (alloc: Allocation): Array<{ ticker: string; weight: number }> => {
+  return Object.entries(alloc)
+    .filter(([, w]) => w > 0)
+    .map(([ticker, weight]) => ({ ticker, weight }))
+}
+
+const sumAlloc = (alloc: Allocation) => Object.values(alloc).reduce((a, b) => a + b, 0)
+
+const normalizeAlloc = (alloc: Allocation): Allocation => {
+  const total = sumAlloc(alloc)
+  if (!(total > 0)) return {}
+  const out: Allocation = {}
+  for (const [k, v] of Object.entries(alloc)) {
+    if (v <= 0) continue
+    out[k] = v / total
+  }
+  return out
+}
+
+const mergeAlloc = (base: Allocation, add: Allocation, scale: number) => {
+  if (!(scale > 0)) return
+  for (const [t, w] of Object.entries(add)) {
+    if (!(w > 0)) continue
+    base[t] = (base[t] || 0) + w * scale
+  }
+}
+
+const isoFromUtcSeconds = (t: number) => new Date(Number(t) * 1000).toISOString().slice(0, 10)
+
+type TickerRef = { nodeId: string; field: string }
+
+type BacktestInputs = {
+  tickers: string[]
+  tickerRefs: Map<string, TickerRef>
+  maxLookback: number
+  errors: BacktestError[]
+}
+
+const getSlotConfig = (node: FlowNode, slot: SlotId) => {
+  if ((node.kind === 'indicator' || node.kind === 'numbered') && (slot === 'then' || slot === 'else')) {
+    const mode = slot === 'then' ? (node.weightingThen ?? node.weighting) : (node.weightingElse ?? node.weighting)
+    const volWindow = slot === 'then' ? (node.volWindowThen ?? node.volWindow ?? 20) : (node.volWindowElse ?? node.volWindow ?? 20)
+    const cappedFallback =
+      slot === 'then' ? (node.cappedFallbackThen ?? node.cappedFallback ?? 'Empty') : (node.cappedFallbackElse ?? node.cappedFallback ?? 'Empty')
+    return { mode, volWindow, cappedFallback }
+  }
+  return { mode: node.weighting, volWindow: node.volWindow ?? 20, cappedFallback: node.cappedFallback ?? 'Empty' }
+}
+
+const collectBacktestInputs = (root: FlowNode): BacktestInputs => {
+  const errors: BacktestError[] = []
+  const tickers = new Set<string>()
+  const tickerRefs = new Map<string, TickerRef>()
+  let maxLookback = 0
+
+  const addTicker = (t: PositionChoice, nodeId: string, field: string) => {
+    const norm = normalizeChoice(t)
+    if (norm === 'Empty') return
+    tickers.add(norm)
+    if (!tickerRefs.has(norm)) tickerRefs.set(norm, { nodeId, field })
+  }
+
+  const addError = (nodeId: string, field: string, message: string) => errors.push({ nodeId, field, message })
+
+  const validateCondition = (ownerId: string, fieldPrefix: string, cond: ConditionLine) => {
+    const baseField = `${fieldPrefix}.${cond.id}`
+    const ticker = normalizeChoice(cond.ticker)
+    if (ticker === 'Empty') {
+      addError(ownerId, `${baseField}.ticker`, 'Indicator condition is missing a ticker.')
+    } else {
+      addTicker(ticker, ownerId, `${baseField}.ticker`)
+    }
+    if (cond.metric !== 'Current Price') {
+      if (!Number.isFinite(cond.window) || cond.window < 1) addError(ownerId, `${baseField}.window`, 'Indicator window must be >= 1.')
+      maxLookback = Math.max(maxLookback, Math.floor(cond.window || 0))
+    }
+    if (cond.expanded) {
+      const rt = normalizeChoice(cond.rightTicker ?? '')
+      if (rt === 'Empty') addError(ownerId, `${baseField}.rightTicker`, 'Right-side ticker is missing.')
+      else addTicker(rt, ownerId, `${baseField}.rightTicker`)
+      const rw = Number(cond.rightWindow ?? cond.window)
+      if ((cond.rightMetric ?? cond.metric) !== 'Current Price') {
+        if (!Number.isFinite(rw) || rw < 1) addError(ownerId, `${baseField}.rightWindow`, 'Right-side window must be >= 1.')
+        maxLookback = Math.max(maxLookback, Math.floor(rw || 0))
+      }
+    }
+  }
+
+  const walk = (node: FlowNode) => {
+    if (node.kind === 'indicator' && node.conditions) {
+      node.conditions.forEach((c) => validateCondition(node.id, 'conditions', c))
+    }
+    if (node.kind === 'numbered' && node.numbered) {
+      node.numbered.items.forEach((item) => {
+        item.conditions.forEach((c) => validateCondition(node.id, `numbered.items.${item.id}.conditions`, c))
+      })
+    }
+    if (node.kind === 'position') {
+      for (const p of node.positions || []) addTicker(p, node.id, 'positions')
+    }
+
+    if (node.kind === 'function') {
+      const metric = node.metric ?? 'Relative Strength Index'
+      const win = metric === 'Current Price' ? 0 : Math.floor(Number(node.window ?? 10))
+      if (metric !== 'Current Price' && (!(win >= 1) || !Number.isFinite(win))) {
+        addError(node.id, 'window', 'Sort window must be >= 1.')
+      }
+      maxLookback = Math.max(maxLookback, win || 0)
+      const pickN = Math.floor(Number(node.bottom ?? 1))
+      if (!(pickN >= 1) || !Number.isFinite(pickN)) addError(node.id, 'bottom', 'Pick count must be >= 1.')
+    }
+
+    // weight-mode-specific validations for the node's active slots
+    const slotsToCheck: SlotId[] =
+      node.kind === 'indicator' || node.kind === 'numbered' ? ['then', 'else'] : node.kind === 'position' ? [] : ['next']
+
+    for (const slot of slotsToCheck) {
+      const { mode, volWindow, cappedFallback } = getSlotConfig(node, slot)
+      if ((mode === 'inverse' || mode === 'pro') && (!Number.isFinite(volWindow) || volWindow < 1)) {
+        addError(node.id, `volWindow.${slot}`, 'Volatility window must be >= 1.')
+      }
+      if (mode === 'capped') addTicker(cappedFallback, node.id, `cappedFallback.${slot}`)
+      const children = (node.children[slot] ?? []).filter((c): c is FlowNode => Boolean(c))
+      if (mode === 'defined' || mode === 'capped') {
+        for (const child of children) {
+          const v = Number(child.window)
+          if (!Number.isFinite(v) || v <= 0) {
+            addError(child.id, 'window', `${mode === 'capped' ? 'Cap' : 'Weight'} % is missing for "${child.title}".`)
+          } else if (mode === 'capped' && v > 100) {
+            addError(child.id, 'window', `Cap % must be <= 100 for "${child.title}".`)
+          }
+        }
+      }
+    }
+
+    for (const slot of SLOT_ORDER[node.kind]) {
+      const arr = node.children[slot] || []
+      for (const c of arr) if (c) walk(c)
+    }
+  }
+
+  walk(root)
+
+  return { tickers: Array.from(tickers).sort(), tickerRefs, maxLookback, errors }
+}
+
+type PriceDB = {
+  dates: UTCTimestamp[]
+  open: Record<string, Array<number | null>>
+  close: Record<string, Array<number | null>>
+}
+
+type IndicatorCache = {
+  rsi: Map<string, Map<number, Array<number | null>>>
+  sma: Map<string, Map<number, Array<number | null>>>
+  ema: Map<string, Map<number, Array<number | null>>>
+  std: Map<string, Map<number, Array<number | null>>>
+  maxdd: Map<string, Map<number, Array<number | null>>>
+}
+
+const emptyCache = (): IndicatorCache => ({
+  rsi: new Map(),
+  sma: new Map(),
+  ema: new Map(),
+  std: new Map(),
+  maxdd: new Map(),
+})
+
+const getSeriesKey = (ticker: string) => normalizeChoice(ticker)
+
+const buildCloseArray = (db: PriceDB, ticker: string) => (db.close[getSeriesKey(ticker)] || []).map((v) => (v == null ? NaN : v))
+
+const rollingSma = (values: number[], period: number): Array<number | null> => {
+  const out: Array<number | null> = new Array(values.length).fill(null)
+  let sum = 0
+  let missing = 0
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i]
+    if (Number.isNaN(v)) missing += 1
+    else sum += v
+    if (i >= period) {
+      const prev = values[i - period]
+      if (Number.isNaN(prev)) missing -= 1
+      else sum -= prev
+    }
+    if (i >= period - 1 && missing === 0) out[i] = sum / period
+  }
+  return out
+}
+
+const rollingEma = (values: number[], period: number): Array<number | null> => {
+  const out: Array<number | null> = new Array(values.length).fill(null)
+  const alpha = 2 / (period + 1)
+  let ema: number | null = null
+  let readyCount = 0
+  let seedSum = 0
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i]
+    if (Number.isNaN(v)) {
+      ema = null
+      readyCount = 0
+      seedSum = 0
+      continue
+    }
+    if (ema == null) {
+      seedSum += v
+      readyCount += 1
+      if (readyCount === period) {
+        ema = seedSum / period
+        out[i] = ema
+      }
+      continue
+    }
+    ema = alpha * v + (1 - alpha) * ema
+    out[i] = ema
+  }
+  return out
+}
+
+const rollingWilderRsi = (closes: number[], period: number): Array<number | null> => {
+  const out: Array<number | null> = new Array(closes.length).fill(null)
+  let avgGain: number | null = null
+  let avgLoss: number | null = null
+  let seedG = 0
+  let seedL = 0
+  let seedCount = 0
+  for (let i = 1; i < closes.length; i++) {
+    const prev = closes[i - 1]
+    const cur = closes[i]
+    if (Number.isNaN(prev) || Number.isNaN(cur)) {
+      avgGain = null
+      avgLoss = null
+      seedG = 0
+      seedL = 0
+      seedCount = 0
+      continue
+    }
+    const change = cur - prev
+    const gain = change > 0 ? change : 0
+    const loss = change < 0 ? -change : 0
+    if (avgGain == null || avgLoss == null) {
+      seedG += gain
+      seedL += loss
+      seedCount += 1
+      if (seedCount === period) {
+        avgGain = seedG / period
+        avgLoss = seedL / period
+        const rs = avgLoss === 0 ? Infinity : avgGain / avgLoss
+        out[i] = 100 - 100 / (1 + rs)
+      }
+      continue
+    }
+    avgGain = (avgGain * (period - 1) + gain) / period
+    avgLoss = (avgLoss * (period - 1) + loss) / period
+    const rs = avgLoss === 0 ? Infinity : avgGain / avgLoss
+    out[i] = 100 - 100 / (1 + rs)
+  }
+  return out
+}
+
+const rollingStdDev = (values: number[], period: number): Array<number | null> => {
+  const out: Array<number | null> = new Array(values.length).fill(null)
+  let sum = 0
+  let sumSq = 0
+  let missing = 0
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i]
+    if (Number.isNaN(v)) {
+      missing += 1
+    } else {
+      sum += v
+      sumSq += v * v
+    }
+    if (i >= period) {
+      const prev = values[i - period]
+      if (Number.isNaN(prev)) missing -= 1
+      else {
+        sum -= prev
+        sumSq -= prev * prev
+      }
+    }
+    if (i >= period - 1 && missing === 0) {
+      const mean = sum / period
+      const variance = Math.max(0, sumSq / period - mean * mean)
+      out[i] = Math.sqrt(variance)
+    }
+  }
+  return out
+}
+
+const rollingMaxDrawdown = (values: number[], period: number): Array<number | null> => {
+  const out: Array<number | null> = new Array(values.length).fill(null)
+  for (let i = 0; i < values.length; i++) {
+    if (i < period - 1) continue
+    let peak = -Infinity
+    let maxDd = 0
+    for (let j = i - period + 1; j <= i; j++) {
+      const v = values[j]
+      if (Number.isNaN(v)) {
+        peak = -Infinity
+        maxDd = 0
+        continue
+      }
+      if (v > peak) peak = v
+      if (peak > 0) {
+        const dd = v / peak - 1
+        if (dd < maxDd) maxDd = dd
+      }
+    }
+    out[i] = maxDd
+  }
+  return out
+}
+
+const getCachedSeries = (cache: IndicatorCache, kind: keyof IndicatorCache, ticker: string, period: number, compute: () => Array<number | null>) => {
+  const t = getSeriesKey(ticker)
+  const map = cache[kind]
+  let byTicker = map.get(t)
+  if (!byTicker) {
+    byTicker = new Map()
+    map.set(t, byTicker)
+  }
+  const existing = byTicker.get(period)
+  if (existing) return existing
+  const next = compute()
+  byTicker.set(period, next)
+  return next
+}
+
+type EvalCtx = {
+  db: PriceDB
+  cache: IndicatorCache
+  decisionIndex: number
+  indicatorIndex: number
+  decisionPrice: 'open' | 'close'
+  warnings: BacktestWarning[]
+}
+
+const metricAt = (ctx: EvalCtx, ticker: string, metric: MetricChoice, window: number): number | null => {
+  const t = getSeriesKey(ticker)
+  if (!t || t === 'Empty') return null
+
+  if (metric === 'Current Price') {
+    const arr = ctx.decisionPrice === 'open' ? ctx.db.open[t] : ctx.db.close[t]
+    const v = arr?.[ctx.decisionIndex]
+    return v == null ? null : v
+  }
+
+  const i = ctx.indicatorIndex
+  if (i < 0) return null
+  const closes = buildCloseArray(ctx.db, t)
+  const w = Math.max(1, Math.floor(Number(window || 0)))
+
+  switch (metric) {
+    case 'Simple Moving Average': {
+      const series = getCachedSeries(ctx.cache, 'sma', t, w, () => rollingSma(closes, w))
+      return series[i] ?? null
+    }
+    case 'Exponential Moving Average': {
+      const series = getCachedSeries(ctx.cache, 'ema', t, w, () => rollingEma(closes, w))
+      return series[i] ?? null
+    }
+    case 'Relative Strength Index': {
+      const series = getCachedSeries(ctx.cache, 'rsi', t, w, () => rollingWilderRsi(closes, w))
+      return series[i] ?? null
+    }
+    case 'Standard Deviation': {
+      const rets = closes.map((v, idx) => {
+        if (idx === 0) return NaN
+        const prev = closes[idx - 1]
+        if (Number.isNaN(prev) || Number.isNaN(v) || prev === 0) return NaN
+        return v / prev - 1
+      })
+      const series = getCachedSeries(ctx.cache, 'std', t, w, () => rollingStdDev(rets, w))
+      return series[i] ?? null
+    }
+    case 'Max Drawdown': {
+      const series = getCachedSeries(ctx.cache, 'maxdd', t, w, () => rollingMaxDrawdown(closes, w))
+      return series[i] ?? null
+    }
+  }
+}
+
+const evalCondition = (ctx: EvalCtx, ownerId: string, cond: ConditionLine): boolean => {
+  const left = metricAt(ctx, cond.ticker, cond.metric, cond.window)
+  if (cond.expanded) {
+    const rightMetric = cond.rightMetric ?? cond.metric
+    const rightTicker = cond.rightTicker ?? cond.ticker
+    const rightWindow = cond.rightWindow ?? cond.window
+    const right = metricAt(ctx, rightTicker, rightMetric, rightWindow)
+    if (left == null || right == null) {
+      ctx.warnings.push({
+        time: ctx.db.dates[ctx.decisionIndex],
+        date: isoFromUtcSeconds(ctx.db.dates[ctx.decisionIndex]),
+        message: `Missing data for condition on ${ownerId}.`,
+      })
+      return false
+    }
+    return cond.comparator === 'lt' ? left < right : left > right
+  }
+  if (left == null) {
+    ctx.warnings.push({
+      time: ctx.db.dates[ctx.decisionIndex],
+      date: isoFromUtcSeconds(ctx.db.dates[ctx.decisionIndex]),
+      message: `Missing data for condition on ${ownerId}.`,
+    })
+    return false
+  }
+  return cond.comparator === 'lt' ? left < cond.threshold : left > cond.threshold
+}
+
+const evalConditions = (ctx: EvalCtx, ownerId: string, conditions: ConditionLine[] | undefined): boolean => {
+  if (!conditions || conditions.length === 0) return false
+  let out = false
+  for (const c of conditions) {
+    const v = evalCondition(ctx, ownerId, c)
+    if (c.type === 'if') out = v
+    else if (c.type === 'and') out = out && v
+    else out = out || v
+  }
+  return out
+}
+
+const volForAlloc = (ctx: EvalCtx, alloc: Allocation, window: number): number | null => {
+  const w = Math.max(1, Math.floor(Number(window || 0)))
+  let sumSq = 0
+  let any = false
+  for (const [ticker, weight] of Object.entries(alloc)) {
+    if (!(weight > 0)) continue
+    const std = metricAt(ctx, ticker, 'Standard Deviation', w)
+    if (std == null) continue
+    any = true
+    sumSq += (weight * std) ** 2
+  }
+  return any ? Math.sqrt(sumSq) : null
+}
+
+const weightChildren = (
+  ctx: EvalCtx,
+  parent: FlowNode,
+  slot: SlotId,
+  children: FlowNode[],
+  allocs: Allocation[],
+): Array<{ child: FlowNode; alloc: Allocation; share: number }> => {
+  const { mode, volWindow, cappedFallback } = getSlotConfig(parent, slot)
+
+  const active = children
+    .map((child, idx) => ({ child, alloc: allocs[idx] }))
+    .filter((x) => Object.keys(x.alloc).length > 0)
+
+  if (active.length === 0) return []
+
+  if (mode === 'equal') {
+    const share = 1 / active.length
+    return active.map((x) => ({ ...x, share }))
+  }
+
+  if (mode === 'defined') {
+    const weights = active.map((x) => Math.max(0, Number(x.child.window || 0)))
+    const total = weights.reduce((a, b) => a + b, 0)
+    if (!(total > 0)) return active.map((x) => ({ ...x, share: 0 }))
+    return active.map((x, i) => ({ ...x, share: weights[i] / total }))
+  }
+
+  if (mode === 'inverse' || mode === 'pro') {
+    const vols = active.map((x) => volForAlloc(ctx, x.alloc, volWindow) ?? null)
+    const rawWeights = vols.map((v) => {
+      if (!v || !(v > 0)) return 0
+      return mode === 'inverse' ? 1 / v : v
+    })
+    const total = rawWeights.reduce((a, b) => a + b, 0)
+    if (!(total > 0)) {
+      const share = 1 / active.length
+      return active.map((x) => ({ ...x, share }))
+    }
+    return active.map((x, i) => ({ ...x, share: rawWeights[i] / total }))
+  }
+
+  // capped
+  let remaining = 1
+  const out: Array<{ child: FlowNode; alloc: Allocation; share: number }> = []
+  for (const x of active) {
+    if (!(remaining > 0)) break
+    const capPct = Math.max(0, Number(x.child.window || 0))
+    const cap = Math.min(1, capPct / 100)
+    if (!(cap > 0)) continue
+    const share = Math.min(cap, remaining)
+    remaining -= share
+    out.push({ ...x, share })
+  }
+
+  if (remaining > 0 && !isEmptyChoice(cappedFallback)) {
+    out.push({
+      child: { ...parent, id: `${parent.id}-capped-fallback` } as FlowNode,
+      alloc: { [getSeriesKey(cappedFallback)]: 1 },
+      share: remaining,
+    })
+  }
+
+  return out
+}
+
+const evaluateNode = (ctx: EvalCtx, node: FlowNode): Allocation => {
+  switch (node.kind) {
+    case 'position': {
+      const tickers = (node.positions || []).map(normalizeChoice).filter((t) => t !== 'Empty')
+      if (tickers.length === 0) return {}
+      const unique = Array.from(new Set(tickers))
+      const share = 1 / unique.length
+      const alloc: Allocation = {}
+      for (const t of unique) alloc[t] = (alloc[t] || 0) + share
+      return alloc
+    }
+    case 'basic': {
+      const children = (node.children.next || []).filter((c): c is FlowNode => Boolean(c))
+      const childAllocs = children.map((c) => evaluateNode(ctx, c))
+      const weighted = weightChildren(ctx, node, 'next', children, childAllocs)
+      const out: Allocation = {}
+      for (const w of weighted) mergeAlloc(out, w.alloc, w.share)
+      return normalizeAlloc(out)
+    }
+    case 'indicator': {
+      const ok = evalConditions(ctx, node.id, node.conditions)
+      const slot: SlotId = ok ? 'then' : 'else'
+      const children = (node.children[slot] || []).filter((c): c is FlowNode => Boolean(c))
+      const childAllocs = children.map((c) => evaluateNode(ctx, c))
+      const weighted = weightChildren(ctx, node, slot, children, childAllocs)
+      const out: Allocation = {}
+      for (const w of weighted) mergeAlloc(out, w.alloc, w.share)
+      return normalizeAlloc(out)
+    }
+    case 'numbered': {
+      const items = node.numbered?.items || []
+      const itemTruth = items.map((it) => evalConditions(ctx, node.id, it.conditions))
+      const nTrue = itemTruth.filter(Boolean).length
+      const q = node.numbered?.quantifier ?? 'all'
+      const n = Math.max(0, Math.floor(Number(node.numbered?.n ?? 0)))
+      const ok =
+        q === 'all'
+          ? nTrue === items.length
+          : q === 'none'
+            ? nTrue === 0
+            : q === 'exactly'
+              ? nTrue === n
+              : q === 'atLeast'
+                ? nTrue >= n
+                : nTrue <= n
+      const slot: SlotId = ok ? 'then' : 'else'
+      const children = (node.children[slot] || []).filter((c): c is FlowNode => Boolean(c))
+      const childAllocs = children.map((c) => evaluateNode(ctx, c))
+      const weighted = weightChildren(ctx, node, slot, children, childAllocs)
+      const out: Allocation = {}
+      for (const w of weighted) mergeAlloc(out, w.alloc, w.share)
+      return normalizeAlloc(out)
+    }
+    case 'function': {
+      const children = (node.children.next || []).filter((c): c is FlowNode => Boolean(c))
+      const candidateAllocs = children.map((c) => evaluateNode(ctx, c))
+      const candidates = children
+        .map((child, idx) => ({ child, alloc: candidateAllocs[idx] }))
+        .filter((x) => Object.keys(x.alloc).length > 0)
+
+      const metric = node.metric ?? 'Relative Strength Index'
+      const win = metric === 'Current Price' ? 1 : Math.floor(Number(node.window ?? 10))
+      const pickN = Math.max(1, Math.floor(Number(node.bottom ?? 1)))
+      const rank = node.rank ?? 'Bottom'
+
+      const scored = candidates
+        .map((c) => {
+          const vals: number[] = []
+          for (const [t, w] of Object.entries(c.alloc)) {
+            if (!(w > 0)) continue
+            const mv = metricAt(ctx, t, metric, win)
+            if (mv == null) continue
+            vals.push(mv * w)
+          }
+          const score = vals.reduce((a, b) => a + b, 0)
+          return { ...c, score: Number.isFinite(score) ? score : null }
+        })
+        .filter((x) => x.score != null)
+
+      if (scored.length === 0) return {}
+
+      scored.sort((a, b) => (a.score as number) - (b.score as number))
+      const selected = rank === 'Bottom' ? scored.slice(0, pickN) : scored.slice(-pickN)
+
+      const selChildren = selected.map((s) => s.child)
+      const selAllocs = selected.map((s) => s.alloc)
+      const weighted = weightChildren(ctx, node, 'next', selChildren, selAllocs)
+      const out: Allocation = {}
+      for (const w of weighted) mergeAlloc(out, w.alloc, w.share)
+      return normalizeAlloc(out)
+    }
+  }
+}
+
+const turnoverFraction = (prev: Allocation, next: Allocation) => {
+  const keys = new Set([...Object.keys(prev), ...Object.keys(next), '__CASH__'])
+  const prevTotal = sumAlloc(prev)
+  const nextTotal = sumAlloc(next)
+  const prevCash = Math.max(0, 1 - prevTotal)
+  const nextCash = Math.max(0, 1 - nextTotal)
+  let sumAbs = 0
+  for (const k of keys) {
+    const a = k === '__CASH__' ? prevCash : prev[k] || 0
+    const b = k === '__CASH__' ? nextCash : next[k] || 0
+    sumAbs += Math.abs(a - b)
+  }
+  return sumAbs / 2
+}
+
+const computeMetrics = (equity: number[], returns: number[]) => {
+  const days = returns.length
+  const final = equity.length ? equity[equity.length - 1] : 1
+  const cagr = days > 0 && final > 0 ? final ** (252 / days) - 1 : 0
+  let peak = -Infinity
+  let maxDd = 0
+  for (const v of equity) {
+    if (v > peak) peak = v
+    if (peak > 0) {
+      const dd = v / peak - 1
+      if (dd < maxDd) maxDd = dd
+    }
+  }
+  const mean = days > 0 ? returns.reduce((a, b) => a + b, 0) / days : 0
+  const variance = days > 1 ? returns.reduce((a, b) => a + (b - mean) ** 2, 0) / (days - 1) : 0
+  const std = Math.sqrt(Math.max(0, variance))
+  const sharpe = std > 0 ? (Math.sqrt(252) * mean) / std : 0
+  return { cagr, maxDrawdown: maxDd, sharpe, days }
+}
+
+const fetchOhlcSeries = async (ticker: string, limit: number): Promise<Array<{ time: UTCTimestamp; open: number; close: number }>> => {
+  const t = encodeURIComponent(getSeriesKey(ticker))
+  const res = await fetch(`/api/candles/${t}?limit=${encodeURIComponent(String(limit))}`)
+  const text = await res.text()
+  let payload: unknown = null
+  try {
+    payload = text ? (JSON.parse(text) as unknown) : null
+  } catch {
+    throw new Error(`Failed to load ${ticker} candles. Non-JSON response: ${text ? text.slice(0, 200) : '<empty>'}`)
+  }
+  if (!res.ok) {
+    const err = payload && typeof payload === 'object' && 'error' in payload ? String((payload as { error?: unknown }).error) : `HTTP ${res.status}`
+    throw new Error(`Failed to load ${ticker} candles. ${err}`)
+  }
+  const candles = (payload as AdminCandlesResponse).candles || []
+  return candles.map((c) => ({ time: c.time as UTCTimestamp, open: Number(c.open), close: Number(c.close) }))
+}
+
+const buildPriceDb = (series: Array<{ ticker: string; bars: Array<{ time: UTCTimestamp; open: number; close: number }> }>): PriceDB => {
+  const byTicker = new Map<string, Map<number, { open: number; close: number }>>()
+  let overlapStart = 0
+  let overlapEnd = Number.POSITIVE_INFINITY
+
+  for (const s of series) {
+    const t = getSeriesKey(s.ticker)
+    const map = new Map<number, { open: number; close: number }>()
+    for (const b of s.bars) map.set(Number(b.time), { open: Number(b.open), close: Number(b.close) })
+    byTicker.set(t, map)
+
+    const times = s.bars.map((b) => Number(b.time)).sort((a, b) => a - b)
+    if (times.length === 0) continue
+    overlapStart = Math.max(overlapStart, times[0])
+    overlapEnd = Math.min(overlapEnd, times[times.length - 1])
+  }
+
+  if (!(overlapEnd >= overlapStart)) return { dates: [], open: {}, close: {} }
+
+  const dateSet = new Set<number>()
+  for (const [, map] of byTicker) {
+    for (const time of map.keys()) {
+      if (time >= overlapStart && time <= overlapEnd) dateSet.add(time)
+    }
+  }
+  const dates = Array.from(dateSet).sort((a, b) => a - b) as UTCTimestamp[]
+
+  const open: Record<string, Array<number | null>> = {}
+  const close: Record<string, Array<number | null>> = {}
+  for (const [ticker, map] of byTicker) {
+    open[ticker] = dates.map((d) => (map.get(Number(d))?.open ?? null))
+    close[ticker] = dates.map((d) => (map.get(Number(d))?.close ?? null))
+  }
+
+  return { dates, open, close }
+}
+
+const expandToNode = (node: FlowNode, targetId: string): { next: FlowNode; found: boolean } => {
+  if (node.id === targetId) {
+    return { next: node.collapsed ? { ...node, collapsed: false } : node, found: true }
+  }
+  let found = false
+  const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
+  for (const slot of SLOT_ORDER[node.kind]) {
+    const arr = node.children[slot] ?? [null]
+    children[slot] = arr.map((c) => {
+      if (!c) return c
+      const r = expandToNode(c, targetId)
+      if (r.found) found = true
+      return r.next
+    })
+  }
+  const self = found && node.collapsed ? { ...node, collapsed: false } : node
+  return found ? { next: { ...self, children }, found: true } : { next: node, found: false }
+}
+
+type BacktesterPanelProps = {
+  mode: BacktestMode
+  setMode: (mode: BacktestMode) => void
+  costBps: number
+  setCostBps: (bps: number) => void
+  status: 'idle' | 'running' | 'done' | 'error'
+  result: BacktestResult | null
+  errors: BacktestError[]
+  onRun: () => void
+  onJumpToError: (err: BacktestError) => void
+}
+
+function BacktesterPanel({
+  mode,
+  setMode,
+  costBps,
+  setCostBps,
+  status,
+  result,
+  errors,
+  onRun,
+  onJumpToError,
+}: BacktesterPanelProps) {
+  return (
+    <section className="backtester-card">
+      <div className="backtester-head">
+        <div>
+          <div className="eyebrow">Build</div>
+          <h2 className="backtester-title">Backtester</h2>
+        </div>
+        <div className="backtester-controls">
+          <label className="backtester-field">
+            <span>Mode</span>
+            <select value={mode} onChange={(e) => setMode(e.target.value as BacktesterPanelProps['mode'])}>
+              <option value="CC">Close→Close</option>
+              <option value="OO">Open→Open</option>
+              <option value="OC">Open→Close</option>
+              <option value="CO">Close→Open</option>
+            </select>
+          </label>
+          <label className="backtester-field">
+            <span>Cost (bps)</span>
+            <input
+              type="number"
+              min={0}
+              step={1}
+              value={Number.isFinite(costBps) ? costBps : 0}
+              onChange={(e) => setCostBps(Number(e.target.value || 0))}
+            />
+          </label>
+          <button onClick={onRun} disabled={status === 'running'}>
+            {status === 'running' ? 'Running…' : 'Run Backtest'}
+          </button>
+        </div>
+      </div>
+      <div className="backtester-body">
+        {errors.length > 0 && (
+          <div className="backtester-message" style={{ borderColor: '#fecaca', background: '#fef2f2', color: '#991b1b' }}>
+            <div style={{ fontWeight: 900, marginBottom: 6 }}>Fix these errors before running:</div>
+            <div style={{ display: 'grid', gap: 6 }}>
+              {errors.map((e, idx) => (
+                <button
+                  key={`${e.nodeId}-${e.field}-${idx}`}
+                  className="link-btn"
+                  style={{ textAlign: 'left', color: 'inherit' }}
+                  onClick={() => onJumpToError(e)}
+                >
+                  {e.message}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {result ? (
+          <>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
+              <div className="saved-item">
+                <div style={{ fontWeight: 800 }}>CAGR</div>
+                <div>{formatPct(result.metrics.cagr)}</div>
+              </div>
+              <div className="saved-item">
+                <div style={{ fontWeight: 800 }}>Max Drawdown</div>
+                <div>{formatPct(result.metrics.maxDrawdown)}</div>
+              </div>
+              <div className="saved-item">
+                <div style={{ fontWeight: 800 }}>Sharpe</div>
+                <div>{Number.isFinite(result.metrics.sharpe) ? result.metrics.sharpe.toFixed(2) : '—'}</div>
+              </div>
+              <div className="saved-item">
+                <div style={{ fontWeight: 800 }}>Days</div>
+                <div>{result.metrics.days}</div>
+              </div>
+            </div>
+
+            <EquityChart points={result.points} markers={result.markers} />
+
+            {result.warnings.length > 0 && (
+              <div className="backtester-message" style={{ borderColor: '#fde68a', background: '#fffbeb', color: '#92400e' }}>
+                <div style={{ fontWeight: 900, marginBottom: 6 }}>
+                  Warnings ({result.warnings.length})
+                </div>
+                <div style={{ maxHeight: 140, overflow: 'auto', display: 'grid', gap: 4 }}>
+                  {result.warnings.slice(0, 50).map((w, idx) => (
+                    <div key={`${w.time}-${idx}`}>
+                      {w.date}: {w.message}
+                    </div>
+                  ))}
+                  {result.warnings.length > 50 ? <div>…</div> : null}
+                </div>
+              </div>
+            )}
+
+            <div className="saved-item">
+              <div style={{ fontWeight: 900, marginBottom: 6 }}>Allocations (most recent)</div>
+              <div style={{ maxHeight: 240, overflow: 'auto', fontFamily: 'ui-monospace, Menlo, Consolas, monospace', fontSize: 12 }}>
+                {(result.allocations || []).slice(-200).map((row) => (
+                  <div key={row.date}>
+                    {row.date} —{' '}
+                    {row.entries.length === 0
+                      ? 'Cash'
+                      : row.entries
+                          .slice()
+                          .sort((a, b) => b.weight - a.weight)
+                          .map((e) => `${e.ticker} ${(e.weight * 100).toFixed(2)}%`)
+                          .join(', ')}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </>
+        ) : status === 'running' ? (
+          <div className="backtester-chart-placeholder">Running backtest…</div>
+        ) : (
+          <div className="backtester-chart-placeholder">Click “Run Backtest” to compute an equity curve.</div>
+        )}
+      </div>
+    </section>
+  )
+}
+
 function App() {
   const initialBotRef = useRef<BotSession | null>(null)
 
   const [availableTickers, setAvailableTickers] = useState<string[]>([])
+  const [tickerApiError, setTickerApiError] = useState<string | null>(null)
+  const [backtestMode, setBacktestMode] = useState<BacktestMode>('CC')
+  const [backtestCostBps, setBacktestCostBps] = useState<number>(5)
+  const [backtestStatus, setBacktestStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle')
+  const [backtestErrors, setBacktestErrors] = useState<BacktestError[]>([])
+  const [backtestResult, setBacktestResult] = useState<BacktestResult | null>(null)
+  const [backtestFocusNodeId, setBacktestFocusNodeId] = useState<string | null>(null)
 
   const loadAvailableTickers = useCallback(async () => {
     const tryLoad = async (url: string) => {
       const res = await fetch(url)
-      const payload = (await res.json()) as { tickers: string[] } | { error: string }
-      if (!res.ok) throw new Error('error' in payload ? payload.error : `Tickers failed (${res.status})`)
-      if (!('tickers' in payload)) throw new Error('Tickers failed.')
-      return payload.tickers || []
+      const text = await res.text()
+      let payload: unknown = null
+      try {
+        payload = text ? (JSON.parse(text) as unknown) : null
+      } catch {
+        throw new Error(
+          `Tickers failed (${res.status}). Non-JSON response from ${url}: ${text ? text.slice(0, 200) : '<empty>'}`,
+        )
+      }
+      if (!res.ok) {
+        if (payload && typeof payload === 'object' && 'error' in payload) {
+          throw new Error(String((payload as { error?: unknown }).error ?? `Tickers failed (${res.status})`))
+        }
+        throw new Error(`Tickers failed (${res.status})`)
+      }
+      if (!payload || typeof payload !== 'object' || !('tickers' in payload)) throw new Error('Tickers failed.')
+      const tickers = (payload as { tickers?: unknown }).tickers
+      return Array.isArray(tickers) ? (tickers as string[]) : []
+    }
+
+    const tryLoadFromBase = async (baseUrl: string) => {
+      const prefix = baseUrl ? String(baseUrl).replace(/\/+$/, '') : ''
+      const [fileTickers, parquetTickers] = await Promise.allSettled([
+        tryLoad(`${prefix}/api/tickers`),
+        tryLoad(`${prefix}/api/parquet-tickers`),
+      ])
+
+      const out = new Set<string>()
+      if (fileTickers.status === 'fulfilled') {
+        for (const t of fileTickers.value) out.add(t)
+      }
+      if (parquetTickers.status === 'fulfilled') {
+        for (const t of parquetTickers.value) out.add(t)
+      }
+      if (out.size > 0) return Array.from(out).sort()
+
+      const reasons = [fileTickers, parquetTickers]
+        .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+        .map((r) => String(r.reason?.message || r.reason))
+        .filter(Boolean)
+      throw new Error(reasons.join(' | ') || 'Ticker endpoints failed.')
     }
 
     try {
-      setAvailableTickers(await tryLoad('/api/tickers'))
-    } catch {
+      setAvailableTickers(await tryLoadFromBase(''))
+      setTickerApiError(null)
+    } catch (e) {
       try {
-        setAvailableTickers(await tryLoad('http://localhost:8787/api/tickers'))
-      } catch {
+        setAvailableTickers(await tryLoadFromBase('http://localhost:8787'))
+        setTickerApiError(null)
+      } catch (e2) {
         setAvailableTickers([])
+        setTickerApiError(
+          `Ticker API not reachable. Start the backend with "cd System.app" then "npm run api". (${String(
+            (e2 as Error)?.message || (e as Error)?.message || 'unknown error',
+          )})`,
+        )
       }
     }
   }, [])
@@ -2531,6 +3713,7 @@ function App() {
   }, [loadAvailableTickers])
 
   const tickerOptions = useMemo(() => normalizeTickersForUi(availableTickers), [availableTickers])
+  const backtestErrorNodeIds = useMemo(() => new Set(backtestErrors.map((e) => e.nodeId)), [backtestErrors])
 
   const createBotSession = useCallback((title: string): BotSession => {
     const root = ensureSlots(createNode('basic'))
@@ -2658,13 +3841,30 @@ function App() {
     [current],
   )
 
-const handleWeightChange = useCallback(
-  (id: string, weight: WeightMode, branch?: 'then' | 'else') => {
-    const next = updateWeight(current, id, weight, branch)
-    push(next)
-  },
-  [current],
-)
+  const handleWeightChange = useCallback(
+    (id: string, weight: WeightMode, branch?: 'then' | 'else') => {
+      const next = updateWeight(current, id, weight, branch)
+      push(next)
+    },
+    [current],
+  )
+
+  const handleUpdateCappedFallback = useCallback(
+    (id: string, choice: PositionChoice, branch?: 'then' | 'else') => {
+      const next = updateCappedFallback(current, id, choice, branch)
+      push(next)
+    },
+    [current],
+  )
+
+  const handleUpdateVolWindow = useCallback(
+    (id: string, days: number, branch?: 'then' | 'else') => {
+      const next = updateVolWindow(current, id, days, branch)
+      push(next)
+    },
+    [current],
+  )
+
 
 const handleFunctionWindow = useCallback(
   (id: string, value: number) => {
@@ -2713,6 +3913,144 @@ const handleColorChange = useCallback(
     },
     [current],
   )
+
+  const handleJumpToBacktestError = useCallback(
+    (err: BacktestError) => {
+      setBacktestFocusNodeId(err.nodeId)
+      const expanded = expandToNode(current, err.nodeId)
+      if (expanded.found) push(expanded.next)
+      setTimeout(() => {
+        document.getElementById(`node-${err.nodeId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }, 30)
+    },
+    [current],
+  )
+
+  const handleRunBacktest = useCallback(async () => {
+    setBacktestStatus('running')
+    setBacktestFocusNodeId(null)
+    setBacktestResult(null)
+    setBacktestErrors([])
+
+    const inputs = collectBacktestInputs(current)
+    if (inputs.errors.length > 0) {
+      setBacktestErrors(inputs.errors)
+      setBacktestStatus('error')
+      return
+    }
+
+    if (inputs.tickers.length === 0) {
+      setBacktestErrors([{ nodeId: current.id, field: 'tickers', message: 'No tickers found in this strategy.' }])
+      setBacktestStatus('error')
+      return
+    }
+
+    const decisionPrice: EvalCtx['decisionPrice'] = backtestMode === 'CC' || backtestMode === 'CO' ? 'close' : 'open'
+    const limit = 20000
+
+    try {
+      const loaded = await Promise.all(
+        inputs.tickers.map(async (t) => ({ ticker: t, bars: await fetchOhlcSeries(t, limit) })),
+      )
+
+      const db = buildPriceDb(loaded)
+      if (db.dates.length < 3) {
+        setBacktestErrors([{ nodeId: current.id, field: 'data', message: 'Not enough overlapping price data to run a backtest.' }])
+        setBacktestStatus('error')
+        return
+      }
+
+      const cache = emptyCache()
+      const warnings: BacktestWarning[] = []
+
+      const allocationsAt: Allocation[] = []
+      for (let i = 0; i < db.dates.length; i++) {
+        const indicatorIndex = decisionPrice === 'open' ? i - 1 : i
+        const ctx: EvalCtx = { db, cache, decisionIndex: i, indicatorIndex, decisionPrice, warnings }
+        allocationsAt.push(evaluateNode(ctx, current))
+      }
+
+      const points: EquityPoint[] = [{ time: db.dates[0], value: 1 }]
+      const markers: EquityMarker[] = []
+      const allocations: BacktestAllocationRow[] = []
+      const returns: number[] = []
+
+      let equity = 1
+      for (let end = 1; end < db.dates.length; end++) {
+        let start = end - 1
+        if (backtestMode === 'OC') start = end
+
+        if (start < 0 || start >= db.dates.length) continue
+        if (backtestMode === 'OC' && end === 0) continue
+
+        const alloc = allocationsAt[start] || {}
+        const prevAlloc = start - 1 >= 0 ? allocationsAt[start - 1] || {} : {}
+        const turnover = turnoverFraction(prevAlloc, alloc)
+        const cost = (Math.max(0, backtestCostBps) / 10000) * turnover
+
+        let gross = 0
+        for (const [ticker, w] of Object.entries(alloc)) {
+          if (!(w > 0)) continue
+          const t = getSeriesKey(ticker)
+
+          const openArr = db.open[t]
+          const closeArr = db.close[t]
+
+          const entry =
+            backtestMode === 'OO'
+              ? openArr?.[start]
+              : backtestMode === 'CC'
+                ? closeArr?.[start]
+                : backtestMode === 'CO'
+                  ? closeArr?.[start]
+                  : openArr?.[start]
+          const exit =
+            backtestMode === 'OO'
+              ? openArr?.[end]
+              : backtestMode === 'CC'
+                ? closeArr?.[end]
+                : backtestMode === 'CO'
+                  ? openArr?.[end]
+                  : closeArr?.[start]
+
+          if (entry == null || exit == null || !(entry > 0) || !(exit > 0)) {
+            const date = isoFromUtcSeconds(db.dates[end])
+            warnings.push({ time: db.dates[end], date, message: `Broken ticker ${t} on ${date} (missing price). Return forced to 0.` })
+            markers.push({ time: db.dates[end], text: `Missing ${t}` })
+            continue
+          }
+
+          gross += w * (exit / entry - 1)
+        }
+
+        const net = gross - cost
+        equity *= 1 + net
+        points.push({ time: db.dates[end], value: equity })
+        returns.push(net)
+
+        allocations.push({
+          date: isoFromUtcSeconds(db.dates[end]),
+          entries: allocEntries(alloc),
+        })
+      }
+
+      const metrics = computeMetrics(points.map((p) => p.value), returns)
+
+      setBacktestResult({
+        points,
+        markers,
+        metrics,
+        allocations,
+        warnings,
+      })
+      setBacktestStatus('done')
+    } catch (e) {
+      const msg = String((e as Error)?.message || e)
+      const m = msg.includes('Failed to fetch') ? `${msg}. Is the backend running? (npm run api)` : msg
+      setBacktestErrors([{ nodeId: current.id, field: 'backtest', message: m }])
+      setBacktestStatus('error')
+    }
+  }, [current, backtestMode, backtestCostBps])
 
   const handleNewBot = () => {
     const bot = createBotSession('Algo Name Here')
@@ -2952,42 +4290,64 @@ const handleColorChange = useCallback(
           </button>
         </div>
       </header>
+      {tickerApiError && (
+        <div className="api-warning">
+          <span>{tickerApiError}</span>
+        </div>
+      )}
       <TickerDatalist id={TICKER_DATALIST_ID} options={tickerOptions} />
       <main className="canvas">
         {tab === 'Build' ? (
-          <NodeCard
-            node={current}
-            depth={0}
-            tickerOptions={tickerOptions}
-            onAdd={handleAdd}
-            onAppend={handleAppend}
-            onRemoveSlotEntry={handleRemoveSlotEntry}
-            onDelete={handleDelete}
-            onCopy={handleCopy}
-            onPaste={handlePaste}
-            onRename={handleRename}
-             onWeightChange={handleWeightChange}
-             onColorChange={handleColorChange}
-             onToggleCollapse={handleToggleCollapse}
-             onNumberedQuantifier={handleNumberedQuantifier}
-             onNumberedN={handleNumberedN}
-             onAddNumberedItem={handleAddNumberedItem}
-             onDeleteNumberedItem={handleDeleteNumberedItem}
-             onAddCondition={handleAddCondition}
-             onDeleteCondition={handleDeleteCondition}
-             onFunctionWindow={handleFunctionWindow}
-             onFunctionBottom={handleFunctionBottom}
-             onFunctionMetric={handleFunctionMetric}
-             onFunctionRank={handleFunctionRank}
-             onUpdateCondition={(id, condId, updates, itemId) => {
-               const next = updateConditionFields(current, id, condId, updates, itemId)
-               push(next)
-             }}
-            onAddPosition={handleAddPos}
-            onRemovePosition={handleRemovePos}
-            onChoosePosition={handleChoosePos}
-            clipboard={clipboard}
-          />
+          <div className="build-layout">
+            <BacktesterPanel
+              mode={backtestMode}
+              setMode={setBacktestMode}
+              costBps={backtestCostBps}
+              setCostBps={setBacktestCostBps}
+              status={backtestStatus}
+              result={backtestResult}
+              errors={backtestErrors}
+              onRun={handleRunBacktest}
+              onJumpToError={handleJumpToBacktestError}
+            />
+            <NodeCard
+              node={current}
+              depth={0}
+              errorNodeIds={backtestErrorNodeIds}
+              focusNodeId={backtestFocusNodeId}
+              tickerOptions={tickerOptions}
+              onAdd={handleAdd}
+              onAppend={handleAppend}
+              onRemoveSlotEntry={handleRemoveSlotEntry}
+              onDelete={handleDelete}
+              onCopy={handleCopy}
+              onPaste={handlePaste}
+              onRename={handleRename}
+              onWeightChange={handleWeightChange}
+              onUpdateCappedFallback={handleUpdateCappedFallback}
+              onUpdateVolWindow={handleUpdateVolWindow}
+              onColorChange={handleColorChange}
+              onToggleCollapse={handleToggleCollapse}
+              onNumberedQuantifier={handleNumberedQuantifier}
+              onNumberedN={handleNumberedN}
+              onAddNumberedItem={handleAddNumberedItem}
+              onDeleteNumberedItem={handleDeleteNumberedItem}
+              onAddCondition={handleAddCondition}
+              onDeleteCondition={handleDeleteCondition}
+              onFunctionWindow={handleFunctionWindow}
+              onFunctionBottom={handleFunctionBottom}
+              onFunctionMetric={handleFunctionMetric}
+              onFunctionRank={handleFunctionRank}
+              onUpdateCondition={(id, condId, updates, itemId) => {
+                const next = updateConditionFields(current, id, condId, updates, itemId)
+                push(next)
+              }}
+              onAddPosition={handleAddPos}
+              onRemovePosition={handleRemovePos}
+              onChoosePosition={handleChoosePos}
+              clipboard={clipboard}
+            />
+          </div>
         ) : tab === 'Admin' ? (
           <AdminPanel
             adminTab={adminTab}
