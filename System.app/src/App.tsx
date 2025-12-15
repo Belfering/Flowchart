@@ -500,6 +500,20 @@ type EquityMarker = { time: UTCTimestamp; text: string }
 
 type VisibleRange = { from: UTCTimestamp; to: UTCTimestamp }
 
+const toUtcSeconds = (t: any): UTCTimestamp | null => {
+  if (typeof t === 'number' && Number.isFinite(t)) return t as UTCTimestamp
+  if (t && typeof t === 'object') {
+    const y = Number((t as any).year)
+    const m = Number((t as any).month)
+    const d = Number((t as any).day)
+    if (Number.isFinite(y) && Number.isFinite(m) && Number.isFinite(d)) {
+      const ms = Date.UTC(y, m - 1, d)
+      return Math.floor(ms / 1000) as UTCTimestamp
+    }
+  }
+  return null
+}
+
 const clampVisibleRangeToPoints = (points: EquityPoint[], range: VisibleRange): VisibleRange => {
   const times = (points || []).map((p) => Number(p.time)).filter(Number.isFinite)
   if (times.length === 0) return range
@@ -725,10 +739,10 @@ function EquityChart({
     const unsubscribeRange = (chart.timeScale() as any).subscribeVisibleTimeRangeChange?.((r: any) => {
       const cb = onVisibleRangeChangeRef.current
       if (!cb || !r) return
-      const from = r.from
-      const to = r.to
-      if (typeof from !== 'number' || typeof to !== 'number') return
-      const next = { from: from as UTCTimestamp, to: to as UTCTimestamp }
+      const from = toUtcSeconds(r.from)
+      const to = toUtcSeconds(r.to)
+      if (!from || !to) return
+      const next = { from, to }
       const key = `${Number(next.from)}:${Number(next.to)}`
       if (key === lastEmittedRangeKeyRef.current) return
       lastEmittedRangeKeyRef.current = key
@@ -882,10 +896,10 @@ function DrawdownChart({
     const unsubscribeRange = (chart.timeScale() as any).subscribeVisibleTimeRangeChange?.((r: any) => {
       const cb = onVisibleRangeChangeRef.current
       if (!cb || !r) return
-      const from = r.from
-      const to = r.to
-      if (typeof from !== 'number' || typeof to !== 'number') return
-      const next = { from: from as UTCTimestamp, to: to as UTCTimestamp }
+      const from = toUtcSeconds(r.from)
+      const to = toUtcSeconds(r.to)
+      if (!from || !to) return
+      const next = { from, to }
       const key = `${Number(next.from)}:${Number(next.to)}`
       if (key === lastEmittedRangeKeyRef.current) return
       lastEmittedRangeKeyRef.current = key
@@ -1121,13 +1135,13 @@ function RangeNavigator({
       toX = Math.max(0, Math.min(drag.containerWidth, toX))
     }
 
-    const fromT = (chart.timeScale() as any).coordinateToTime?.(fromX)
-    const toT = (chart.timeScale() as any).coordinateToTime?.(toX)
-    if (!(typeof fromT === 'number' && typeof toT === 'number')) return
+    const fromT = toUtcSeconds((chart.timeScale() as any).coordinateToTime?.(fromX))
+    const toT = toUtcSeconds((chart.timeScale() as any).coordinateToTime?.(toX))
+    if (!fromT || !toT) return
 
     const pts = pointsRef.current
     if (!pts.length) return
-    const next = clampVisibleRangeToPoints(pts, { from: fromT as UTCTimestamp, to: toT as UTCTimestamp })
+    const next = clampVisibleRangeToPoints(pts, { from: fromT, to: toT })
     onChangeRef.current(next)
   }, [])
 
@@ -1177,8 +1191,8 @@ function RangeNavigator({
       if (!chart || !el) return
       const rect = el.getBoundingClientRect()
       const x = Math.max(0, Math.min(rect.width, e.clientX - rect.left))
-      const clicked = (chart.timeScale() as any).coordinateToTime?.(x)
-      if (typeof clicked !== 'number') return
+      const clicked = toUtcSeconds((chart.timeScale() as any).coordinateToTime?.(x))
+      if (!clicked) return
 
       const prev = rangeRef.current
       const half = (Number(prev.to) - Number(prev.from)) / 2
@@ -4631,6 +4645,10 @@ function BacktesterPanel({
   const [tab, setTab] = useState<'Overview' | 'Allocations' | 'Rebalances' | 'Warnings'>('Overview')
   const [selectedRange, setSelectedRange] = useState<VisibleRange | null>(null)
   const [logScale, setLogScale] = useState(false)
+  const [rangePickerOpen, setRangePickerOpen] = useState(false)
+  const [rangeStart, setRangeStart] = useState<string>('')
+  const [rangeEnd, setRangeEnd] = useState<string>('')
+  const rangePickerRef = useRef<HTMLDivElement | null>(null)
   const benchmarkKnown = useMemo(() => {
     const t = normalizeChoice(benchmark)
     if (!t || t === 'Empty') return false
@@ -4652,6 +4670,24 @@ function BacktesterPanel({
     }
     setSelectedRange({ from: points[0].time, to: points[points.length - 1].time })
   }, [points.length])
+
+  useEffect(() => {
+    if (!rangePickerOpen || !visibleRange) return
+    setRangeStart(isoFromUtcSeconds(visibleRange.from))
+    setRangeEnd(isoFromUtcSeconds(visibleRange.to))
+  }, [rangePickerOpen, visibleRange])
+
+  useEffect(() => {
+    if (!rangePickerOpen) return
+    const onDown = (e: MouseEvent) => {
+      const el = rangePickerRef.current
+      if (!el) return
+      if (e.target && el.contains(e.target as Node)) return
+      setRangePickerOpen(false)
+    }
+    window.addEventListener('mousedown', onDown)
+    return () => window.removeEventListener('mousedown', onDown)
+  }, [rangePickerOpen])
 
   const rangeLabel = useMemo(() => {
     if (!visibleRange) return { start: '', end: '' }
@@ -4716,6 +4752,22 @@ function BacktesterPanel({
     },
     [points],
   )
+
+  const applyCustomRange = useCallback(() => {
+    if (!points.length) return
+    if (!rangeStart || !rangeEnd) return
+    const parse = (s: string) => {
+      const [yy, mm, dd] = s.split('-').map((x) => Number(x))
+      if (!(Number.isFinite(yy) && Number.isFinite(mm) && Number.isFinite(dd))) return null
+      return Math.floor(Date.UTC(yy, mm - 1, dd) / 1000) as UTCTimestamp
+    }
+    const from0 = parse(rangeStart)
+    const to0 = parse(rangeEnd)
+    if (!from0 || !to0) return
+    const clamped = clampVisibleRangeToPoints(points, { from: from0, to: to0 })
+    setSelectedRange(clamped)
+    setRangePickerOpen(false)
+  }, [points, rangeEnd, rangeStart])
 
   const allocationSeries = useMemo(() => {
     const days = result?.days || []
@@ -4923,8 +4975,28 @@ function BacktesterPanel({
             <div className="drawdown-wrap">
               <div className="drawdown-head">
                 <div style={{ fontWeight: 900 }}>Drawdown</div>
-                <div className="range-label">
-                  {rangeLabel.start} → {rangeLabel.end}
+                <div className="range-picker" ref={rangePickerRef}>
+                  <button className="range-pill" onClick={() => setRangePickerOpen((v) => !v)}>
+                    {rangeLabel.start} → {rangeLabel.end}
+                  </button>
+                  {rangePickerOpen ? (
+                    <div className="range-popover" role="dialog" aria-label="Choose date range">
+                      <div className="range-popover-row">
+                        <label className="range-field">
+                          <span>Start</span>
+                          <input type="date" value={rangeStart} onChange={(e) => setRangeStart(e.target.value)} />
+                        </label>
+                        <label className="range-field">
+                          <span>End</span>
+                          <input type="date" value={rangeEnd} onChange={(e) => setRangeEnd(e.target.value)} />
+                        </label>
+                      </div>
+                      <div className="range-popover-actions">
+                        <button onClick={() => setRangePickerOpen(false)}>Cancel</button>
+                        <button onClick={applyCustomRange}>Apply</button>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               </div>
               <DrawdownChart
