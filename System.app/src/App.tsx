@@ -2415,10 +2415,7 @@ const NodeCard = ({
                 style={{
                   width:
                     depthPx * 1 +
-                    10 +
-                    (slot === 'then' || slot === 'else' ? 10 : 0) +
-                    (node.kind === 'basic' && slot === 'next' ? 3 * 10 : 0) +
-                    ((node.kind === 'indicator' || node.kind === 'numbered') && (slot === 'then' || slot === 'else') ? 2 * 10 : 0),
+                    14,
                 }}
               />
               <div className="slot-body">
@@ -2472,10 +2469,7 @@ const NodeCard = ({
                 style={{
                   width:
                     depthPx * 1 +
-                    10 +
-                    (slot === 'then' || slot === 'else' ? 10 : 0) +
-                    (node.kind === 'basic' && slot === 'next' ? 3 * 10 : 0) +
-                    ((node.kind === 'indicator' || node.kind === 'numbered') && (slot === 'then' || slot === 'else') ? 2 * 10 : 0),
+                    14,
                 }}
               />
               <div className="add-row">
