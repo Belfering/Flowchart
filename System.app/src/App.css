@@ -289,25 +289,7 @@ h1 {
   font-size: 12px;
 }
 
-.chart-toggles {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  display: flex;
-  gap: 6px;
-  z-index: 2;
-}
-
-.chart-toggles button {
-  border: 1px solid #cbd5e1;
-  background: rgba(248, 250, 252, 0.95);
-  padding: 6px 10px;
-  border-radius: 999px;
-  font-weight: 900;
-  font-size: 12px;
-}
-
-.chart-toggles button.active {
+.chart-presets button.active {
   border-color: #38bdf8;
   background: #e0f2fe;
   color: #075985;

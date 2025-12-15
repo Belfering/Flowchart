@@ -646,7 +646,7 @@ function EquityChart({
 
     const chart = createChart(el, {
       width: Math.floor(innerWidth()),
-      height: 260,
+      height: 1040,
       layout: { background: { type: ColorType.Solid, color: '#ffffff' }, textColor: '#0f172a' },
       grid: { vertLines: { color: '#eef2f7' }, horzLines: { color: '#eef2f7' } },
       rightPriceScale: { borderColor: '#cbd5e1', mode: logScale ? PriceScaleMode.Logarithmic : PriceScaleMode.Normal },
@@ -798,7 +798,7 @@ function EquityChart({
       ref={containerRef}
       style={{
         width: '100%',
-        height: 260,
+        height: 1040,
         borderRadius: 14,
         border: '1px solid #cbd5e1',
         overflow: 'hidden',
@@ -843,7 +843,7 @@ function DrawdownChart({
 
     const chart = createChart(el, {
       width: Math.floor(innerWidth()),
-      height: 260,
+      height: 130,
       layout: { background: { type: ColorType.Solid, color: '#ffffff' }, textColor: '#0f172a' },
       grid: { vertLines: { color: '#eef2f7' }, horzLines: { color: '#eef2f7' } },
       rightPriceScale: { borderColor: '#cbd5e1' },
@@ -914,7 +914,7 @@ function DrawdownChart({
       ref={containerRef}
       style={{
         width: '100%',
-        height: 260,
+        height: 130,
         borderRadius: 14,
         border: '1px solid #cbd5e1',
         overflow: 'hidden',
@@ -4884,8 +4884,6 @@ function BacktesterPanel({
                 <button onClick={() => applyPreset('1y')}>1yr</button>
                 <button onClick={() => applyPreset('5y')}>5yr</button>
                 <button onClick={() => applyPreset('max')}>Max</button>
-              </div>
-              <div className="chart-toggles">
                 <button className={logScale ? 'active' : ''} onClick={() => setLogScale((v) => !v)}>
                   Log
                 </button>
