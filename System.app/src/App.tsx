@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
-import { CandlestickSeries, ColorType, LineSeries, createChart, type CandlestickData, type IChartApi, type ISeriesApi, type UTCTimestamp } from 'lightweight-charts'
+import { AreaSeries, CandlestickSeries, ColorType, LineSeries, createChart, type CandlestickData, type IChartApi, type ISeriesApi, type UTCTimestamp } from 'lightweight-charts'
 
 type BlockKind = 'basic' | 'function' | 'indicator' | 'numbered' | 'position'
 type SlotId = 'next' | 'then' | 'else'
@@ -428,7 +428,19 @@ function CandlesChart({ candles }: { candles: CandlestickData[] }) {
     const el = containerRef.current
     if (!el) return
 
+    const innerWidth = () => {
+      const { width } = el.getBoundingClientRect()
+      const cs = getComputedStyle(el)
+      const border =
+        parseFloat(cs.borderLeftWidth || '0') +
+        parseFloat(cs.borderRightWidth || '0') +
+        parseFloat(cs.paddingLeft || '0') +
+        parseFloat(cs.paddingRight || '0')
+      return Math.max(0, width - border)
+    }
+
     const chart = createChart(el, {
+      width: Math.floor(innerWidth()),
       height: 420,
       layout: { background: { type: ColorType.Solid, color: '#ffffff' }, textColor: '#0f172a' },
       grid: { vertLines: { color: '#eef2f7' }, horzLines: { color: '#eef2f7' } },
@@ -440,8 +452,7 @@ function CandlesChart({ candles }: { candles: CandlestickData[] }) {
     seriesRef.current = series
 
     const ro = new ResizeObserver(() => {
-      const { width } = el.getBoundingClientRect()
-      chart.applyOptions({ width: Math.floor(width) })
+      chart.applyOptions({ width: Math.floor(innerWidth()) })
     })
     ro.observe(el)
 
@@ -459,35 +470,235 @@ function CandlesChart({ candles }: { candles: CandlestickData[] }) {
     chartRef.current?.timeScale().fitContent()
   }, [candles])
 
-  return <div ref={containerRef} style={{ width: '100%', borderRadius: 14, border: '1px solid #cbd5e1', overflow: 'hidden' }} />
+  return (
+    <div
+      ref={containerRef}
+      style={{
+        width: '100%',
+        height: 420,
+        borderRadius: 14,
+        border: '1px solid #cbd5e1',
+        overflow: 'hidden',
+      }}
+    />
+  )
 }
 
 type EquityPoint = { time: UTCTimestamp; value: number }
 type EquityMarker = { time: UTCTimestamp; text: string }
 
-function EquityChart({ points, markers }: { points: EquityPoint[]; markers: EquityMarker[] }) {
+type VisibleRange = { from: UTCTimestamp; to: UTCTimestamp }
+
+const sanitizeSeriesPoints = (points: EquityPoint[], opts?: { clampMin?: number; clampMax?: number }) => {
+  const out: EquityPoint[] = []
+  let lastTime = -Infinity
+  const min = opts?.clampMin
+  const max = opts?.clampMax
+  for (const p of points || []) {
+    const time = Number(p.time)
+    let value = Number(p.value)
+    if (!Number.isFinite(time) || !Number.isFinite(value)) continue
+    if (time <= lastTime) continue
+    if (min != null) value = Math.max(min, value)
+    if (max != null) value = Math.min(max, value)
+    out.push({ time: time as UTCTimestamp, value })
+    lastTime = time
+  }
+  return out
+}
+
+function EquityChart({
+  points,
+  benchmarkPoints,
+  markers,
+  onHoverTime,
+  visibleRange,
+}: {
+  points: EquityPoint[]
+  benchmarkPoints?: EquityPoint[]
+  markers: EquityMarker[]
+  onHoverTime?: (t: UTCTimestamp | null) => void
+  visibleRange?: VisibleRange
+}) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const seriesRef = useRef<ISeriesApi<'Line'> | null>(null)
+  const benchRef = useRef<ISeriesApi<'Line'> | null>(null)
+  const tooltipRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
 
+    el.style.position = 'relative'
+
+    const innerWidth = () => {
+      const { width } = el.getBoundingClientRect()
+      const cs = getComputedStyle(el)
+      const border =
+        parseFloat(cs.borderLeftWidth || '0') +
+        parseFloat(cs.borderRightWidth || '0') +
+        parseFloat(cs.paddingLeft || '0') +
+        parseFloat(cs.paddingRight || '0')
+      return Math.max(0, width - border)
+    }
+
     const chart = createChart(el, {
+      width: Math.floor(innerWidth()),
       height: 260,
       layout: { background: { type: ColorType.Solid, color: '#ffffff' }, textColor: '#0f172a' },
       grid: { vertLines: { color: '#eef2f7' }, horzLines: { color: '#eef2f7' } },
       rightPriceScale: { borderColor: '#cbd5e1' },
-      timeScale: { borderColor: '#cbd5e1' },
+      timeScale: { borderColor: '#cbd5e1', rightOffset: 0, fixLeftEdge: true, fixRightEdge: true },
     })
     const series = chart.addSeries(LineSeries, { color: '#0ea5e9', lineWidth: 2 })
+    const bench = chart.addSeries(LineSeries, { color: '#64748b', lineWidth: 2, lineStyle: 2 })
+    chartRef.current = chart
+    seriesRef.current = series
+    benchRef.current = bench
+
+    const tooltip = document.createElement('div')
+    tooltip.style.position = 'absolute'
+    tooltip.style.display = 'none'
+    tooltip.style.pointerEvents = 'none'
+    tooltip.style.top = '12px'
+    tooltip.style.left = '12px'
+    tooltip.style.padding = '8px 10px'
+    tooltip.style.borderRadius = '10px'
+    tooltip.style.border = '1px solid #cbd5e1'
+    tooltip.style.background = 'rgba(255,255,255,0.95)'
+    tooltip.style.boxShadow = '0 8px 20px rgba(15, 23, 42, 0.12)'
+    tooltip.style.fontWeight = '800'
+    tooltip.style.fontSize = '12px'
+    tooltip.style.color = '#0f172a'
+    el.appendChild(tooltip)
+    tooltipRef.current = tooltip
+
+    chart.subscribeCrosshairMove((param: any) => {
+      const time = param?.time
+      if (!time || typeof time !== 'number') {
+        tooltip.style.display = 'none'
+        onHoverTime?.(null)
+        return
+      }
+      const p = param.seriesData?.get(series)
+      const b = param.seriesData?.get(bench)
+      const pv = p?.value ?? p?.close ?? null
+      const bv = b?.value ?? b?.close ?? null
+      tooltip.style.display = 'block'
+      tooltip.innerHTML = `${isoFromUtcSeconds(time)}<br/>Equity: ${pv != null ? Number(pv).toFixed(4) : '—'}${
+        benchmarkPoints && bv != null ? `<br/>Benchmark: ${Number(bv).toFixed(4)}` : ''
+      }`
+      onHoverTime?.(time as UTCTimestamp)
+    })
+
+    const ro = new ResizeObserver(() => {
+      chart.applyOptions({ width: Math.floor(innerWidth()) })
+    })
+    ro.observe(el)
+
+    return () => {
+      ro.disconnect()
+      try {
+        tooltip.remove()
+      } catch {
+        // ignore
+      }
+      chart.remove()
+      chartRef.current = null
+      seriesRef.current = null
+      benchRef.current = null
+      tooltipRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!seriesRef.current) return
+    const main = sanitizeSeriesPoints(points)
+    seriesRef.current.setData(main as any)
+    ;(seriesRef.current as any).setMarkers?.(
+      (markers || []).slice(0, 80).map((m) => ({
+        time: m.time,
+        position: 'aboveBar',
+        color: '#b91c1c',
+        shape: 'circle',
+        text: m.text,
+      })) as any,
+    )
+    if (benchRef.current) {
+      if (benchmarkPoints && benchmarkPoints.length > 0) {
+        benchRef.current.setData(sanitizeSeriesPoints(benchmarkPoints) as any)
+      } else {
+        benchRef.current.setData([] as any)
+      }
+    }
+    const chart = chartRef.current
+    if (!chart) return
+    if (visibleRange) {
+      chart.timeScale().setVisibleRange(visibleRange as any)
+      return
+    }
+    if (main.length > 1) {
+      chart.timeScale().setVisibleRange({ from: main[0].time, to: main[main.length - 1].time } as any)
+      return
+    }
+    chart.timeScale().fitContent()
+  }, [points, benchmarkPoints, markers, visibleRange])
+
+  return (
+    <div
+      ref={containerRef}
+      style={{
+        width: '100%',
+        height: 260,
+        borderRadius: 14,
+        border: '1px solid #cbd5e1',
+        overflow: 'hidden',
+      }}
+    />
+  )
+}
+
+function DrawdownChart({ points, visibleRange }: { points: EquityPoint[]; visibleRange?: VisibleRange }) {
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const chartRef = useRef<IChartApi | null>(null)
+  const seriesRef = useRef<ISeriesApi<'Area'> | null>(null)
+
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+
+    const innerWidth = () => {
+      const { width } = el.getBoundingClientRect()
+      const cs = getComputedStyle(el)
+      const border =
+        parseFloat(cs.borderLeftWidth || '0') +
+        parseFloat(cs.borderRightWidth || '0') +
+        parseFloat(cs.paddingLeft || '0') +
+        parseFloat(cs.paddingRight || '0')
+      return Math.max(0, width - border)
+    }
+
+    const chart = createChart(el, {
+      width: Math.floor(innerWidth()),
+      height: 180,
+      layout: { background: { type: ColorType.Solid, color: '#ffffff' }, textColor: '#0f172a' },
+      grid: { vertLines: { color: '#eef2f7' }, horzLines: { color: '#eef2f7' } },
+      rightPriceScale: { borderColor: '#cbd5e1' },
+      timeScale: { borderColor: '#cbd5e1', rightOffset: 0, fixLeftEdge: true, fixRightEdge: true },
+    })
+    const series = chart.addSeries(AreaSeries, {
+      lineColor: '#ef4444',
+      topColor: 'rgba(239, 68, 68, 0.22)',
+      bottomColor: 'rgba(239, 68, 68, 0.02)',
+      lineWidth: 2,
+      priceFormat: { type: 'percent', precision: 2, minMove: 0.01 },
+    } as any)
     chartRef.current = chart
     seriesRef.current = series
 
     const ro = new ResizeObserver(() => {
-      const { width } = el.getBoundingClientRect()
-      chart.applyOptions({ width: Math.floor(width) })
+      chart.applyOptions({ width: Math.floor(innerWidth()) })
     })
     ro.observe(el)
 
@@ -501,20 +712,126 @@ function EquityChart({ points, markers }: { points: EquityPoint[]; markers: Equi
 
   useEffect(() => {
     if (!seriesRef.current) return
-    seriesRef.current.setData(points as any)
-    ;(seriesRef.current as any).setMarkers?.(
-      (markers || []).slice(0, 80).map((m) => ({
-        time: m.time,
-        position: 'aboveBar',
-        color: '#b91c1c',
-        shape: 'circle',
-        text: m.text,
-      })) as any,
-    )
-    chartRef.current?.timeScale().fitContent()
-  }, [points, markers])
+    const dd = sanitizeSeriesPoints(points, { clampMin: -0.9999, clampMax: 0 })
+    seriesRef.current.setData(dd as any)
+    const chart = chartRef.current
+    if (!chart) return
+    if (visibleRange) {
+      chart.timeScale().setVisibleRange(visibleRange as any)
+      return
+    }
+    if (dd.length > 1) {
+      chart.timeScale().setVisibleRange({ from: dd[0].time, to: dd[dd.length - 1].time } as any)
+      return
+    }
+    chart.timeScale().fitContent()
+  }, [points, visibleRange])
 
-  return <div ref={containerRef} style={{ width: '100%', borderRadius: 14, border: '1px solid #cbd5e1', overflow: 'hidden' }} />
+  return (
+    <div
+      ref={containerRef}
+      style={{
+        width: '100%',
+        height: 180,
+        borderRadius: 14,
+        border: '1px solid #cbd5e1',
+        overflow: 'hidden',
+      }}
+    />
+  )
+}
+
+function AllocationChart({
+  series,
+  visibleRange,
+}: {
+  series: Array<{ name: string; color: string; points: EquityPoint[] }>
+  visibleRange?: VisibleRange
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const chartRef = useRef<IChartApi | null>(null)
+  const seriesRefs = useRef<Array<ISeriesApi<'Line'>>>([])
+
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+
+    const innerWidth = () => {
+      const { width } = el.getBoundingClientRect()
+      const cs = getComputedStyle(el)
+      const border =
+        parseFloat(cs.borderLeftWidth || '0') +
+        parseFloat(cs.borderRightWidth || '0') +
+        parseFloat(cs.paddingLeft || '0') +
+        parseFloat(cs.paddingRight || '0')
+      return Math.max(0, width - border)
+    }
+
+    const chart = createChart(el, {
+      width: Math.floor(innerWidth()),
+      height: 240,
+      layout: { background: { type: ColorType.Solid, color: '#ffffff' }, textColor: '#0f172a' },
+      grid: { vertLines: { color: '#eef2f7' }, horzLines: { color: '#eef2f7' } },
+      rightPriceScale: { borderColor: '#cbd5e1' },
+      timeScale: { borderColor: '#cbd5e1', rightOffset: 0, fixLeftEdge: true, fixRightEdge: true },
+    })
+    chartRef.current = chart
+
+    const ro = new ResizeObserver(() => {
+      chart.applyOptions({ width: Math.floor(innerWidth()) })
+    })
+    ro.observe(el)
+
+    return () => {
+      ro.disconnect()
+      chart.remove()
+      chartRef.current = null
+      seriesRefs.current = []
+    }
+  }, [])
+
+  useEffect(() => {
+    const chart = chartRef.current
+    if (!chart) return
+
+    for (const s of seriesRefs.current) {
+      try {
+        ;(chart as any).removeSeries?.(s)
+      } catch {
+        // ignore
+      }
+    }
+    seriesRefs.current = []
+
+    for (const s of series) {
+      const line = chart.addSeries(LineSeries, {
+        color: s.color,
+        lineWidth: 2,
+        priceFormat: { type: 'percent', precision: 2, minMove: 0.01 },
+      })
+      line.setData(sanitizeSeriesPoints(s.points, { clampMin: 0, clampMax: 1 }) as any)
+      seriesRefs.current.push(line)
+    }
+
+    if (visibleRange) {
+      chart.timeScale().setVisibleRange(visibleRange as any)
+    } else {
+      chart.timeScale().fitContent()
+    }
+  }, [series, visibleRange])
+
+  return (
+    <div
+      ref={containerRef}
+      style={{
+        width: '100%',
+        height: 240,
+        borderRadius: 14,
+        border: '1px solid #cbd5e1',
+        overflow: 'hidden',
+      }}
+    />
+  )
 }
 
 function AdminDataPanel({
@@ -2766,15 +3083,178 @@ type BacktestAllocationRow = {
   entries: Array<{ ticker: string; weight: number }>
 }
 
+type BacktestDayRow = {
+  time: UTCTimestamp
+  date: string
+  equity: number
+  drawdown: number
+  grossReturn: number
+  netReturn: number
+  turnover: number
+  cost: number
+  holdings: Array<{ ticker: string; weight: number }>
+}
+
 type BacktestResult = {
   points: EquityPoint[]
+  benchmarkPoints?: EquityPoint[]
+  drawdownPoints: EquityPoint[]
   markers: EquityMarker[]
-  metrics: { cagr: number; maxDrawdown: number; sharpe: number; days: number }
+  metrics: {
+    startDate: string
+    endDate: string
+    days: number
+    years: number
+    totalReturn: number
+    cagr: number
+    vol: number
+    maxDrawdown: number
+    sharpe: number
+    winRate: number
+    bestDay: number
+    worstDay: number
+    avgTurnover: number
+    avgHoldings: number
+  }
+  days: BacktestDayRow[]
   allocations: BacktestAllocationRow[]
   warnings: BacktestWarning[]
+  monthly: Array<{ year: number; month: number; value: number }>
 }
 
 const formatPct = (v: number) => (Number.isFinite(v) ? `${(v * 100).toFixed(2)}%` : '—')
+
+const csvEscape = (v: unknown) => {
+  const s = String(v ?? '')
+  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`
+  return s
+}
+
+const downloadTextFile = (filename: string, text: string, mime = 'text/plain') => {
+  const blob = new Blob([text], { type: mime })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
+
+const downloadEquityCsv = (result: BacktestResult, mode: BacktestMode, costBps: number, benchmark: string, showBenchmark: boolean) => {
+  const benchByTime = new Map<number, number>()
+  for (const p of result.benchmarkPoints || []) benchByTime.set(Number(p.time), Number(p.value))
+  const lines: string[] = []
+  lines.push(
+    [
+      'date',
+      'equity',
+      'drawdown',
+      'gross_return',
+      'net_return',
+      'turnover',
+      'cost',
+      showBenchmark ? 'benchmark_equity' : null,
+      'holdings',
+    ]
+      .filter(Boolean)
+      .join(','),
+  )
+  for (const d of result.days) {
+    const holdings = d.holdings
+      .slice()
+      .sort((a, b) => b.weight - a.weight)
+      .map((h) => `${h.ticker}:${(h.weight * 100).toFixed(2)}%`)
+      .join(' | ')
+    const row: Array<string | number | null> = [
+      d.date,
+      d.equity,
+      d.drawdown,
+      d.grossReturn,
+      d.netReturn,
+      d.turnover,
+      d.cost,
+      showBenchmark ? benchByTime.get(Number(d.time)) ?? null : null,
+      holdings,
+    ]
+    lines.push(row.filter((_, i) => (showBenchmark ? true : i !== 7)).map(csvEscape).join(','))
+  }
+  const name = `equity_${mode}_cost${Math.max(0, costBps)}bps_${normalizeChoice(benchmark || 'SPY')}.csv`
+  downloadTextFile(name, `${lines.join('\n')}\n`, 'text/csv')
+}
+
+const downloadAllocationsCsv = (result: BacktestResult) => {
+  const maxPairs = Math.max(0, ...(result.allocations || []).map((r) => r.entries.length))
+  const header: string[] = ['date']
+  for (let i = 1; i <= maxPairs; i++) {
+    header.push(`ticker_${i}`, `weight_${i}`)
+  }
+  const lines: string[] = [header.join(',')]
+  for (const row of result.allocations || []) {
+    const sorted = row.entries.slice().sort((a, b) => b.weight - a.weight)
+    const flat: Array<string | number> = [row.date]
+    for (let i = 0; i < maxPairs; i++) {
+      const e = sorted[i]
+      flat.push(e ? e.ticker : '', e ? e.weight : '')
+    }
+    lines.push(flat.map(csvEscape).join(','))
+  }
+  downloadTextFile('allocations.csv', `${lines.join('\n')}\n`, 'text/csv')
+}
+
+const downloadRebalancesCsv = (result: BacktestResult) => {
+  const rebalances = (result.days || []).filter((d) => d.turnover > 0.0001)
+  const lines: string[] = ['date,net_return,turnover,cost,holdings']
+  for (const d of rebalances) {
+    const holdings = d.holdings
+      .slice()
+      .sort((a, b) => b.weight - a.weight)
+      .map((h) => `${h.ticker}:${(h.weight * 100).toFixed(2)}%`)
+      .join(' | ')
+    lines.push([d.date, d.netReturn, d.turnover, d.cost, holdings].map(csvEscape).join(','))
+  }
+  downloadTextFile('rebalances.csv', `${lines.join('\n')}\n`, 'text/csv')
+}
+
+const renderMonthlyHeatmap = (monthly: Array<{ year: number; month: number; value: number }>) => {
+  const years = Array.from(new Set(monthly.map((m) => m.year))).sort((a, b) => a - b)
+  const byKey = new Map<string, number>()
+  for (const m of monthly) byKey.set(`${m.year}-${m.month}`, m.value)
+
+  const monthLabels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+  return (
+    <table className="monthly-table">
+      <thead>
+        <tr>
+          <th>Year</th>
+          {monthLabels.map((m) => (
+            <th key={m}>{m}</th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {years.map((y) => (
+          <tr key={y}>
+            <td>{y}</td>
+            {monthLabels.map((_, idx) => {
+              const month = idx + 1
+              const v = byKey.get(`${y}-${month}`)
+              const pct = v == null ? null : v
+              const tone =
+                pct == null ? 'neutral' : pct > 0.03 ? 'pos-3' : pct > 0.01 ? 'pos-2' : pct > 0 ? 'pos-1' : pct < -0.03 ? 'neg-3' : pct < -0.01 ? 'neg-2' : 'neg-1'
+              return (
+                <td key={`${y}-${month}`} className={`month-cell ${tone}`}>
+                  {pct == null ? '' : `${(pct * 100).toFixed(1)}%`}
+                </td>
+              )
+            })}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
+}
 
 const normalizeChoice = (raw: PositionChoice): string => {
   const s = String(raw ?? '').trim().toUpperCase()
@@ -2906,6 +3386,9 @@ const collectBacktestInputs = (root: FlowNode): BacktestInputs => {
       const { mode, volWindow, cappedFallback } = getSlotConfig(node, slot)
       if ((mode === 'inverse' || mode === 'pro') && (!Number.isFinite(volWindow) || volWindow < 1)) {
         addError(node.id, `volWindow.${slot}`, 'Volatility window must be >= 1.')
+      }
+      if (mode === 'inverse' || mode === 'pro') {
+        maxLookback = Math.max(maxLookback, Math.floor(Number(volWindow || 0)))
       }
       if (mode === 'capped') addTicker(cappedFallback, node.id, `cappedFallback.${slot}`)
       const children = (node.children[slot] ?? []).filter((c): c is FlowNode => Boolean(c))
@@ -3417,6 +3900,64 @@ const computeMetrics = (equity: number[], returns: number[]) => {
   return { cagr, maxDrawdown: maxDd, sharpe, days }
 }
 
+const computeMonthlyReturns = (days: BacktestDayRow[]) => {
+  const buckets = new Map<string, { year: number; month: number; acc: number }>()
+  for (const d of days) {
+    const dt = d.date
+    const year = Number(dt.slice(0, 4))
+    const month = Number(dt.slice(5, 7))
+    const key = `${year}-${month}`
+    const prev = buckets.get(key) || { year, month, acc: 1 }
+    prev.acc *= 1 + (Number.isFinite(d.netReturn) ? d.netReturn : 0)
+    buckets.set(key, prev)
+  }
+  return Array.from(buckets.values())
+    .map((b) => ({ year: b.year, month: b.month, value: b.acc - 1 }))
+    .sort((a, b) => (a.year - b.year) || (a.month - b.month))
+}
+
+const computeBacktestSummary = (points: EquityPoint[], drawdowns: number[], days: BacktestDayRow[]) => {
+  const equity = points.map((p) => p.value)
+  const returns = days.map((d) => d.netReturn)
+  const base = computeMetrics(equity, returns)
+
+  const totalReturn = equity.length ? equity[equity.length - 1] - 1 : 0
+  const years = base.days / 252
+
+  const mean = returns.length ? returns.reduce((a, b) => a + b, 0) / returns.length : 0
+  const variance =
+    returns.length > 1 ? returns.reduce((a, b) => a + (b - mean) ** 2, 0) / (returns.length - 1) : 0
+  const dailyStd = Math.sqrt(Math.max(0, variance))
+  const vol = dailyStd * Math.sqrt(252)
+
+  const winRate = returns.length ? returns.filter((r) => r > 0).length / returns.length : 0
+  const bestDay = returns.length ? Math.max(...returns) : 0
+  const worstDay = returns.length ? Math.min(...returns) : 0
+  const avgTurnover = days.length ? days.reduce((a, d) => a + d.turnover, 0) / days.length : 0
+  const avgHoldings = days.length ? days.reduce((a, d) => a + d.holdings.length, 0) / days.length : 0
+
+  const startDate = points.length ? isoFromUtcSeconds(points[0].time) : ''
+  const endDate = points.length ? isoFromUtcSeconds(points[points.length - 1].time) : ''
+  const maxDrawdown = drawdowns.length ? Math.min(...drawdowns) : 0
+
+  return {
+    startDate,
+    endDate,
+    days: base.days,
+    years,
+    totalReturn,
+    cagr: base.cagr,
+    vol,
+    maxDrawdown,
+    sharpe: base.sharpe,
+    winRate,
+    bestDay,
+    worstDay,
+    avgTurnover,
+    avgHoldings,
+  }
+}
+
 const fetchOhlcSeries = async (ticker: string, limit: number): Promise<Array<{ time: UTCTimestamp; open: number; close: number }>> => {
   const t = encodeURIComponent(getSeriesKey(ticker))
   const res = await fetch(`/api/candles/${t}?limit=${encodeURIComponent(String(limit))}`)
@@ -3454,13 +3995,21 @@ const buildPriceDb = (series: Array<{ ticker: string; bars: Array<{ time: UTCTim
 
   if (!(overlapEnd >= overlapStart)) return { dates: [], open: {}, close: {} }
 
-  const dateSet = new Set<number>()
+  let intersection: Set<number> | null = null
   for (const [, map] of byTicker) {
+    const set = new Set<number>()
     for (const time of map.keys()) {
-      if (time >= overlapStart && time <= overlapEnd) dateSet.add(time)
+      if (time >= overlapStart && time <= overlapEnd) set.add(time)
+    }
+    if (intersection == null) {
+      intersection = set
+    } else {
+      const next = new Set<number>()
+      for (const t of intersection) if (set.has(t)) next.add(t)
+      intersection = next
     }
   }
-  const dates = Array.from(dateSet).sort((a, b) => a - b) as UTCTimestamp[]
+  const dates = Array.from(intersection ?? new Set<number>()).sort((a, b) => a - b) as UTCTimestamp[]
 
   const open: Record<string, Array<number | null>> = {}
   const close: Record<string, Array<number | null>> = {}
@@ -3496,6 +4045,11 @@ type BacktesterPanelProps = {
   setMode: (mode: BacktestMode) => void
   costBps: number
   setCostBps: (bps: number) => void
+  benchmark: string
+  setBenchmark: (ticker: string) => void
+  showBenchmark: boolean
+  setShowBenchmark: (show: boolean) => void
+  tickerOptions: string[]
   status: 'idle' | 'running' | 'done' | 'error'
   result: BacktestResult | null
   errors: BacktestError[]
@@ -3508,12 +4062,156 @@ function BacktesterPanel({
   setMode,
   costBps,
   setCostBps,
+  benchmark,
+  setBenchmark,
+  showBenchmark,
+  setShowBenchmark,
+  tickerOptions,
   status,
   result,
   errors,
   onRun,
   onJumpToError,
 }: BacktesterPanelProps) {
+  const [tab, setTab] = useState<'Overview' | 'Allocations' | 'Rebalances' | 'Warnings'>('Overview')
+  const [hoverTime, setHoverTime] = useState<UTCTimestamp | null>(null)
+  const [rangeStartIdx, setRangeStartIdx] = useState<number>(0)
+  const [rangeEndIdx, setRangeEndIdx] = useState<number>(0)
+  const benchmarkKnown = useMemo(() => {
+    const t = normalizeChoice(benchmark)
+    if (!t || t === 'Empty') return false
+    return tickerOptions.includes(t)
+  }, [benchmark, tickerOptions])
+
+  const resultByTime = useMemo(() => {
+    const map = new Map<number, BacktestDayRow>()
+    for (const d of result?.days || []) map.set(Number(d.time), d)
+    return map
+  }, [result])
+
+  const hover = hoverTime != null ? resultByTime.get(Number(hoverTime)) ?? null : null
+
+  const points = result?.points || []
+  const visibleRange = useMemo<VisibleRange | undefined>(() => {
+    if (!points.length) return undefined
+    const start = Math.max(0, Math.min(points.length - 1, Math.floor(rangeStartIdx)))
+    const end = Math.max(0, Math.min(points.length - 1, Math.floor(rangeEndIdx)))
+    const s = Math.min(start, end)
+    const e = Math.max(start, end)
+    if (e <= s) return { from: points[0].time, to: points[points.length - 1].time }
+    return { from: points[s].time, to: points[e].time }
+  }, [points, rangeStartIdx, rangeEndIdx])
+
+  useEffect(() => {
+    if (!points.length) return
+    setRangeStartIdx(0)
+    setRangeEndIdx(points.length - 1)
+  }, [points.length])
+
+  const rangeLabel = useMemo(() => {
+    if (!points.length) return { start: '', end: '' }
+    const s = Math.max(0, Math.min(points.length - 1, Math.floor(rangeStartIdx)))
+    const e = Math.max(0, Math.min(points.length - 1, Math.floor(rangeEndIdx)))
+    const lo = Math.min(s, e)
+    const hi = Math.max(s, e)
+    return { start: isoFromUtcSeconds(points[lo].time), end: isoFromUtcSeconds(points[hi].time) }
+  }, [points, rangeStartIdx, rangeEndIdx])
+
+  const applyPreset = (preset: '1m' | '3m' | '6m' | 'ytd' | '1y' | '5y' | 'max') => {
+    if (!points.length) return
+    const lastTime = Number(points[points.length - 1].time) * 1000
+    const endDate = new Date(lastTime)
+    let startDate: Date
+    switch (preset) {
+      case '1m':
+        startDate = new Date(endDate)
+        startDate.setMonth(startDate.getMonth() - 1)
+        break
+      case '3m':
+        startDate = new Date(endDate)
+        startDate.setMonth(startDate.getMonth() - 3)
+        break
+      case '6m':
+        startDate = new Date(endDate)
+        startDate.setMonth(startDate.getMonth() - 6)
+        break
+      case 'ytd':
+        startDate = new Date(endDate.getFullYear(), 0, 1)
+        break
+      case '1y':
+        startDate = new Date(endDate)
+        startDate.setFullYear(startDate.getFullYear() - 1)
+        break
+      case '5y':
+        startDate = new Date(endDate)
+        startDate.setFullYear(startDate.getFullYear() - 5)
+        break
+      case 'max':
+        setRangeStartIdx(0)
+        setRangeEndIdx(points.length - 1)
+        return
+    }
+    const startSec = Math.floor(startDate.getTime() / 1000)
+    let idx = 0
+    for (let i = 0; i < points.length; i++) {
+      if (Number(points[i].time) >= startSec) {
+        idx = i
+        break
+      }
+    }
+    setRangeStartIdx(idx)
+    setRangeEndIdx(points.length - 1)
+  }
+
+  const allocationSeries = useMemo(() => {
+    const days = result?.days || []
+    if (days.length === 0) return []
+    const totals = new Map<string, number>()
+    for (const d of days) {
+      for (const h of d.holdings) totals.set(h.ticker, (totals.get(h.ticker) || 0) + h.weight)
+    }
+    const ranked = Array.from(totals.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([t]) => t)
+
+    const palette = ['#0ea5e9', '#7c3aed', '#16a34a', '#f97316', '#db2777', '#0891b2', '#eab308', '#dc2626', '#475569', '#4f46e5']
+    const series = ranked.map((ticker, i) => ({
+      name: ticker,
+      color: palette[i % palette.length],
+      points: days.map((d) => ({
+        time: d.time,
+        value: d.holdings.find((h) => h.ticker === ticker)?.weight ?? 0,
+      })) as EquityPoint[],
+    }))
+
+    series.push({
+      name: 'Cash',
+      color: '#94a3b8',
+      points: days.map((d) => {
+        const invested = d.holdings.reduce((a, b) => a + b.weight, 0)
+        return { time: d.time, value: Math.max(0, 1 - invested) }
+      }) as EquityPoint[],
+    })
+
+    return series
+  }, [result])
+
+  const groupedWarnings = useMemo(() => {
+    const out = new Map<string, { message: string; count: number; first?: BacktestWarning; last?: BacktestWarning }>()
+    for (const w of result?.warnings || []) {
+      const key = w.message
+      const prev = out.get(key)
+      if (!prev) out.set(key, { message: key, count: 1, first: w, last: w })
+      else out.set(key, { ...prev, count: prev.count + 1, last: w })
+    }
+    return Array.from(out.values()).sort((a, b) => b.count - a.count)
+  }, [result])
+
+  const rebalanceDays = useMemo(() => {
+    return (result?.days || []).filter((d) => d.turnover > 0.0001)
+  }, [result])
+
   return (
     <section className="backtester-card">
       <div className="backtester-head">
@@ -3541,12 +4239,38 @@ function BacktesterPanel({
               onChange={(e) => setCostBps(Number(e.target.value || 0))}
             />
           </label>
+          <label className="backtester-field">
+            <span>Benchmark</span>
+            <input
+              list={TICKER_DATALIST_ID}
+              value={benchmark}
+              onChange={(e) => setBenchmark(e.target.value)}
+              placeholder="SPY"
+              spellCheck={false}
+              style={{ width: 120 }}
+            />
+          </label>
+          {!benchmarkKnown && benchmark.trim() ? (
+            <div style={{ color: '#b91c1c', fontWeight: 800, fontSize: 12 }}>Unknown ticker</div>
+          ) : null}
+          <label className="backtester-field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <input type="checkbox" checked={showBenchmark} onChange={(e) => setShowBenchmark(e.target.checked)} />
+            <span>Show benchmark</span>
+          </label>
           <button onClick={onRun} disabled={status === 'running'}>
             {status === 'running' ? 'Running…' : 'Run Backtest'}
           </button>
         </div>
       </div>
       <div className="backtester-body">
+        <div className="backtester-tabs">
+          {(['Overview', 'Allocations', 'Rebalances', 'Warnings'] as const).map((t) => (
+            <button key={t} className={`tab-btn ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>
+              {t}
+            </button>
+          ))}
+        </div>
+
         {errors.length > 0 && (
           <div className="backtester-message" style={{ borderColor: '#fecaca', background: '#fef2f2', color: '#991b1b' }}>
             <div style={{ fontWeight: 900, marginBottom: 6 }}>Fix these errors before running:</div>
@@ -3565,28 +4289,130 @@ function BacktesterPanel({
           </div>
         )}
 
-        {result ? (
+        {result && tab === 'Overview' ? (
           <>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
+            <div className="backtester-summary">
               <div className="saved-item">
-                <div style={{ fontWeight: 800 }}>CAGR</div>
+                <div style={{ fontWeight: 900 }}>Date range</div>
+                <div>
+                  {result.metrics.startDate} → {result.metrics.endDate}
+                </div>
+              </div>
+              <div className="saved-item">
+                <div style={{ fontWeight: 900 }}>Total return</div>
+                <div>{formatPct(result.metrics.totalReturn)}</div>
+              </div>
+              <div className="saved-item">
+                <div style={{ fontWeight: 900 }}>CAGR</div>
                 <div>{formatPct(result.metrics.cagr)}</div>
               </div>
               <div className="saved-item">
-                <div style={{ fontWeight: 800 }}>Max Drawdown</div>
+                <div style={{ fontWeight: 900 }}>Max drawdown</div>
                 <div>{formatPct(result.metrics.maxDrawdown)}</div>
               </div>
               <div className="saved-item">
-                <div style={{ fontWeight: 800 }}>Sharpe</div>
+                <div style={{ fontWeight: 900 }}>Sharpe</div>
                 <div>{Number.isFinite(result.metrics.sharpe) ? result.metrics.sharpe.toFixed(2) : '—'}</div>
               </div>
               <div className="saved-item">
-                <div style={{ fontWeight: 800 }}>Days</div>
-                <div>{result.metrics.days}</div>
+                <div style={{ fontWeight: 900 }}>Vol (ann.)</div>
+                <div>{formatPct(result.metrics.vol)}</div>
+              </div>
+              <div className="saved-item">
+                <div style={{ fontWeight: 900 }}>Win rate</div>
+                <div>{formatPct(result.metrics.winRate)}</div>
+              </div>
+              <div className="saved-item">
+                <div style={{ fontWeight: 900 }}>Avg turnover</div>
+                <div>{formatPct(result.metrics.avgTurnover)}</div>
+              </div>
+              <div className="saved-item">
+                <div style={{ fontWeight: 900 }}>Avg holdings</div>
+                <div>{result.metrics.avgHoldings.toFixed(2)}</div>
               </div>
             </div>
 
-            <EquityChart points={result.points} markers={result.markers} />
+            <div className="equity-wrap">
+              <div className="chart-presets">
+                <button onClick={() => applyPreset('1m')}>1m</button>
+                <button onClick={() => applyPreset('3m')}>3m</button>
+                <button onClick={() => applyPreset('6m')}>6m</button>
+                <button onClick={() => applyPreset('ytd')}>YTD</button>
+                <button onClick={() => applyPreset('1y')}>1yr</button>
+                <button onClick={() => applyPreset('5y')}>5yr</button>
+                <button onClick={() => applyPreset('max')}>Max</button>
+              </div>
+              <EquityChart
+                points={result.points}
+                benchmarkPoints={showBenchmark ? result.benchmarkPoints : undefined}
+                markers={result.markers}
+                onHoverTime={setHoverTime}
+                visibleRange={visibleRange}
+              />
+              <div className="range-controls">
+                <div className="range-label">
+                  {rangeLabel.start} → {rangeLabel.end}
+                </div>
+                <div className="range-sliders">
+                  <input
+                    type="range"
+                    min={0}
+                    max={Math.max(0, points.length - 1)}
+                    value={Math.max(0, Math.min(points.length - 1, rangeStartIdx))}
+                    onChange={(e) => {
+                      const v = Number(e.target.value)
+                      setRangeStartIdx(v)
+                      if (v >= rangeEndIdx) setRangeEndIdx(Math.min(points.length - 1, v + 1))
+                    }}
+                  />
+                  <input
+                    type="range"
+                    min={0}
+                    max={Math.max(0, points.length - 1)}
+                    value={Math.max(0, Math.min(points.length - 1, rangeEndIdx))}
+                    onChange={(e) => {
+                      const v = Number(e.target.value)
+                      setRangeEndIdx(v)
+                      if (v <= rangeStartIdx) setRangeStartIdx(Math.max(0, v - 1))
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="backtester-grid2">
+              <div>
+                <div style={{ fontWeight: 900, marginBottom: 6 }}>Drawdown</div>
+                <DrawdownChart points={result.drawdownPoints} visibleRange={visibleRange} />
+              </div>
+              <div className="saved-item">
+                <div style={{ fontWeight: 900, marginBottom: 6 }}>Hover details</div>
+                {hover ? (
+                  <div style={{ display: 'grid', gap: 6 }}>
+                    <div>
+                      <strong>{hover.date}</strong>
+                    </div>
+                    <div>Equity: {hover.equity.toFixed(4)}</div>
+                    <div>Net return: {formatPct(hover.netReturn)}</div>
+                    <div>Drawdown: {formatPct(hover.drawdown)}</div>
+                    <div>Turnover: {formatPct(hover.turnover)}</div>
+                    <div>Cost: {formatPct(hover.cost)}</div>
+                    <div>
+                      Holdings:{' '}
+                      {hover.holdings.length === 0
+                        ? 'Cash'
+                        : hover.holdings
+                            .slice()
+                            .sort((a, b) => b.weight - a.weight)
+                            .map((h) => `${h.ticker} ${(h.weight * 100).toFixed(1)}%`)
+                            .join(', ')}
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ color: '#475569' }}>Hover the equity curve to see holdings, turnover, and returns.</div>
+                )}
+              </div>
+            </div>
 
             {result.warnings.length > 0 && (
               <div className="backtester-message" style={{ borderColor: '#fde68a', background: '#fffbeb', color: '#92400e' }}>
@@ -3605,9 +4431,30 @@ function BacktesterPanel({
             )}
 
             <div className="saved-item">
-              <div style={{ fontWeight: 900, marginBottom: 6 }}>Allocations (most recent)</div>
-              <div style={{ maxHeight: 240, overflow: 'auto', fontFamily: 'ui-monospace, Menlo, Consolas, monospace', fontSize: 12 }}>
-                {(result.allocations || []).slice(-200).map((row) => (
+              <div style={{ fontWeight: 900, marginBottom: 6 }}>Monthly returns</div>
+              <div className="monthly-heatmap">
+                {renderMonthlyHeatmap(result.monthly)}
+              </div>
+            </div>
+          </>
+        ) : result && tab === 'Allocations' ? (
+          <>
+            <div className="saved-item">
+              <div style={{ fontWeight: 900, marginBottom: 6 }}>Allocation over time (top 10 + cash)</div>
+              <AllocationChart series={allocationSeries} visibleRange={visibleRange} />
+              <div className="backtester-legend">
+                {allocationSeries.map((s) => (
+                  <div key={s.name} className="legend-item">
+                    <span className="legend-swatch" style={{ background: s.color }} />
+                    <span>{s.name}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="saved-item">
+              <div style={{ fontWeight: 900, marginBottom: 6 }}>Allocations (recent)</div>
+              <div style={{ maxHeight: 280, overflow: 'auto', fontFamily: 'ui-monospace, Menlo, Consolas, monospace', fontSize: 12 }}>
+                {(result.allocations || []).slice(-300).map((row) => (
                   <div key={row.date}>
                     {row.date} —{' '}
                     {row.entries.length === 0
@@ -3620,12 +4467,77 @@ function BacktesterPanel({
                   </div>
                 ))}
               </div>
+              <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button onClick={() => downloadEquityCsv(result, mode, costBps, benchmark, showBenchmark)}>Download equity CSV</button>
+                <button onClick={() => downloadAllocationsCsv(result)}>Download allocations CSV</button>
+                <button onClick={() => downloadRebalancesCsv(result)}>Download rebalances CSV</button>
+              </div>
             </div>
           </>
+        ) : result && tab === 'Rebalances' ? (
+          <div className="saved-item">
+            <div style={{ fontWeight: 900, marginBottom: 6 }}>Rebalance days ({rebalanceDays.length})</div>
+            <div className="backtester-table">
+              <div className="backtester-row backtester-head-row">
+                <div>Date</div>
+                <div>Net</div>
+                <div>Turnover</div>
+                <div>Cost</div>
+                <div>Holdings</div>
+              </div>
+              <div className="backtester-body-rows">
+                {rebalanceDays.slice(-400).reverse().map((d) => (
+                  <div key={d.date} className="backtester-row">
+                    <div>{d.date}</div>
+                    <div>{formatPct(d.netReturn)}</div>
+                    <div>{formatPct(d.turnover)}</div>
+                    <div>{formatPct(d.cost)}</div>
+                    <div style={{ fontFamily: 'ui-monospace, Menlo, Consolas, monospace', fontSize: 12 }}>
+                      {d.holdings.length === 0
+                        ? 'Cash'
+                        : d.holdings
+                            .slice()
+                            .sort((a, b) => b.weight - a.weight)
+                            .map((h) => `${h.ticker} ${(h.weight * 100).toFixed(1)}%`)
+                            .join(', ')}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        ) : result && tab === 'Warnings' ? (
+          <div className="saved-item">
+            <div style={{ fontWeight: 900, marginBottom: 6 }}>Warnings ({result.warnings.length})</div>
+            {groupedWarnings.length === 0 ? (
+              <div style={{ color: '#475569' }}>No warnings.</div>
+            ) : (
+              <div className="backtester-table">
+                <div className="backtester-row backtester-head-row">
+                  <div>Count</div>
+                  <div>Message</div>
+                  <div>First</div>
+                  <div>Last</div>
+                </div>
+                <div className="backtester-body-rows">
+                  {groupedWarnings.map((g) => (
+                    <div key={g.message} className="backtester-row">
+                      <div>{g.count}</div>
+                      <div>{g.message}</div>
+                      <div>{g.first?.date ?? '—'}</div>
+                      <div>{g.last?.date ?? '—'}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
         ) : status === 'running' ? (
           <div className="backtester-chart-placeholder">Running backtest…</div>
         ) : (
-          <div className="backtester-chart-placeholder">Click “Run Backtest” to compute an equity curve.</div>
+          <div className="backtester-chart-placeholder">
+            Tip: Start `npm run api` so tickers and candles load. Use the tabs to see allocations and rebalances after running.
+          </div>
         )}
       </div>
     </section>
@@ -3639,6 +4551,8 @@ function App() {
   const [tickerApiError, setTickerApiError] = useState<string | null>(null)
   const [backtestMode, setBacktestMode] = useState<BacktestMode>('CC')
   const [backtestCostBps, setBacktestCostBps] = useState<number>(5)
+  const [backtestBenchmark, setBacktestBenchmark] = useState<string>('SPY')
+  const [backtestShowBenchmark, setBacktestShowBenchmark] = useState<boolean>(true)
   const [backtestStatus, setBacktestStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle')
   const [backtestErrors, setBacktestErrors] = useState<BacktestError[]>([])
   const [backtestResult, setBacktestResult] = useState<BacktestResult | null>(null)
@@ -3949,9 +4863,12 @@ const handleColorChange = useCallback(
     const limit = 20000
 
     try {
-      const loaded = await Promise.all(
-        inputs.tickers.map(async (t) => ({ ticker: t, bars: await fetchOhlcSeries(t, limit) })),
-      )
+      const benchTicker = normalizeChoice(backtestBenchmark)
+      const needsBench = benchTicker && benchTicker !== 'Empty' && !inputs.tickers.includes(benchTicker)
+      const benchPromise = needsBench ? fetchOhlcSeries(benchTicker, limit) : null
+
+      const loaded = await Promise.all(inputs.tickers.map(async (t) => ({ ticker: t, bars: await fetchOhlcSeries(t, limit) })))
+      const benchSettled = benchPromise ? await Promise.allSettled([benchPromise]) : []
 
       const db = buildPriceDb(loaded)
       if (db.dates.length < 3) {
@@ -3963,20 +4880,59 @@ const handleColorChange = useCallback(
       const cache = emptyCache()
       const warnings: BacktestWarning[] = []
 
-      const allocationsAt: Allocation[] = []
-      for (let i = 0; i < db.dates.length; i++) {
-        const indicatorIndex = decisionPrice === 'open' ? i - 1 : i
-        const ctx: EvalCtx = { db, cache, decisionIndex: i, indicatorIndex, decisionPrice, warnings }
-        allocationsAt.push(evaluateNode(ctx, current))
+      let benchBars: Array<{ time: UTCTimestamp; open: number; close: number }> | null = null
+      if (benchTicker && benchTicker !== 'Empty') {
+        const already = loaded.find((x) => getSeriesKey(x.ticker) === benchTicker)
+        if (already) {
+          benchBars = already.bars
+        } else if (benchSettled.length && benchSettled[0].status === 'fulfilled') {
+          benchBars = benchSettled[0].value
+        } else if (benchSettled.length && benchSettled[0].status === 'rejected') {
+          warnings.push({
+            time: db.dates[0],
+            date: isoFromUtcSeconds(db.dates[0]),
+            message: `Benchmark ${benchTicker} failed to load: ${String(benchSettled[0].reason?.message || benchSettled[0].reason)}`,
+          })
+          benchBars = null
+        }
       }
 
-      const points: EquityPoint[] = [{ time: db.dates[0], value: 1 }]
+      const benchMap = new Map<number, { open: number; close: number }>()
+      if (benchBars) {
+        for (const b of benchBars) benchMap.set(Number(b.time), { open: b.open, close: b.close })
+      }
+
+      const allocationsAt: Allocation[] = []
+      for (let i = 0; i < db.dates.length; i++) {
+        allocationsAt.push({})
+      }
+
+      const lookback = Math.max(0, Math.floor(Number(inputs.maxLookback || 0)))
+      const startEvalIndex =
+        decisionPrice === 'open' ? (lookback > 0 ? lookback + 1 : 0) : lookback
+
+      for (let i = startEvalIndex; i < db.dates.length; i++) {
+        const indicatorIndex = decisionPrice === 'open' ? i - 1 : i
+        const ctx: EvalCtx = { db, cache, decisionIndex: i, indicatorIndex, decisionPrice, warnings }
+        allocationsAt[i] = evaluateNode(ctx, current)
+      }
+
+      const startTradeIndex = startEvalIndex
+      const startPointIndex = backtestMode === 'OC' ? Math.max(0, startTradeIndex - 1) : startTradeIndex
+
+      const points: EquityPoint[] = [{ time: db.dates[startPointIndex], value: 1 }]
+      const benchmarkPoints: EquityPoint[] = benchMap.size ? [{ time: db.dates[startPointIndex], value: 1 }] : []
+      const drawdownPoints: EquityPoint[] = [{ time: db.dates[startPointIndex], value: 0 }]
       const markers: EquityMarker[] = []
       const allocations: BacktestAllocationRow[] = []
       const returns: number[] = []
+      const days: BacktestDayRow[] = []
 
       let equity = 1
-      for (let end = 1; end < db.dates.length; end++) {
+      let peak = 1
+      let benchEquity = 1
+      const startEnd = backtestMode === 'OC' ? startTradeIndex : startTradeIndex + 1
+      for (let end = startEnd; end < db.dates.length; end++) {
         let start = end - 1
         if (backtestMode === 'OC') start = end
 
@@ -4023,25 +4979,88 @@ const handleColorChange = useCallback(
           gross += w * (exit / entry - 1)
         }
 
-        const net = gross - cost
+        if (!Number.isFinite(gross)) {
+          const date = isoFromUtcSeconds(db.dates[end])
+          warnings.push({ time: db.dates[end], date, message: `Non-finite gross return on ${date}. Return forced to 0.` })
+          markers.push({ time: db.dates[end], text: 'Bad gross' })
+          gross = 0
+        }
+
+        let net = gross - cost
+        if (!Number.isFinite(net) || net < -0.9999) {
+          const date = isoFromUtcSeconds(db.dates[end])
+          warnings.push({ time: db.dates[end], date, message: `Non-finite net return on ${date}. Return forced to 0.` })
+          markers.push({ time: db.dates[end], text: 'Bad net' })
+          net = 0
+        }
         equity *= 1 + net
+        if (equity > peak) peak = equity
+        const ddRaw = peak > 0 && Number.isFinite(equity) ? equity / peak - 1 : 0
+        const dd = Math.min(0, Math.max(-0.9999, ddRaw))
         points.push({ time: db.dates[end], value: equity })
+        drawdownPoints.push({ time: db.dates[end], value: dd })
         returns.push(net)
 
         allocations.push({
           date: isoFromUtcSeconds(db.dates[end]),
           entries: allocEntries(alloc),
         })
+
+        if (benchMap.size) {
+          const startTime = Number(db.dates[start])
+          const endTime = Number(db.dates[end])
+          const startBar = benchMap.get(startTime)
+          const endBar = benchMap.get(endTime)
+          const entryBench =
+            backtestMode === 'OO'
+              ? startBar?.open
+              : backtestMode === 'CC'
+                ? startBar?.close
+                : backtestMode === 'CO'
+                  ? startBar?.close
+                  : startBar?.open
+          const exitBench =
+            backtestMode === 'OO'
+              ? endBar?.open
+              : backtestMode === 'CC'
+                ? endBar?.close
+                : backtestMode === 'CO'
+                  ? endBar?.open
+                  : startBar?.close
+          if (entryBench != null && exitBench != null && entryBench > 0 && exitBench > 0) {
+            benchEquity *= 1 + (exitBench / entryBench - 1)
+            benchmarkPoints.push({ time: db.dates[end], value: benchEquity })
+          } else {
+            benchmarkPoints.push({ time: db.dates[end], value: benchEquity })
+          }
+        }
+
+        days.push({
+          time: db.dates[end],
+          date: isoFromUtcSeconds(db.dates[end]),
+          equity,
+          drawdown: dd,
+          grossReturn: gross,
+          netReturn: net,
+          turnover,
+          cost,
+          holdings: allocEntries(alloc),
+        })
       }
 
-      const metrics = computeMetrics(points.map((p) => p.value), returns)
+      const metrics = computeBacktestSummary(points, days.map((d) => d.drawdown), days)
+      const monthly = computeMonthlyReturns(days)
 
       setBacktestResult({
         points,
+        benchmarkPoints: benchmarkPoints.length ? benchmarkPoints : undefined,
+        drawdownPoints,
         markers,
         metrics,
+        days,
         allocations,
         warnings,
+        monthly,
       })
       setBacktestStatus('done')
     } catch (e) {
@@ -4050,7 +5069,7 @@ const handleColorChange = useCallback(
       setBacktestErrors([{ nodeId: current.id, field: 'backtest', message: m }])
       setBacktestStatus('error')
     }
-  }, [current, backtestMode, backtestCostBps])
+  }, [current, backtestMode, backtestCostBps, backtestBenchmark])
 
   const handleNewBot = () => {
     const bot = createBotSession('Algo Name Here')
@@ -4304,6 +5323,11 @@ const handleColorChange = useCallback(
               setMode={setBacktestMode}
               costBps={backtestCostBps}
               setCostBps={setBacktestCostBps}
+              benchmark={backtestBenchmark}
+              setBenchmark={setBacktestBenchmark}
+              showBenchmark={backtestShowBenchmark}
+              setShowBenchmark={setBacktestShowBenchmark}
+              tickerOptions={tickerOptions}
               status={backtestStatus}
               result={backtestResult}
               errors={backtestErrors}
