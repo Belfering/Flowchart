@@ -28,6 +28,8 @@ type ComparatorChoice = 'lt' | 'gt'
 
 type WeightMode = 'equal' | 'defined' | 'inverse' | 'pro' | 'capped'
 
+type UserId = '1' | '9'
+
 type ConditionLine = {
   id: string
   type: 'if' | 'and' | 'or'
@@ -51,6 +53,85 @@ type NumberedItem = {
 
 const TICKER_DATALIST_ID = 'systemapp-tickers'
 
+const CURRENT_USER_KEY = 'systemapp.currentUser'
+const userDataKey = (userId: UserId) => `systemapp.user.${userId}.data.v1`
+
+const newKeyId = () => `id-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+
+const defaultUiState = (): UserUiState => ({
+  analyzeCollapsedByBotId: {},
+  analyzeFilterWatchlistId: null,
+  communitySelectedWatchlistId: null,
+})
+
+const ensureDefaultWatchlist = (watchlists: Watchlist[]): Watchlist[] => {
+  const hasDefault = watchlists.some((w) => w.name === 'Default')
+  if (hasDefault) return watchlists
+  return [{ id: `wl-${newKeyId()}`, name: 'Default', botIds: [] }, ...watchlists]
+}
+
+const loadUserData = (userId: UserId): UserData => {
+  try {
+    const raw = localStorage.getItem(userDataKey(userId))
+    if (!raw) {
+      return { savedBots: [], watchlists: ensureDefaultWatchlist([]), callChains: [], ui: defaultUiState() }
+    }
+    const parsed = JSON.parse(raw) as Partial<UserData>
+    const savedBots = Array.isArray(parsed.savedBots)
+      ? (parsed.savedBots as Array<Partial<SavedBot>>).map((b) => ({
+          id: String(b.id || ''),
+          name: String(b.name || 'Untitled'),
+          payload:
+            (b.payload as FlowNode) ??
+            ({
+              id: `node-${newKeyId()}`,
+              kind: 'basic',
+              title: 'Basic',
+              children: { next: [null] },
+              weighting: 'equal',
+              collapsed: false,
+            } as unknown as FlowNode),
+          visibility: (b.visibility === 'community' ? 'community' : 'private') as BotVisibility,
+          createdAt: Number(b.createdAt || 0) || Date.now(),
+        }))
+      : []
+    const watchlists = ensureDefaultWatchlist(
+      Array.isArray(parsed.watchlists)
+        ? (parsed.watchlists as Array<Partial<Watchlist>>).map((w) => ({
+            id: String(w.id || `wl-${newKeyId()}`),
+            name: String(w.name || 'Untitled'),
+            botIds: Array.isArray(w.botIds) ? (w.botIds as string[]).map(String) : [],
+          }))
+        : [],
+    )
+    const callChains = Array.isArray((parsed as Partial<UserData>).callChains)
+      ? (((parsed as Partial<UserData>).callChains as Array<Partial<CallChain>>).map((c) => ({
+          id: String(c.id || `call-${newKeyId()}`),
+          name: String(c.name || 'Call'),
+          root:
+            (c.root as FlowNode) ??
+            ({
+              id: `node-${newKeyId()}`,
+              kind: 'basic',
+              title: 'Basic',
+              children: { next: [null] },
+              weighting: 'equal',
+              collapsed: false,
+            } as unknown as FlowNode),
+          collapsed: Boolean(c.collapsed ?? false),
+        })) as CallChain[])
+      : []
+    const ui = parsed.ui ? ({ ...defaultUiState(), ...(parsed.ui as Partial<UserUiState>) } as UserUiState) : defaultUiState()
+    return { savedBots, watchlists, callChains, ui }
+  } catch {
+    return { savedBots: [], watchlists: ensureDefaultWatchlist([]), callChains: [], ui: defaultUiState() }
+  }
+}
+
+const saveUserData = (userId: UserId, data: UserData) => {
+  localStorage.setItem(userDataKey(userId), JSON.stringify(data))
+}
+
 const normalizeTickersForUi = (tickers: string[]): string[] => {
   const normalized = tickers
     .map((t) => String(t || '').trim().toUpperCase())
@@ -72,10 +153,51 @@ function TickerDatalist({ id, options }: { id: string; options: string[] }) {
   )
 }
 
+function LoginScreen({ onLogin }: { onLogin: (userId: UserId) => void }) {
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState<string | null>(null)
+
+  const submit = () => {
+    const u = String(username || '').trim()
+    const p = String(password || '')
+    const ok = (u === '1' && p === '1') || (u === '9' && p === '9')
+    if (!ok) {
+      setError('Invalid username/password.')
+      return
+    }
+    setError(null)
+    onLogin(u as UserId)
+  }
+
+  return (
+    <div className="app" style={{ padding: 24 }}>
+      <div style={{ maxWidth: 420, margin: '64px auto', border: '1px solid #e5e7eb', borderRadius: 14, padding: 18 }}>
+        <div className="eyebrow">Admin Login</div>
+        <h1 style={{ margin: '6px 0 14px' }}>System.app</h1>
+        <div style={{ display: 'grid', gap: 10 }}>
+          <label style={{ display: 'grid', gap: 6 }}>
+            <div style={{ fontWeight: 700, fontSize: 12 }}>Username</div>
+            <input value={username} onChange={(e) => setUsername(e.target.value)} autoFocus />
+          </label>
+          <label style={{ display: 'grid', gap: 6 }}>
+            <div style={{ fontWeight: 700, fontSize: 12 }}>Password</div>
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && submit()} />
+          </label>
+          {error ? <div style={{ color: '#b91c1c', fontWeight: 700 }}>{error}</div> : null}
+          <button onClick={submit}>Login</button>
+          <div style={{ fontSize: 12, color: '#64748b' }}>Valid accounts: 1/1 and 9/9.</div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 type BotSession = {
   id: string
   history: FlowNode[]
   historyIndex: number
+  savedBotId?: string
 }
 
 type AdminStatus = {
@@ -103,10 +225,47 @@ type AdminDownloadJob = {
   logs?: string[]
 }
 
+type BotVisibility = 'private' | 'community'
+
 type SavedBot = {
   id: string
   name: string
   payload: FlowNode
+  visibility: BotVisibility
+  createdAt: number
+}
+
+type Watchlist = {
+  id: string
+  name: string
+  botIds: string[]
+}
+
+type UserUiState = {
+  analyzeCollapsedByBotId: Record<string, boolean>
+  analyzeFilterWatchlistId: string | null
+  communitySelectedWatchlistId: string | null
+}
+
+type UserData = {
+  savedBots: SavedBot[]
+  watchlists: Watchlist[]
+  callChains: CallChain[]
+  ui: UserUiState
+}
+
+type AnalyzeBacktestState = {
+  status: 'idle' | 'loading' | 'error' | 'done'
+  result?: BacktestResult
+  warnings?: BacktestWarning[]
+  error?: string
+}
+
+type CallChain = {
+  id: string
+  name: string
+  root: FlowNode
+  collapsed: boolean
 }
 
 type FlowNode = {
@@ -336,7 +495,7 @@ function AdminTickerList({
             style={{
               width: '100%',
               fontFamily:
-                'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, \"Liberation Mono\", \"Courier New\", monospace',
+                'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
               padding: 10,
               borderRadius: 12,
               border: '1px solid #cbd5e1',
@@ -559,6 +718,28 @@ const sanitizeSeriesPoints = (points: EquityPoint[], opts?: { clampMin?: number;
     lastTime = time
   }
   return out
+}
+
+const Sparkline = ({ points, color = '#0ea5e9' }: { points: EquityPoint[]; color?: string }) => {
+  if (!points || points.length < 2) {
+    return <div style={{ fontSize: 12, color: '#94a3b8' }}>Not enough data</div>
+  }
+  const sample = points.slice(-120)
+  const values = sample.map((p) => Number(p.value)).filter(Number.isFinite)
+  if (values.length < 2) return <div style={{ fontSize: 12, color: '#94a3b8' }}>Not enough data</div>
+  const min = Math.min(...values)
+  const max = Math.max(...values)
+  const range = max - min || 1
+  const coords = sample.map((p, idx) => {
+    const x = (idx / (sample.length - 1 || 1)) * 100
+    const y = 100 - ((Number(p.value) - min) / range) * 100
+    return `${x},${y}`
+  })
+  return (
+    <svg viewBox="0 0 100 100" preserveAspectRatio="none" style={{ width: '100%', height: 70 }}>
+      <polyline fill="none" stroke={color} strokeWidth="2" points={coords.join(' ')} />
+    </svg>
+  )
 }
 
 function EquityChart({
@@ -5152,6 +5333,21 @@ function BacktesterPanel({
 function App() {
   const initialBotRef = useRef<BotSession | null>(null)
 
+  const [userId, setUserId] = useState<UserId | null>(() => {
+    try {
+      const v = localStorage.getItem(CURRENT_USER_KEY)
+      return v === '1' || v === '9' ? (v as UserId) : null
+    } catch {
+      return null
+    }
+  })
+
+  const [savedBots, setSavedBots] = useState<SavedBot[]>([])
+  const [watchlists, setWatchlists] = useState<Watchlist[]>([])
+  const [callChains, setCallChains] = useState<CallChain[]>([])
+  const [uiState, setUiState] = useState<UserUiState>(() => defaultUiState())
+  const [analyzeBacktests, setAnalyzeBacktests] = useState<Record<string, AnalyzeBacktestState>>({})
+
   const [availableTickers, setAvailableTickers] = useState<string[]>([])
   const [tickerApiError, setTickerApiError] = useState<string | null>(null)
   const [backtestMode, setBacktestMode] = useState<BacktestMode>('CC')
@@ -5162,6 +5358,38 @@ function App() {
   const [backtestErrors, setBacktestErrors] = useState<BacktestError[]>([])
   const [backtestResult, setBacktestResult] = useState<BacktestResult | null>(null)
   const [backtestFocusNodeId, setBacktestFocusNodeId] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!userId) return
+    const data = loadUserData(userId)
+    setSavedBots(data.savedBots)
+    setWatchlists(data.watchlists)
+    setCallChains(data.callChains)
+    setUiState(data.ui)
+    setAnalyzeBacktests({})
+  }, [userId])
+
+  useEffect(() => {
+    if (!userId) return
+    saveUserData(userId, { savedBots, watchlists, callChains, ui: uiState })
+  }, [userId, savedBots, watchlists, callChains, uiState])
+
+  useEffect(() => {
+    setAnalyzeBacktests((prev) => {
+      const allowed = new Set(savedBots.map((b) => b.id))
+      const next: Record<string, AnalyzeBacktestState> = {}
+      let changed = false
+      for (const [id, state] of Object.entries(prev)) {
+        if (allowed.has(id)) {
+          next[id] = state
+        } else {
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [savedBots])
+
 
   const loadAvailableTickers = useCallback(async () => {
     const tryLoad = async (url: string) => {
@@ -5247,15 +5475,45 @@ function App() {
   })
   const [activeBotId, setActiveBotId] = useState<string>(() => initialBotRef.current?.id ?? '')
   const [clipboard, setClipboard] = useState<FlowNode | null>(null)
-  const [tab, setTab] = useState<'Portfolio' | 'Community' | 'Bot Database' | 'Build' | 'Admin'>('Build')
+  const [tab, setTab] = useState<'Portfolio' | 'Community' | 'Analyze' | 'Build' | 'Admin'>('Build')
   const [adminTab, setAdminTab] = useState<'Ticker List' | 'Data'>('Ticker List')
-  const [savedBots, setSavedBots] = useState<SavedBot[]>([])
+  const [saveMenuOpen, setSaveMenuOpen] = useState(false)
+  const [saveNewWatchlistName, setSaveNewWatchlistName] = useState('')
+  const [addToWatchlistBotId, setAddToWatchlistBotId] = useState<string | null>(null)
+  const [addToWatchlistNewName, setAddToWatchlistNewName] = useState('')
+  const [callPanelOpen, setCallPanelOpen] = useState(false)
 
   const activeBot = useMemo(() => {
     return bots.find((b) => b.id === activeBotId) ?? bots[0]
   }, [bots, activeBotId])
 
   const current = activeBot.history[activeBot.historyIndex]
+
+  const watchlistsById = useMemo(() => new Map(watchlists.map((w) => [w.id, w])), [watchlists])
+  const watchlistsByBotId = useMemo(() => {
+    const map = new Map<string, Watchlist[]>()
+    for (const wl of watchlists) {
+      for (const botId of wl.botIds) {
+        const arr = map.get(botId) ?? []
+        arr.push(wl)
+        map.set(botId, arr)
+      }
+    }
+    return map
+  }, [watchlists])
+
+  const allWatchlistedBotIds = useMemo(() => {
+    const set = new Set<string>()
+    for (const wl of watchlists) for (const id of wl.botIds) set.add(id)
+    return Array.from(set)
+  }, [watchlists])
+
+  const analyzeVisibleBotIds = useMemo(() => {
+    const filterId = uiState.analyzeFilterWatchlistId
+    if (!filterId) return allWatchlistedBotIds
+    const wl = watchlistsById.get(filterId)
+    return wl ? wl.botIds : []
+  }, [allWatchlistedBotIds, uiState.analyzeFilterWatchlistId, watchlistsById])
 
   useEffect(() => {
     if (!activeBot) return
@@ -5445,29 +5703,25 @@ const handleColorChange = useCallback(
     [current],
   )
 
-  const handleRunBacktest = useCallback(async () => {
-    setBacktestStatus('running')
-    setBacktestFocusNodeId(null)
-    setBacktestResult(null)
-    setBacktestErrors([])
+  const runBacktestForNode = useCallback(
+    async (node: FlowNode) => {
+      const prepared = ensureSlots(cloneNode(node))
+      const inputs = collectBacktestInputs(prepared)
+      if (inputs.errors.length > 0) {
+        const err = new Error('validation')
+        ;(err as any).type = 'validation'
+        ;(err as any).errors = inputs.errors
+        throw err
+      }
+      if (inputs.tickers.length === 0) {
+        const err = new Error('validation')
+        ;(err as any).type = 'validation'
+        ;(err as any).errors = [{ nodeId: prepared.id, field: 'tickers', message: 'No tickers found in this strategy.' }]
+        throw err
+      }
 
-    const inputs = collectBacktestInputs(current)
-    if (inputs.errors.length > 0) {
-      setBacktestErrors(inputs.errors)
-      setBacktestStatus('error')
-      return
-    }
-
-    if (inputs.tickers.length === 0) {
-      setBacktestErrors([{ nodeId: current.id, field: 'tickers', message: 'No tickers found in this strategy.' }])
-      setBacktestStatus('error')
-      return
-    }
-
-    const decisionPrice: EvalCtx['decisionPrice'] = backtestMode === 'CC' || backtestMode === 'CO' ? 'close' : 'open'
-    const limit = 20000
-
-    try {
+      const decisionPrice: EvalCtx['decisionPrice'] = backtestMode === 'CC' || backtestMode === 'CO' ? 'close' : 'open'
+      const limit = 20000
       const benchTicker = normalizeChoice(backtestBenchmark)
       const needsBench = benchTicker && benchTicker !== 'Empty' && !inputs.tickers.includes(benchTicker)
       const benchPromise = needsBench ? fetchOhlcSeries(benchTicker, limit) : null
@@ -5477,9 +5731,10 @@ const handleColorChange = useCallback(
 
       const db = buildPriceDb(loaded)
       if (db.dates.length < 3) {
-        setBacktestErrors([{ nodeId: current.id, field: 'data', message: 'Not enough overlapping price data to run a backtest.' }])
-        setBacktestStatus('error')
-        return
+        const err = new Error('validation')
+        ;(err as any).type = 'validation'
+        ;(err as any).errors = [{ nodeId: prepared.id, field: 'data', message: 'Not enough overlapping price data to run a backtest.' }]
+        throw err
       }
 
       const cache = emptyCache()
@@ -5507,24 +5762,18 @@ const handleColorChange = useCallback(
         for (const b of benchBars) benchMap.set(Number(b.time), { open: b.open, close: b.close })
       }
 
-      const allocationsAt: Allocation[] = []
-      for (let i = 0; i < db.dates.length; i++) {
-        allocationsAt.push({})
-      }
-
+      const allocationsAt: Allocation[] = Array.from({ length: db.dates.length }, () => ({}))
       const lookback = Math.max(0, Math.floor(Number(inputs.maxLookback || 0)))
-      const startEvalIndex =
-        decisionPrice === 'open' ? (lookback > 0 ? lookback + 1 : 0) : lookback
+      const startEvalIndex = decisionPrice === 'open' ? (lookback > 0 ? lookback + 1 : 0) : lookback
 
       for (let i = startEvalIndex; i < db.dates.length; i++) {
         const indicatorIndex = decisionPrice === 'open' ? i - 1 : i
         const ctx: EvalCtx = { db, cache, decisionIndex: i, indicatorIndex, decisionPrice, warnings }
-        allocationsAt[i] = evaluateNode(ctx, current)
+        allocationsAt[i] = evaluateNode(ctx, prepared)
       }
 
       const startTradeIndex = startEvalIndex
       const startPointIndex = backtestMode === 'OC' ? Math.max(0, startTradeIndex - 1) : startTradeIndex
-
       const points: EquityPoint[] = [{ time: db.dates[startPointIndex], value: 1 }]
       const benchmarkPoints: EquityPoint[] = benchMap.size ? [{ time: db.dates[startPointIndex], value: 1 }] : []
       const drawdownPoints: EquityPoint[] = [{ time: db.dates[startPointIndex], value: 0 }]
@@ -5540,7 +5789,6 @@ const handleColorChange = useCallback(
       for (let end = startEnd; end < db.dates.length; end++) {
         let start = end - 1
         if (backtestMode === 'OC') start = end
-
         if (start < 0 || start >= db.dates.length) continue
         if (backtestMode === 'OC' && end === 0) continue
 
@@ -5553,10 +5801,8 @@ const handleColorChange = useCallback(
         for (const [ticker, w] of Object.entries(alloc)) {
           if (!(w > 0)) continue
           const t = getSeriesKey(ticker)
-
           const openArr = db.open[t]
           const closeArr = db.close[t]
-
           const entry =
             backtestMode === 'OO'
               ? openArr?.[start]
@@ -5573,14 +5819,12 @@ const handleColorChange = useCallback(
                 : backtestMode === 'CO'
                   ? openArr?.[end]
                   : closeArr?.[start]
-
           if (entry == null || exit == null || !(entry > 0) || !(exit > 0)) {
             const date = isoFromUtcSeconds(db.dates[end])
             warnings.push({ time: db.dates[end], date, message: `Broken ticker ${t} on ${date} (missing price). Return forced to 0.` })
             markers.push({ time: db.dates[end], text: `Missing ${t}` })
             continue
           }
-
           gross += w * (exit / entry - 1)
         }
 
@@ -5656,26 +5900,44 @@ const handleColorChange = useCallback(
       const metrics = computeBacktestSummary(points, days.map((d) => d.drawdown), days)
       const monthly = computeMonthlyReturns(days)
 
-      setBacktestResult({
-        points,
-        benchmarkPoints: benchmarkPoints.length ? benchmarkPoints : undefined,
-        drawdownPoints,
-        markers,
-        metrics,
-        days,
-        allocations,
-        warnings,
-        monthly,
-      })
+      return {
+        result: {
+          points,
+          benchmarkPoints: benchmarkPoints.length ? benchmarkPoints : undefined,
+          drawdownPoints,
+          markers,
+          metrics,
+          days,
+          allocations,
+          warnings,
+          monthly,
+        },
+      }
+    },
+    [backtestMode, backtestBenchmark, backtestCostBps],
+  )
+
+  const handleRunBacktest = useCallback(async () => {
+    setBacktestStatus('running')
+    setBacktestFocusNodeId(null)
+    setBacktestResult(null)
+    setBacktestErrors([])
+    try {
+      const { result } = await runBacktestForNode(current)
+      setBacktestResult(result)
       setBacktestStatus('done')
     } catch (e) {
-      const msg = String((e as Error)?.message || e)
-      const m = msg.includes('Failed to fetch') ? `${msg}. Is the backend running? (npm run api)` : msg
-      setBacktestErrors([{ nodeId: current.id, field: 'backtest', message: m }])
+      const info = e as any
+      if (info?.type === 'validation' && Array.isArray(info.errors)) {
+        setBacktestErrors(info.errors)
+      } else {
+        const msg = String((e as Error)?.message || e)
+        const friendly = msg.includes('Failed to fetch') ? `${msg}. Is the backend running? (npm run api)` : msg
+        setBacktestErrors([{ nodeId: current.id, field: 'backtest', message: friendly }])
+      }
       setBacktestStatus('error')
     }
-  }, [current, backtestMode, backtestCostBps, backtestBenchmark])
-
+  }, [current, runBacktestForNode])
   const handleNewBot = () => {
     const bot = createBotSession('Algo Name Here')
     setBots((prev) => [...prev, bot])
@@ -5698,20 +5960,138 @@ const handleColorChange = useCallback(
     URL.revokeObjectURL(url)
   }, [current])
 
-  const handleSave = useCallback(() => {
-    if (!current) return
-    const now = new Date()
-    const timestamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(
-      now.getDate(),
-    ).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
-    const name = `${current.title || 'Algo'} - ${timestamp}`
-    const payload = ensureSlots(cloneNode(current))
-    const entry: SavedBot = { id: `saved-${newId()}`, name, payload }
-    setSavedBots((prev) => [entry, ...prev])
-  }, [current])
+  const resolveWatchlistId = useCallback(
+    (watchlistNameOrId: string): string => {
+      const raw = String(watchlistNameOrId || '').trim()
+      if (!raw) return watchlists.find((w) => w.name === 'Default')?.id ?? watchlists[0]?.id ?? `wl-${newId()}`
+      const byId = watchlists.find((w) => w.id === raw)
+      if (byId) return byId.id
+      const byName = watchlists.find((w) => w.name.toLowerCase() === raw.toLowerCase())
+      if (byName) return byName.id
+      const id = `wl-${newId()}`
+      setWatchlists((prev) => ensureDefaultWatchlist([{ id, name: raw, botIds: [] }, ...prev]))
+      return id
+    },
+    [watchlists],
+  )
+
+  const addBotToWatchlist = useCallback((botId: string, watchlistId: string) => {
+    setWatchlists((prev) =>
+      prev.map((w) => {
+        if (w.id !== watchlistId) return w
+        if (w.botIds.includes(botId)) return w
+        return { ...w, botIds: [...w.botIds, botId] }
+      }),
+    )
+  }, [])
+
+  const removeBotFromWatchlist = useCallback((botId: string, watchlistId: string) => {
+    setWatchlists((prev) =>
+      prev.map((w) => (w.id === watchlistId ? { ...w, botIds: w.botIds.filter((id) => id !== botId) } : w)),
+    )
+  }, [])
+
+  const handleSaveToWatchlist = useCallback(
+    (watchlistNameOrId: string) => {
+      if (!activeBot) return
+      if (!current) return
+      const watchlistId = resolveWatchlistId(watchlistNameOrId)
+      const payload = ensureSlots(cloneNode(current))
+      const now = Date.now()
+
+      const existingSavedBotId = activeBot?.savedBotId
+      let savedBotId = existingSavedBotId
+
+      if (!savedBotId) {
+        savedBotId = `saved-${newId()}`
+        const entry: SavedBot = { id: savedBotId, name: current.title || 'Algo', payload, visibility: 'private', createdAt: now }
+        setSavedBots((prev) => [entry, ...prev])
+        setBots((prev) => prev.map((b) => (b.id === activeBot.id ? { ...b, savedBotId } : b)))
+      } else {
+        setSavedBots((prev) =>
+          prev.map((b) => (b.id === savedBotId ? { ...b, payload, name: b.name || current.title || 'Algo' } : b)),
+        )
+      }
+
+      addBotToWatchlist(savedBotId, watchlistId)
+      setSaveMenuOpen(false)
+      setSaveNewWatchlistName('')
+      if (savedBotId) {
+        setAnalyzeBacktests((prev) => ({ ...prev, [savedBotId]: { status: 'idle' } }))
+      }
+    },
+    [current, activeBot?.id, activeBot?.savedBotId, resolveWatchlistId, addBotToWatchlist],
+  )
+
+  const handleConfirmAddToWatchlist = useCallback(
+    (botId: string, watchlistNameOrId: string) => {
+      const wlId = resolveWatchlistId(watchlistNameOrId)
+      addBotToWatchlist(botId, wlId)
+      setAddToWatchlistBotId(null)
+      setAddToWatchlistNewName('')
+    },
+    [resolveWatchlistId, addBotToWatchlist],
+  )
+
+  const runAnalyzeBacktest = useCallback(
+    async (bot: SavedBot) => {
+      setAnalyzeBacktests((prev) => {
+        if (prev[bot.id]?.status === 'loading') return prev
+        return { ...prev, [bot.id]: { status: 'loading' } }
+      })
+      try {
+        const { result } = await runBacktestForNode(bot.payload)
+        setAnalyzeBacktests((prev) => ({ ...prev, [bot.id]: { status: 'done', result } }))
+      } catch (err) {
+        const info = err as any
+        let message = String((err as Error)?.message || err)
+        if (info?.type === 'validation' && Array.isArray(info.errors)) {
+          message = info.errors.map((e: BacktestError) => e.message).join(', ')
+        }
+        setAnalyzeBacktests((prev) => ({ ...prev, [bot.id]: { status: 'error', error: message } }))
+      }
+    },
+    [runBacktestForNode],
+  )
+
+  useEffect(() => {
+    savedBots.forEach((bot) => {
+      if (uiState.analyzeCollapsedByBotId[bot.id] === false) {
+        const state = analyzeBacktests[bot.id]
+        if (!state || state.status === 'idle' || state.status === 'error') {
+          runAnalyzeBacktest(bot)
+        }
+      }
+    })
+  }, [savedBots, uiState.analyzeCollapsedByBotId, analyzeBacktests, runAnalyzeBacktest])
+
+  const handleAddCallChain = useCallback(() => {
+    const id = `call-${newId()}`
+    const root = ensureSlots(createNode('basic'))
+    root.title = 'Call'
+    const name = `Call ${callChains.length + 1}`
+    setCallChains((prev) => [{ id, name, root, collapsed: false }, ...prev])
+    setCallPanelOpen(true)
+  }, [callChains.length])
+
+  const handleRenameCallChain = useCallback((id: string, name: string) => {
+    setCallChains((prev) => prev.map((c) => (c.id === id ? { ...c, name: name || c.name } : c)))
+  }, [])
+
+  const handleToggleCallChainCollapse = useCallback((id: string) => {
+    setCallChains((prev) => prev.map((c) => (c.id === id ? { ...c, collapsed: !c.collapsed } : c)))
+  }, [])
+
+  const pushCallChain = useCallback((id: string, next: FlowNode) => {
+    setCallChains((prev) => prev.map((c) => (c.id === id ? { ...c, root: ensureSlots(next) } : c)))
+  }, [])
 
   const handleCopySaved = useCallback(
     async (bot: SavedBot) => {
+      if (bot.visibility === 'community') {
+        alert('Community bots cannot be copied/exported.')
+        return
+      }
       const ensured = ensureSlots(cloneNode(bot.payload))
       setClipboard(ensured)
       const json = JSON.stringify(bot.payload, null, 2)
@@ -5728,12 +6108,17 @@ const handleColorChange = useCallback(
 
   const handleDeleteSaved = useCallback((id: string) => {
     setSavedBots((prev) => prev.filter((b) => b.id !== id))
+    setWatchlists((prev) => prev.map((w) => ({ ...w, botIds: w.botIds.filter((x) => x !== id) })))
   }, [])
 
   const handleOpenSaved = useCallback(
     (bot: SavedBot) => {
+      if (bot.visibility === 'community') {
+        alert('Community bots cannot be opened in Build.')
+        return
+      }
       const payload = ensureSlots(cloneNode(bot.payload))
-      const session: BotSession = { id: `bot-${newId()}`, history: [payload], historyIndex: 0 }
+      const session: BotSession = { id: `bot-${newId()}`, history: [payload], historyIndex: 0, savedBotId: bot.id }
       setBots((prev) => [...prev, session])
       setActiveBotId(session.id)
       setTab('Build')
@@ -5851,6 +6236,32 @@ const handleColorChange = useCallback(
     )
   }
 
+  const handleLogin = (nextUser: UserId) => {
+    try {
+      localStorage.setItem(CURRENT_USER_KEY, nextUser)
+    } catch {
+      // ignore
+    }
+    setUserId(nextUser)
+    setTab('Build')
+  }
+
+  const handleLogout = () => {
+    try {
+      localStorage.removeItem(CURRENT_USER_KEY)
+    } catch {
+      // ignore
+    }
+    setUserId(null)
+    setTab('Build')
+    setSaveMenuOpen(false)
+    setAddToWatchlistBotId(null)
+  }
+
+  if (!userId) {
+    return <LoginScreen onLogin={handleLogin} />
+  }
+
   return (
     <div className="app">
       <header className="app-header">
@@ -5859,17 +6270,71 @@ const handleColorChange = useCallback(
           <h1>System.app</h1>
           <p className="lede">Click any Node or + to extend with Basic, Function, Indicator, or Position. Paste uses the last copied node.</p>
           <div className="tabs">
-            {(['Portfolio', 'Community', 'Bot Database', 'Build', 'Admin'] as const).map((t) => (
+            {(['Portfolio', 'Community', 'Analyze', 'Build', 'Admin'] as const).map((t) => (
               <button key={t} className={`tab-btn ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>
                 {t}
               </button>
             ))}
           </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
+            <div style={{ fontSize: 12, color: '#64748b' }}>
+              Logged in as <span style={{ fontWeight: 800 }}>{userId}</span>
+            </div>
+            <button onClick={handleLogout} style={{ padding: '6px 10px', fontSize: 12 }}>
+              Logout
+            </button>
+          </div>
           {tab === 'Build' && (
             <div className="build-actions">
               <button onClick={handleNewBot}>New Bot</button>
-              <button onClick={handleSave}>Save</button>
-              <button>Open</button>
+              <div style={{ position: 'relative', display: 'inline-block' }}>
+                <button
+                  onClick={() => setSaveMenuOpen((v) => !v)}
+                  title="Save this bot to a watchlist"
+                >
+                  Save to Watchlist
+                </button>
+                {saveMenuOpen ? (
+                  <div
+                    className="menu"
+                    style={{ position: 'absolute', top: '100%', left: 0, zIndex: 50, minWidth: 240 }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {watchlists.map((w) => (
+                      <button key={w.id} onClick={() => handleSaveToWatchlist(w.id)}>
+                        {w.name}
+                      </button>
+                    ))}
+                    <div style={{ padding: 10 }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>New watchlist</div>
+                      <input
+                        value={saveNewWatchlistName}
+                        placeholder="Type a name…"
+                        onChange={(e) => setSaveNewWatchlistName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleSaveToWatchlist(saveNewWatchlistName)
+                        }}
+                        style={{ width: '100%' }}
+                      />
+                      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                        <button onClick={() => handleSaveToWatchlist(saveNewWatchlistName)} style={{ flex: 1 }}>
+                          Save
+                        </button>
+                        <button
+                          onClick={() => {
+                            setSaveMenuOpen(false)
+                            setSaveNewWatchlistName('')
+                          }}
+                          style={{ flex: 1 }}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+              <button onClick={() => setTab('Analyze')}>Open</button>
               <button onClick={handleImport}>Import</button>
               <button onClick={handleExport}>Export</button>
             </div>
@@ -5976,6 +6441,190 @@ const handleColorChange = useCallback(
               onChoosePosition={handleChoosePos}
               clipboard={clipboard}
             />
+
+            <div
+              style={{
+                position: 'fixed',
+                right: 14,
+                top: 140,
+                width: callPanelOpen ? 420 : 44,
+                maxHeight: 'calc(100vh - 170px)',
+                overflow: 'auto',
+                background: 'white',
+                border: '1px solid #cbd5e1',
+                borderRadius: 14,
+                boxShadow: '0 12px 28px rgba(15, 23, 42, 0.12)',
+                padding: callPanelOpen ? 12 : 6,
+                zIndex: 80,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                {callPanelOpen ? <div style={{ fontWeight: 900 }}>Calls</div> : null}
+                <button
+                  className="icon-btn"
+                  onClick={() => setCallPanelOpen((v) => !v)}
+                  title={callPanelOpen ? 'Collapse' : 'Expand'}
+                >
+                  {callPanelOpen ? '→' : '←'}
+                </button>
+              </div>
+              {callPanelOpen ? (
+                <>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                    <button onClick={handleAddCallChain}>Make new Call</button>
+                  </div>
+                  <div style={{ display: 'grid', gap: 10, marginTop: 10 }}>
+                    {callChains.length === 0 ? (
+                      <div style={{ color: '#64748b' }}>No call chains yet.</div>
+                    ) : (
+                      callChains.map((c) => (
+                        <div key={c.id} style={{ border: '1px solid #e5e7eb', borderRadius: 12, padding: 10 }}>
+                          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                            <input
+                              value={c.name}
+                              onChange={(e) => handleRenameCallChain(c.id, e.target.value)}
+                              style={{ flex: 1 }}
+                            />
+                            <button className="icon-btn" onClick={() => handleToggleCallChainCollapse(c.id)}>
+                              {c.collapsed ? 'Expand' : 'Collapse'}
+                            </button>
+                            <button
+                              className="icon-btn"
+                              onClick={async () => {
+                                try {
+                                  await navigator.clipboard.writeText(c.id)
+                                } catch {
+                                  // ignore
+                                }
+                              }}
+                              title="Copy call ID"
+                            >
+                              Copy ID
+                            </button>
+                          </div>
+                          <div style={{ fontSize: 12, color: '#64748b', marginTop: 6 }}>ID: {c.id}</div>
+                          {!c.collapsed ? (
+                            <div style={{ marginTop: 10 }}>
+                              <NodeCard
+                                node={c.root}
+                                depth={0}
+                                tickerOptions={tickerOptions}
+                                onAdd={(parentId, slot, index, kind) => {
+                                  const next = replaceSlot(c.root, parentId, slot, index, ensureSlots(createNode(kind)))
+                                  pushCallChain(c.id, next)
+                                }}
+                                onAppend={(parentId, slot) => {
+                                  const next = appendPlaceholder(c.root, parentId, slot)
+                                  pushCallChain(c.id, next)
+                                }}
+                                onRemoveSlotEntry={(parentId, slot, index) => {
+                                  const next = removeSlotEntry(c.root, parentId, slot, index)
+                                  pushCallChain(c.id, next)
+                                }}
+                                onDelete={(id) => {
+                                  const next = deleteNode(c.root, id)
+                                  pushCallChain(c.id, next)
+                                }}
+                                onCopy={(id) => {
+                                  const found = findNode(c.root, id)
+                                  if (!found) return
+                                  setClipboard(cloneNode(found))
+                                }}
+                                onPaste={(parentId, slot, index, child) => {
+                                  const next = replaceSlot(c.root, parentId, slot, index, ensureSlots(cloneNode(child)))
+                                  pushCallChain(c.id, next)
+                                }}
+                                onRename={(id, title) => {
+                                  const next = updateTitle(c.root, id, title)
+                                  pushCallChain(c.id, next)
+                                }}
+                                onWeightChange={(id, weight, branch) => {
+                                  const next = updateWeight(c.root, id, weight, branch)
+                                  pushCallChain(c.id, next)
+                                }}
+                                onUpdateCappedFallback={(id, choice, branch) => {
+                                  const next = updateCappedFallback(c.root, id, choice, branch)
+                                  pushCallChain(c.id, next)
+                                }}
+                                onUpdateVolWindow={(id, days, branch) => {
+                                  const next = updateVolWindow(c.root, id, days, branch)
+                                  pushCallChain(c.id, next)
+                                }}
+                                onColorChange={(id, color) => {
+                                  const next = updateColor(c.root, id, color)
+                                  pushCallChain(c.id, next)
+                                }}
+                                onToggleCollapse={(id, collapsed) => {
+                                  const next = updateCollapse(c.root, id, collapsed)
+                                  pushCallChain(c.id, next)
+                                }}
+                                onNumberedQuantifier={(id, quantifier) => {
+                                  const next = updateNumberedQuantifier(c.root, id, quantifier)
+                                  pushCallChain(c.id, next)
+                                }}
+                                onNumberedN={(id, n) => {
+                                  const next = updateNumberedN(c.root, id, n)
+                                  pushCallChain(c.id, next)
+                                }}
+                                onAddNumberedItem={(id) => {
+                                  const next = addNumberedItem(c.root, id)
+                                  pushCallChain(c.id, next)
+                                }}
+                                onDeleteNumberedItem={(id, itemId) => {
+                                  const next = deleteNumberedItem(c.root, id, itemId)
+                                  pushCallChain(c.id, next)
+                                }}
+                                onAddCondition={(id, type, itemId) => {
+                                  const next = addConditionLine(c.root, id, type, itemId)
+                                  pushCallChain(c.id, next)
+                                }}
+                                onDeleteCondition={(id, condId, itemId) => {
+                                  const next = deleteConditionLine(c.root, id, condId, itemId)
+                                  pushCallChain(c.id, next)
+                                }}
+                                onFunctionWindow={(id, value) => {
+                                  const next = updateFunctionWindow(c.root, id, value)
+                                  pushCallChain(c.id, next)
+                                }}
+                                onFunctionBottom={(id, value) => {
+                                  const next = updateFunctionBottom(c.root, id, value)
+                                  pushCallChain(c.id, next)
+                                }}
+                                onFunctionMetric={(id, metric) => {
+                                  const next = updateFunctionMetric(c.root, id, metric)
+                                  pushCallChain(c.id, next)
+                                }}
+                                onFunctionRank={(id, rank) => {
+                                  const next = updateFunctionRank(c.root, id, rank)
+                                  pushCallChain(c.id, next)
+                                }}
+                                onUpdateCondition={(id, condId, updates, itemId) => {
+                                  const next = updateConditionFields(c.root, id, condId, updates, itemId)
+                                  pushCallChain(c.id, next)
+                                }}
+                                onAddPosition={(id) => {
+                                  const next = addPositionRow(c.root, id)
+                                  pushCallChain(c.id, next)
+                                }}
+                                onRemovePosition={(id, index) => {
+                                  const next = removePositionRow(c.root, id, index)
+                                  pushCallChain(c.id, next)
+                                }}
+                                onChoosePosition={(id, index, choice) => {
+                                  const next = choosePosition(c.root, id, index, choice)
+                                  pushCallChain(c.id, next)
+                                }}
+                                clipboard={clipboard}
+                              />
+                            </div>
+                          ) : null}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </>
+              ) : null}
+            </div>
           </div>
         ) : tab === 'Admin' ? (
           <AdminPanel
@@ -5985,37 +6634,368 @@ const handleColorChange = useCallback(
               setAvailableTickers(next)
             }}
           />
-        ) : (
+        ) : tab === 'Analyze' ? (
           <div className="placeholder">
-            {tab === 'Portfolio'
-              ? 'Portfolio content coming soon.'
-              : tab === 'Community'
-                ? 'Community content coming soon.'
-                : savedBots.length === 0
-                  ? 'No saved bots yet.'
-                  : null}
-            {tab === 'Bot Database' && savedBots.length > 0 && (
-              <div className="saved-list">
-                {savedBots.map((b) => (
-                  <div key={b.id} className="saved-item">
-                    <button
-                      className="link-btn"
-                      onClick={() => {
-                        handleOpenSaved(b)
-                      }}
-                    >
-                      {b.name}
-                    </button>
-                    <div className="saved-actions">
-                      <button onClick={() => handleCopySaved(b)}>Copy</button>
-                      <button onClick={() => handleDeleteSaved(b.id)}>Delete</button>
-                    </div>
-                  </div>
-                ))}
+            <div style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ fontWeight: 900 }}>Analyze</div>
+              <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: '#64748b' }}>Filter</div>
+                <select
+                  value={uiState.analyzeFilterWatchlistId ?? ''}
+                  onChange={(e) =>
+                    setUiState((prev) => ({ ...prev, analyzeFilterWatchlistId: e.target.value ? e.target.value : null }))
+                  }
+                >
+                  <option value="">All watchlists</option>
+                  {watchlists.map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {w.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            {analyzeVisibleBotIds.length === 0 ? (
+              <div style={{ marginTop: 12, color: '#64748b' }}>No bots in your watchlists yet.</div>
+            ) : (
+              <div className="saved-list" style={{ marginTop: 12 }}>
+                {analyzeVisibleBotIds
+                  .map((id) => savedBots.find((b) => b.id === id))
+                  .filter((b): b is SavedBot => Boolean(b))
+                  .map((b) => {
+                    const collapsed = uiState.analyzeCollapsedByBotId[b.id] ?? true
+                    const analyzeState = analyzeBacktests[b.id]
+                    const tags = watchlistsByBotId.get(b.id) ?? []
+                    return (
+                      <div key={b.id} className="saved-item" style={{ display: 'grid', gap: 10 }}>
+                        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                          <button
+                            onClick={() => {
+                              const next = !(uiState.analyzeCollapsedByBotId[b.id] ?? true)
+                              setUiState((prev) => ({
+                                ...prev,
+                                analyzeCollapsedByBotId: { ...prev.analyzeCollapsedByBotId, [b.id]: next },
+                              }))
+                              if (!next) runAnalyzeBacktest(b)
+                            }}
+                            style={{ padding: '6px 10px' }}
+                          >
+                            {collapsed ? 'Expand' : 'Collapse'}
+                          </button>
+                          <div style={{ fontWeight: 900 }}>{b.name}</div>
+                          {b.visibility === 'community' ? (
+                            <div style={{ fontSize: 12, fontWeight: 800, color: '#0f172a', background: '#e0f2fe', padding: '4px 8px', borderRadius: 999 }}>
+                              Community
+                            </div>
+                          ) : null}
+                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                            {tags.map((w) => (
+                              <div key={w.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px', borderRadius: 999, background: '#eff6ff', fontSize: 12, fontWeight: 800 }}>
+                                {w.name}
+                                <button
+                                  className="icon-btn delete inline"
+                                  onClick={() => removeBotFromWatchlist(b.id, w.id)}
+                                  title={`Remove from ${w.name}`}
+                                >
+                                  X
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                            {b.visibility !== 'community' ? (
+                              <button onClick={() => handleOpenSaved(b)}>Open in Build</button>
+                            ) : null}
+                            <button
+                              onClick={() => {
+                                setAddToWatchlistBotId(b.id)
+                                setAddToWatchlistNewName('')
+                              }}
+                            >
+                              Add to Watchlist
+                            </button>
+                            {b.visibility !== 'community' ? (
+                              <button onClick={() => handleCopySaved(b)}>Copy</button>
+                            ) : null}
+                            <button onClick={() => handleDeleteSaved(b.id)}>Delete</button>
+                          </div>
+                        </div>
+
+                        {!collapsed ? (
+                          <div style={{ display: 'grid', gap: 14 }}>
+                            {analyzeState?.status === 'loading' ? (
+                              <div style={{ color: '#64748b' }}>Running backtest…</div>
+                            ) : analyzeState?.status === 'error' ? (
+                              <div style={{ display: 'grid', gap: 8 }}>
+                                <div style={{ color: '#b91c1c', fontWeight: 800 }}>{analyzeState.error ?? 'Failed to run backtest.'}</div>
+                                <button onClick={() => runAnalyzeBacktest(b)}>Retry</button>
+                              </div>
+                            ) : analyzeState?.status === 'done' ? (
+                              <>
+                                <div>
+                                  <div style={{ fontWeight: 900, marginBottom: 8 }}>Real Stats</div>
+                                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
+                                    <div>
+                                      <div className="stat-label">Total Return</div>
+                                      <div className="stat-value">{formatPct(analyzeState.result?.metrics.totalReturn ?? NaN)}</div>
+                                    </div>
+                                    <div>
+                                      <div className="stat-label">CAGR</div>
+                                      <div className="stat-value">{formatPct(analyzeState.result?.metrics.cagr ?? NaN)}</div>
+                                    </div>
+                                    <div>
+                                      <div className="stat-label">Max Drawdown</div>
+                                      <div className="stat-value">{formatPct(analyzeState.result?.metrics.maxDrawdown ?? NaN)}</div>
+                                    </div>
+                                    <div>
+                                      <div className="stat-label">Sharpe</div>
+                                      <div className="stat-value">
+                                        {Number.isFinite(analyzeState.result?.metrics.sharpe ?? NaN)
+                                          ? (analyzeState.result?.metrics.sharpe ?? 0).toFixed(2)
+                                          : '—'}
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                <div>
+                                  <div style={{ fontWeight: 900, marginBottom: 8 }}>Historical Stats</div>
+                                  <Sparkline points={analyzeState.result?.points ?? []} />
+                                  <div style={{ fontSize: 12, color: '#94a3b8' }}>Equity (sampled)</div>
+                                  <Sparkline points={analyzeState.result?.drawdownPoints ?? []} color="#ef4444" />
+                                  <div style={{ fontSize: 12, color: '#94a3b8' }}>Drawdown</div>
+                                </div>
+
+                                <div>
+                                  <div style={{ fontWeight: 900, marginBottom: 8 }}>Historical Backtest</div>
+                                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
+                                    <div>
+                                      <div className="stat-label">Volatility</div>
+                                      <div className="stat-value">{formatPct(analyzeState.result?.metrics.vol ?? NaN)}</div>
+                                    </div>
+                                    <div>
+                                      <div className="stat-label">Win Rate</div>
+                                      <div className="stat-value">{formatPct(analyzeState.result?.metrics.winRate ?? NaN)}</div>
+                                    </div>
+                                    <div>
+                                      <div className="stat-label">Avg Turnover</div>
+                                      <div className="stat-value">{formatPct(analyzeState.result?.metrics.avgTurnover ?? NaN)}</div>
+                                    </div>
+                                    <div>
+                                      <div className="stat-label">Avg Holdings</div>
+                                      <div className="stat-value">
+                                        {Number.isFinite(analyzeState.result?.metrics.avgHoldings ?? NaN)
+                                          ? (analyzeState.result?.metrics.avgHoldings ?? 0).toFixed(1)
+                                          : '—'}
+                                      </div>
+                                    </div>
+                                    <div>
+                                      <div className="stat-label">Start → End</div>
+                                      <div className="stat-value">
+                                        {analyzeState.result?.metrics.startDate} → {analyzeState.result?.metrics.endDate}
+                                      </div>
+                                    </div>
+                                    <div>
+                                      <div className="stat-label">Trading Days</div>
+                                      <div className="stat-value">{analyzeState.result?.metrics.days ?? '—'}</div>
+                                    </div>
+                                  </div>
+                                </div>
+                              </>
+                            ) : (
+                              <button onClick={() => runAnalyzeBacktest(b)}>Run backtest</button>
+                            )}
+                          </div>
+                        ) : null}
+                      </div>
+                    )
+                  })}
               </div>
             )}
           </div>
+        ) : tab === 'Community' ? (
+          <div className="placeholder">
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 14, alignItems: 'start' }}>
+              <div>
+                <div style={{ fontWeight: 900, marginBottom: 10 }}>Top Community Bots by Metric</div>
+                <div style={{ display: 'grid', gap: 10 }}>
+                  {(['Best CAGR', 'Best Sharpe', 'Best CAGR/DD', 'BrianE'] as const).map((section) => (
+                    <div key={section} style={{ border: '1px solid #e5e7eb', borderRadius: 12, padding: 12 }}>
+                      <div style={{ fontWeight: 900, marginBottom: 8 }}>{section}</div>
+                      <div style={{ color: '#64748b', fontSize: 12, marginBottom: 8 }}>
+                        Community bots are read-only: you can add them to your watchlists or view them in Analyze, but you cannot open them in Build.
+                      </div>
+                      <div style={{ display: 'grid', gap: 8 }}>
+                        {savedBots.filter((b) => b.visibility === 'community').length === 0 ? (
+                          <div style={{ color: '#64748b' }}>No community bots available yet.</div>
+                        ) : (
+                          savedBots
+                            .filter((b) => b.visibility === 'community')
+                            .slice(0, 10)
+                            .map((b) => (
+                              <div key={b.id} className="saved-item" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                <div style={{ fontWeight: 900 }}>{b.name}</div>
+                                <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+                                  <button
+                                    onClick={() => {
+                                      setAddToWatchlistBotId(b.id)
+                                      setAddToWatchlistNewName('')
+                                    }}
+                                  >
+                                    Add to my watchlist
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      const wlId =
+                                        uiState.communitySelectedWatchlistId ??
+                                        watchlists.find((w) => w.name === 'Default')?.id ??
+                                        watchlists[0]?.id ??
+                                        null
+                                      if (!wlId) {
+                                        alert('Create a watchlist first.')
+                                        return
+                                      }
+                                      addBotToWatchlist(b.id, wlId)
+                                      setUiState((prev) => ({ ...prev, analyzeFilterWatchlistId: wlId }))
+                                      setTab('Analyze')
+                                    }}
+                                  >
+                                    View in Analyze
+                                  </button>
+                                </div>
+                              </div>
+                            ))
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div style={{ border: '1px solid #e5e7eb', borderRadius: 12, padding: 12 }}>
+                <div style={{ fontWeight: 900, marginBottom: 10 }}>My Watchlist</div>
+                <label style={{ display: 'grid', gap: 6 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: '#64748b' }}>Select watchlist</div>
+                  <select
+                    value={uiState.communitySelectedWatchlistId ?? ''}
+                    onChange={(e) =>
+                      setUiState((prev) => ({
+                        ...prev,
+                        communitySelectedWatchlistId: e.target.value ? e.target.value : null,
+                      }))
+                    }
+                  >
+                    <option value="">Default</option>
+                    {watchlists
+                      .filter((w) => w.name !== 'Default')
+                      .map((w) => (
+                        <option key={w.id} value={w.id}>
+                          {w.name}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+                {(() => {
+                  const selectedId =
+                    uiState.communitySelectedWatchlistId ??
+                    watchlists.find((w) => w.name === 'Default')?.id ??
+                    watchlists[0]?.id ??
+                    null
+                  const wl = selectedId ? watchlistsById.get(selectedId) : null
+                  const ids = wl?.botIds ?? []
+                  if (!ids.length) return <div style={{ marginTop: 12, color: '#64748b' }}>No bots yet.</div>
+                  return (
+                    <div style={{ marginTop: 12, display: 'grid', gap: 8 }}>
+                      {ids
+                        .map((id) => savedBots.find((b) => b.id === id))
+                        .filter((b): b is SavedBot => Boolean(b))
+                        .map((b) => (
+                          <div key={b.id} className="saved-item" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                            <div style={{ fontWeight: 900 }}>{b.name}</div>
+                            {b.visibility === 'community' ? (
+                              <div style={{ fontSize: 12, fontWeight: 800, color: '#0f172a', background: '#e0f2fe', padding: '4px 8px', borderRadius: 999 }}>
+                                Community
+                              </div>
+                            ) : null}
+                            <button
+                              className="icon-btn delete inline"
+                              style={{ marginLeft: 'auto' }}
+                              onClick={() => selectedId && removeBotFromWatchlist(b.id, selectedId)}
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        ))}
+                    </div>
+                  )
+                })()}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="placeholder">{tab === 'Portfolio' ? 'Portfolio content coming soon.' : null}</div>
         )}
+
+        {addToWatchlistBotId ? (
+          <div
+            style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'rgba(15, 23, 42, 0.35)',
+              display: 'grid',
+              placeItems: 'center',
+              zIndex: 200,
+            }}
+            onClick={() => setAddToWatchlistBotId(null)}
+          >
+            <div
+              style={{ width: 420, background: 'white', borderRadius: 12, padding: 12, border: '1px solid #e5e7eb' }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div style={{ fontWeight: 900, marginBottom: 10 }}>Add to Watchlist</div>
+              <div style={{ display: 'grid', gap: 8 }}>
+                {watchlists.map((w) => (
+                  <button
+                    key={w.id}
+                    onClick={() => {
+                      if (addToWatchlistBotId) handleConfirmAddToWatchlist(addToWatchlistBotId, w.id)
+                    }}
+                  >
+                    {w.name}
+                  </button>
+                ))}
+                <div style={{ marginTop: 4, paddingTop: 10, borderTop: '1px solid #e5e7eb' }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>Create new</div>
+                  <input
+                    value={addToWatchlistNewName}
+                    placeholder="Watchlist name…"
+                    onChange={(e) => setAddToWatchlistNewName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        if (addToWatchlistBotId) handleConfirmAddToWatchlist(addToWatchlistBotId, addToWatchlistNewName)
+                      }
+                    }}
+                    style={{ width: '100%' }}
+                  />
+                  <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                    <button
+                      onClick={() => {
+                        if (addToWatchlistBotId) handleConfirmAddToWatchlist(addToWatchlistBotId, addToWatchlistNewName)
+                      }}
+                      style={{ flex: 1 }}
+                    >
+                      Add
+                    </button>
+                    <button onClick={() => setAddToWatchlistBotId(null)} style={{ flex: 1 }}>
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
       </main>
     </div>
   )
