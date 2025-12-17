@@ -1105,6 +1105,28 @@ select {
   font-weight: 700;
 }
 
+.analyze-ticker-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.analyze-ticker-table th,
+.analyze-ticker-table td {
+  border: 1px solid #e2e8f0;
+  padding: 8px 10px;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.analyze-ticker-table thead th {
+  background: #f8fafc;
+  font-size: 11px;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
 .pnl-positive {
   color: #15803d;
 }

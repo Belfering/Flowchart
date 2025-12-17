@@ -4191,6 +4191,13 @@ type BacktestResult = {
   trace?: BacktestTrace
 }
 
+type TickerContributionState = {
+  status: 'idle' | 'loading' | 'error' | 'done'
+  returnPct?: number
+  maxDD?: number
+  error?: string
+}
+
 const formatPct = (v: number) => (Number.isFinite(v) ? `${(v * 100).toFixed(2)}%` : '—')
 
 const formatUsd = (v: number, options?: Intl.NumberFormatOptions) => {
@@ -6065,7 +6072,7 @@ function App() {
   const [callChains, setCallChains] = useState<CallChain[]>(() => initialUserData.callChains)
   const [uiState, setUiState] = useState<UserUiState>(() => initialUserData.ui)
   const [analyzeBacktests, setAnalyzeBacktests] = useState<Record<string, AnalyzeBacktestState>>({})
-  const [analyzeTickerBacktests, setAnalyzeTickerBacktests] = useState<Record<string, AnalyzeBacktestState>>({})
+  const [analyzeTickerContrib, setAnalyzeTickerContrib] = useState<Record<string, TickerContributionState>>({})
   const [partnerFundBacktests, setPartnerFundBacktests] = useState<Record<string, AnalyzeBacktestState>>({})
   const [partnerFundCollapsedById, setPartnerFundCollapsedById] = useState<Record<string, boolean>>({})
 
@@ -6865,24 +6872,73 @@ function App() {
     [runBacktestForNode],
   )
 
-  const runAnalyzeTickerBacktest = useCallback(
-    async (key: string, root: FlowNode) => {
-      setAnalyzeTickerBacktests((prev) => {
+  const runAnalyzeTickerContribution = useCallback(
+    async (key: string, ticker: string, botResult: BacktestResult) => {
+      setAnalyzeTickerContrib((prev) => {
         if (prev[key]?.status === 'loading') return prev
         return { ...prev, [key]: { status: 'loading' } }
       })
       try {
-        const { result } = await runBacktestForNode(root)
-        setAnalyzeTickerBacktests((prev) => ({ ...prev, [key]: { status: 'done', result } }))
-      } catch (err) {
-        let message = String((err as Error)?.message || err)
-        if (isValidationError(err)) {
-          message = err.errors.map((e: BacktestError) => e.message).join(', ')
+        const bars = await fetchOhlcSeries(ticker, 20000)
+        const barMap = new Map<number, { open: number; close: number }>()
+        for (const b of bars) barMap.set(Number(b.time), { open: Number(b.open), close: Number(b.close) })
+
+        const days = botResult.days || []
+        const points = botResult.points || []
+        let cumulative = 0
+        let peak = 1
+        let maxDD = 0
+
+        for (let i = 0; i < days.length; i++) {
+          const day = days[i]
+          const prevBotEquity = i === 0 ? 1 : days[i - 1]?.equity ?? 1
+          const weight = day.holdings?.find((h) => normalizeChoice(h.ticker) === normalizeChoice(ticker))?.weight ?? 0
+          if (!(Number.isFinite(weight) && weight > 0)) {
+            const eq = 1 + cumulative
+            if (eq > peak) peak = eq
+            if (peak > 0) maxDD = Math.min(maxDD, eq / peak - 1)
+            continue
+          }
+
+          const endTime = day.time
+          const startTime = backtestMode === 'OC' ? endTime : (points[i]?.time ?? endTime)
+          const startBar = barMap.get(Number(startTime))
+          const endBar = barMap.get(Number(endTime))
+          const entry =
+            backtestMode === 'OO' || backtestMode === 'OC' ? startBar?.open : startBar?.close
+          const exit =
+            backtestMode === 'OO'
+              ? endBar?.open
+              : backtestMode === 'CC'
+                ? endBar?.close
+                : backtestMode === 'CO'
+                  ? endBar?.open
+                  : startBar?.close
+          if (entry == null || exit == null || !(entry > 0) || !(exit > 0)) {
+            const eq = 1 + cumulative
+            if (eq > peak) peak = eq
+            if (peak > 0) maxDD = Math.min(maxDD, eq / peak - 1)
+            continue
+          }
+
+          const r = exit / entry - 1
+          const dailyDollar = prevBotEquity * weight * r
+          if (Number.isFinite(dailyDollar)) cumulative += dailyDollar
+
+          const eq = 1 + cumulative
+          if (eq > peak) peak = eq
+          if (peak > 0) maxDD = Math.min(maxDD, eq / peak - 1)
         }
-        setAnalyzeTickerBacktests((prev) => ({ ...prev, [key]: { status: 'error', error: message } }))
+
+        const botTotal = days.length ? (days[days.length - 1].equity ?? 1) - 1 : 0
+        const returnPct = botTotal !== 0 ? cumulative / botTotal : 0
+        setAnalyzeTickerContrib((prev) => ({ ...prev, [key]: { status: 'done', returnPct, maxDD } }))
+      } catch (err) {
+        const message = String((err as Error)?.message || err)
+        setAnalyzeTickerContrib((prev) => ({ ...prev, [key]: { status: 'error', error: message } }))
       }
     },
-    [runBacktestForNode],
+    [backtestMode],
   )
 
   const runPartnerFundBacktest = useCallback(
@@ -6921,6 +6977,8 @@ function App() {
       if (uiState.analyzeCollapsedByBotId[bot.id] !== false) continue
       const state = analyzeBacktests[bot.id]
       if (!state || state.status !== 'done') continue
+      const botResult = state.result
+      if (!botResult) continue
       try {
         const prepared = normalizeNodeForBacktest(ensureSlots(cloneNode(bot.payload)))
         const inputs = collectBacktestInputs(prepared, callChainsById)
@@ -6929,22 +6987,18 @@ function App() {
             (inputs.tickers || []).map((t) => normalizeChoice(t)).filter((t) => t && t !== 'Empty' && t !== 'CASH'),
           ),
         )
+        tickers.sort()
         for (const t of tickers) {
-          const key = `${bot.id}:${t}`
-          if (analyzeTickerBacktests[key]) continue
-          const root = ensureSlots(createNode('basic'))
-          root.title = `Buy & Hold ${t}`
-          const pos = ensureSlots(createNode('position'))
-          pos.positions = [t]
-          pos.collapsed = true
-          root.children.next = [pos]
-          runAnalyzeTickerBacktest(key, root)
+          const key = `${bot.id}:${t}:${backtestMode}:${botResult.metrics.startDate}:${botResult.metrics.endDate}`
+          const existing = analyzeTickerContrib[key]
+          if (existing && existing.status !== 'idle') continue
+          runAnalyzeTickerContribution(key, t, botResult)
         }
       } catch {
         // ignore
       }
     }
-  }, [savedBots, uiState.analyzeCollapsedByBotId, analyzeBacktests, analyzeTickerBacktests, runAnalyzeTickerBacktest, callChainsById])
+  }, [savedBots, uiState.analyzeCollapsedByBotId, analyzeBacktests, analyzeTickerContrib, runAnalyzeTickerContribution, callChainsById, backtestMode])
 
   const handleAddCallChain = useCallback(() => {
     const id = `call-${newId()}`
@@ -7892,6 +7946,7 @@ function App() {
                                     if (analyzeState?.status !== 'done' || !analyzeState.result) {
                                       return <div style={{ padding: 10, color: 'var(--muted)' }}>Run a backtest to populate historical stats.</div>
                                     }
+                                    const botRes = analyzeState.result
                                     const prepared = normalizeNodeForBacktest(ensureSlots(cloneNode(b.payload)))
                                     const inputs = collectBacktestInputs(prepared, callChainsById)
                                     const tickers = Array.from(
@@ -7903,7 +7958,7 @@ function App() {
                                     ).sort()
                                     if (!tickers.length) return <div style={{ padding: 10, color: 'var(--muted)' }}>No tickers found.</div>
 
-                                    const days = analyzeState.result.days || []
+                                    const days = botRes.days || []
                                     const denom = days.length || 1
                                     const allocSum = new Map<string, number>()
                                     for (const d of days) {
@@ -7916,35 +7971,47 @@ function App() {
                                     const histAlloc = (ticker: string) => (allocSum.get(ticker) || 0) / denom
 
                                     return (
-                                      <table className="portfolio-table" style={{ width: '100%', fontSize: 12 }}>
+                                      <table className="analyze-ticker-table">
                                         <thead>
                                           <tr>
                                             <th />
-                                            <th colSpan={3}>Live</th>
-                                            <th colSpan={3}>Historical</th>
+                                            <th colSpan={3} style={{ textAlign: 'center' }}>
+                                              Live
+                                            </th>
+                                            <th colSpan={3} style={{ textAlign: 'center' }}>
+                                              Historical
+                                            </th>
                                           </tr>
                                           <tr>
                                             <th>Tickers</th>
                                             <th>Allocation</th>
                                             <th>CAGR</th>
-                                            <th>MaxDD</th>
+                                            <th>Max DD</th>
                                             <th>Allocation</th>
-                                            <th>CAGR</th>
-                                            <th>MaxDD</th>
+                                            <th>Return %</th>
+                                            <th>Max DD</th>
                                           </tr>
                                         </thead>
                                         <tbody>
                                           {tickers.map((t) => {
-                                            const key = `${b.id}:${t}`
-                                            const st = analyzeTickerBacktests[key]
-                                            const histCagr =
-                                              st?.status === 'done' ? formatPct(st.result?.metrics.cagr ?? NaN) : st?.status === 'loading' ? '…' : '—'
+                                            const key = `${b.id}:${t}:${backtestMode}:${botRes.metrics.startDate}:${botRes.metrics.endDate}`
+                                            const st = analyzeTickerContrib[key]
+                                            const histReturn =
+                                              !st
+                                                ? '...'
+                                                : st.status === 'done'
+                                                  ? formatPct(st.returnPct ?? NaN)
+                                                  : st.status === 'loading'
+                                                    ? '...'
+                                                    : '—'
                                             const histMaxdd =
-                                              st?.status === 'done'
-                                                ? formatPct(st.result?.metrics.maxDrawdown ?? NaN)
-                                                : st?.status === 'loading'
-                                                  ? '…'
-                                                  : '—'
+                                              !st
+                                                ? '...'
+                                                : st.status === 'done'
+                                                  ? formatPct(st.maxDD ?? NaN)
+                                                  : st.status === 'loading'
+                                                    ? '...'
+                                                    : '—'
                                             return (
                                               <tr key={t}>
                                                 <td style={{ fontWeight: 900 }}>{t}</td>
@@ -7952,7 +8019,7 @@ function App() {
                                                 <td>{formatPct(0)}</td>
                                                 <td>{formatPct(0)}</td>
                                                 <td>{formatPct(histAlloc(t))}</td>
-                                                <td>{histCagr}</td>
+                                                <td>{histReturn}</td>
                                                 <td>{histMaxdd}</td>
                                               </tr>
                                             )
