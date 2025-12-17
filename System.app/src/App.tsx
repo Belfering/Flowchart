@@ -7877,9 +7877,9 @@ function App() {
                                   <div
                                     style={{
                                       display: 'grid',
-                                      gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
+                                      gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
                                       gap: 10,
-                                      overflowX: 'auto',
+                                      width: '100%',
                                     }}
                                   >
                                     <div>
@@ -7901,10 +7901,10 @@ function App() {
                                   </div>
                                 </div>
 
-                                <div>
+                                <div style={{ width: '100%' }}>
                                   <div style={{ fontWeight: 900, marginBottom: 6 }}>Backtest Snapshot</div>
                                   <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 10 }}>Benchmark: {backtestBenchmark}</div>
-                                    <div style={{ maxWidth: '100%', overflow: 'hidden' }}>
+                                  <div style={{ width: '100%', maxWidth: '100%', overflow: 'hidden' }}>
                                     <EquityChart
                                       points={analyzeState.result?.points ?? []}
                                       benchmarkPoints={analyzeState.result?.benchmarkPoints}
@@ -7913,11 +7913,11 @@ function App() {
                                       showCursorStats={false}
                                       heightPx={390}
                                     />
-                                    </div>
-                                    <div style={{ marginTop: 10 }}>
-                                      <DrawdownChart points={analyzeState.result?.drawdownPoints ?? []} />
-                                    </div>
                                   </div>
+                                  <div style={{ marginTop: 10, width: '100%' }}>
+                                    <DrawdownChart points={analyzeState.result?.drawdownPoints ?? []} />
+                                  </div>
+                                </div>
 
                                 <div>
                                   <div style={{ fontWeight: 900, marginBottom: 8 }}>Hist Stats</div>
@@ -7928,6 +7928,7 @@ function App() {
                                         gap: 10,
                                         overflowX: 'auto',
                                         maxWidth: '100%',
+                                        width: '100%',
                                       }}
                                     >
                                     <div>
