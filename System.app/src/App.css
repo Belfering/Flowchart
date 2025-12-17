@@ -1109,6 +1109,7 @@ select {
   width: 100%;
   border-collapse: collapse;
   font-size: 12px;
+  table-layout: fixed;
 }
 
 .analyze-ticker-table th,
@@ -1117,6 +1118,9 @@ select {
   padding: 8px 10px;
   text-align: center;
   vertical-align: middle;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .analyze-ticker-table thead th {
@@ -1130,15 +1134,19 @@ select {
 .analyze-compare-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: 11px;
+  table-layout: fixed;
 }
 
 .analyze-compare-table th,
 .analyze-compare-table td {
   border: 1px solid #e2e8f0;
-  padding: 8px 10px;
+  padding: 6px 6px;
   text-align: center;
   vertical-align: middle;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .analyze-compare-table thead th {
@@ -1153,6 +1161,7 @@ select {
   text-align: left;
   font-weight: 900;
   color: #0f172a;
+  white-space: normal;
 }
 
 .pnl-positive {

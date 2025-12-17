@@ -7851,12 +7851,15 @@ function App() {
                         </div>
 
                         {!collapsed ? (
-                              <div
+                          <div
                             style={{
                               display: 'grid',
-                              gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr)',
-                              gap: 12,
+                              width: '100%',
+                              maxWidth: '100%',
+                              gridTemplateColumns: 'minmax(0, 1.35fr) minmax(0, 0.85fr) minmax(0, 1.15fr)',
+                              gap: 10,
                               alignItems: 'stretch',
+                              overflowX: 'hidden',
                             }}
                           >
                             <div className="saved-item" style={{ display: 'grid', gap: 14, height: '100%', minWidth: 0, overflow: 'hidden' }}>
@@ -7901,22 +7904,32 @@ function App() {
                                 <div>
                                   <div style={{ fontWeight: 900, marginBottom: 6 }}>Backtest Snapshot</div>
                                   <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 10 }}>Benchmark: {backtestBenchmark}</div>
-                                  <EquityChart
-                                    points={analyzeState.result?.points ?? []}
-                                    benchmarkPoints={analyzeState.result?.benchmarkPoints}
-                                    markers={analyzeState.result?.markers ?? []}
-                                    logScale
-                                    showCursorStats={false}
-                                    heightPx={390}
-                                  />
-                                  <div style={{ marginTop: 10 }}>
-                                    <DrawdownChart points={analyzeState.result?.drawdownPoints ?? []} />
+                                    <div style={{ maxWidth: '100%', overflow: 'hidden' }}>
+                                    <EquityChart
+                                      points={analyzeState.result?.points ?? []}
+                                      benchmarkPoints={analyzeState.result?.benchmarkPoints}
+                                      markers={analyzeState.result?.markers ?? []}
+                                      logScale
+                                      showCursorStats={false}
+                                      heightPx={390}
+                                    />
+                                    </div>
+                                    <div style={{ marginTop: 10 }}>
+                                      <DrawdownChart points={analyzeState.result?.drawdownPoints ?? []} />
+                                    </div>
                                   </div>
-                                </div>
 
                                 <div>
                                   <div style={{ fontWeight: 900, marginBottom: 8 }}>Hist Stats</div>
-                                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(160px, 1fr))', gap: 10, overflowX: 'auto' }}>
+                                    <div
+                                      style={{
+                                        display: 'grid',
+                                        gridTemplateColumns: 'repeat(4, minmax(140px, 1fr))',
+                                        gap: 10,
+                                        overflowX: 'auto',
+                                        maxWidth: '100%',
+                                      }}
+                                    >
                                     <div>
                                       <div className="stat-label">CAGR</div>
                                       <div className="stat-value">{formatPct(analyzeState.result?.metrics.cagr ?? NaN)}</div>
@@ -7972,7 +7985,7 @@ function App() {
                               <div style={{ fontWeight: 900 }}>Information</div>
                               <div style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 800 }}>Placeholder text: Information, tickers, etc</div>
                               <div style={{ fontWeight: 900, marginTop: 6 }}>Tickers</div>
-                              <div style={{ flex: 1, overflow: 'auto', border: '1px solid #e2e8f0', borderRadius: 12 }}>
+                              <div style={{ flex: 1, overflow: 'auto', border: '1px solid #e2e8f0', borderRadius: 12, maxWidth: '100%' }}>
                                 {(() => {
                                   try {
                                     if (analyzeState?.status !== 'done' || !analyzeState.result) {
@@ -8072,7 +8085,7 @@ function App() {
                                 <button style={{ padding: '6px 10px', fontSize: 12 }}>Run</button>
                               </div>
                               <div style={{ fontWeight: 900 }}>Comparison Table</div>
-                              <div style={{ flex: 1, overflow: 'auto', border: '1px solid #e2e8f0', borderRadius: 12 }}>
+                              <div style={{ flex: 1, overflow: 'auto', border: '1px solid #e2e8f0', borderRadius: 12, maxWidth: '100%' }}>
                                 {(() => {
                                   const rows = [
                                     'Monte Carlo Comparison',
