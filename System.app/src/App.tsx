@@ -6065,6 +6065,7 @@ function App() {
   const [callChains, setCallChains] = useState<CallChain[]>(() => initialUserData.callChains)
   const [uiState, setUiState] = useState<UserUiState>(() => initialUserData.ui)
   const [analyzeBacktests, setAnalyzeBacktests] = useState<Record<string, AnalyzeBacktestState>>({})
+  const [analyzeTickerBacktests, setAnalyzeTickerBacktests] = useState<Record<string, AnalyzeBacktestState>>({})
   const [partnerFundBacktests, setPartnerFundBacktests] = useState<Record<string, AnalyzeBacktestState>>({})
   const [partnerFundCollapsedById, setPartnerFundCollapsedById] = useState<Record<string, boolean>>({})
 
@@ -6864,6 +6865,26 @@ function App() {
     [runBacktestForNode],
   )
 
+  const runAnalyzeTickerBacktest = useCallback(
+    async (key: string, root: FlowNode) => {
+      setAnalyzeTickerBacktests((prev) => {
+        if (prev[key]?.status === 'loading') return prev
+        return { ...prev, [key]: { status: 'loading' } }
+      })
+      try {
+        const { result } = await runBacktestForNode(root)
+        setAnalyzeTickerBacktests((prev) => ({ ...prev, [key]: { status: 'done', result } }))
+      } catch (err) {
+        let message = String((err as Error)?.message || err)
+        if (isValidationError(err)) {
+          message = err.errors.map((e: BacktestError) => e.message).join(', ')
+        }
+        setAnalyzeTickerBacktests((prev) => ({ ...prev, [key]: { status: 'error', error: message } }))
+      }
+    },
+    [runBacktestForNode],
+  )
+
   const runPartnerFundBacktest = useCallback(
     async (fundId: string, root: FlowNode) => {
       setPartnerFundBacktests((prev) => {
@@ -6894,6 +6915,36 @@ function App() {
       }
     })
   }, [savedBots, uiState.analyzeCollapsedByBotId, analyzeBacktests, runAnalyzeBacktest])
+
+  useEffect(() => {
+    for (const bot of savedBots) {
+      if (uiState.analyzeCollapsedByBotId[bot.id] !== false) continue
+      const state = analyzeBacktests[bot.id]
+      if (!state || state.status !== 'done') continue
+      try {
+        const prepared = normalizeNodeForBacktest(ensureSlots(cloneNode(bot.payload)))
+        const inputs = collectBacktestInputs(prepared, callChainsById)
+        const tickers = Array.from(
+          new Set(
+            (inputs.tickers || []).map((t) => normalizeChoice(t)).filter((t) => t && t !== 'Empty' && t !== 'CASH'),
+          ),
+        )
+        for (const t of tickers) {
+          const key = `${bot.id}:${t}`
+          if (analyzeTickerBacktests[key]) continue
+          const root = ensureSlots(createNode('basic'))
+          root.title = `Buy & Hold ${t}`
+          const pos = ensureSlots(createNode('position'))
+          pos.positions = [t]
+          pos.collapsed = true
+          root.children.next = [pos]
+          runAnalyzeTickerBacktest(key, root)
+        }
+      } catch {
+        // ignore
+      }
+    }
+  }, [savedBots, uiState.analyzeCollapsedByBotId, analyzeBacktests, analyzeTickerBacktests, runAnalyzeTickerBacktest, callChainsById])
 
   const handleAddCallChain = useCallback(() => {
     const id = `call-${newId()}`
@@ -7838,6 +7889,9 @@ function App() {
                               <div style={{ maxHeight: 260, overflow: 'auto', border: '1px solid #e2e8f0', borderRadius: 12 }}>
                                 {(() => {
                                   try {
+                                    if (analyzeState?.status !== 'done' || !analyzeState.result) {
+                                      return <div style={{ padding: 10, color: 'var(--muted)' }}>Run a backtest to populate historical stats.</div>
+                                    }
                                     const prepared = normalizeNodeForBacktest(ensureSlots(cloneNode(b.payload)))
                                     const inputs = collectBacktestInputs(prepared, callChainsById)
                                     const tickers = Array.from(
@@ -7847,18 +7901,64 @@ function App() {
                                           .filter((t) => t && t !== 'Empty' && t !== 'CASH'),
                                       ),
                                     ).sort()
-                                    return tickers.length ? (
-                                      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                                    if (!tickers.length) return <div style={{ padding: 10, color: 'var(--muted)' }}>No tickers found.</div>
+
+                                    const days = analyzeState.result.days || []
+                                    const denom = days.length || 1
+                                    const allocSum = new Map<string, number>()
+                                    for (const d of days) {
+                                      for (const h of d.holdings || []) {
+                                        const key = normalizeChoice(h.ticker)
+                                        if (key === 'CASH' || key === 'Empty') continue
+                                        allocSum.set(key, (allocSum.get(key) || 0) + Number(h.weight || 0))
+                                      }
+                                    }
+                                    const histAlloc = (ticker: string) => (allocSum.get(ticker) || 0) / denom
+
+                                    return (
+                                      <table className="portfolio-table" style={{ width: '100%', fontSize: 12 }}>
+                                        <thead>
+                                          <tr>
+                                            <th />
+                                            <th colSpan={3}>Live</th>
+                                            <th colSpan={3}>Historical</th>
+                                          </tr>
+                                          <tr>
+                                            <th>Tickers</th>
+                                            <th>Allocation</th>
+                                            <th>CAGR</th>
+                                            <th>MaxDD</th>
+                                            <th>Allocation</th>
+                                            <th>CAGR</th>
+                                            <th>MaxDD</th>
+                                          </tr>
+                                        </thead>
                                         <tbody>
-                                          {tickers.map((t) => (
-                                            <tr key={t}>
-                                              <td style={{ padding: '8px 10px', borderBottom: '1px solid #e2e8f0', fontWeight: 900 }}>{t}</td>
-                                            </tr>
-                                          ))}
+                                          {tickers.map((t) => {
+                                            const key = `${b.id}:${t}`
+                                            const st = analyzeTickerBacktests[key]
+                                            const histCagr =
+                                              st?.status === 'done' ? formatPct(st.result?.metrics.cagr ?? NaN) : st?.status === 'loading' ? '…' : '—'
+                                            const histMaxdd =
+                                              st?.status === 'done'
+                                                ? formatPct(st.result?.metrics.maxDrawdown ?? NaN)
+                                                : st?.status === 'loading'
+                                                  ? '…'
+                                                  : '—'
+                                            return (
+                                              <tr key={t}>
+                                                <td style={{ fontWeight: 900 }}>{t}</td>
+                                                <td>{formatPct(0)}</td>
+                                                <td>{formatPct(0)}</td>
+                                                <td>{formatPct(0)}</td>
+                                                <td>{formatPct(histAlloc(t))}</td>
+                                                <td>{histCagr}</td>
+                                                <td>{histMaxdd}</td>
+                                              </tr>
+                                            )
+                                          })}
                                         </tbody>
                                       </table>
-                                    ) : (
-                                      <div style={{ padding: 10, color: 'var(--muted)' }}>No tickers found.</div>
                                     )
                                   } catch {
                                     return <div style={{ padding: 10, color: 'var(--muted)' }}>Unable to read tickers.</div>
