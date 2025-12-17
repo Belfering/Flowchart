@@ -1074,7 +1074,7 @@ function EquityChart({
       overlay.innerHTML = `<div class="chart-hover-date">${isoFromUtcSeconds(time)}</div>
 <div class="chart-hover-stats">
   <div class="chart-hover-stat"><span class="chart-hover-label">CAGR</span> <span class="chart-hover-value">${stats ? formatPct(stats.cagr) : '—'}</span></div>
-  <div class="chart-hover-stat"><span class="chart-hover-label">MaxDD</span> <span class="chart-hover-value">${stats ? formatPct(stats.maxDD) : '—'}</span></div>
+  <div class="chart-hover-stat"><span class="chart-hover-label">Max DD</span> <span class="chart-hover-value">${stats ? formatPct(stats.maxDD) : '—'}</span></div>
 </div>`
 
       // keep overlay centered; only its values change with the cursor
@@ -1096,6 +1096,14 @@ function EquityChart({
 
     const ro = new ResizeObserver(() => {
       chart.applyOptions({ width: Math.floor(innerWidth()) })
+      const vr = visibleRangeRef.current
+      if (vr) {
+        try {
+          chart.timeScale().setVisibleRange(vr)
+        } catch {
+          // ignore
+        }
+      }
     })
     ro.observe(el)
 
@@ -1198,8 +1206,13 @@ function DrawdownChart({
   const containerRef = useRef<HTMLDivElement | null>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const seriesRef = useRef<ISeriesApi<'Area'> | null>(null)
+  const visibleRangeRef = useRef<VisibleRange | undefined>(visibleRange)
   const onVisibleRangeChangeRef = useRef(onVisibleRangeChange)
   const lastEmittedRangeKeyRef = useRef<string>('')
+
+  useEffect(() => {
+    visibleRangeRef.current = visibleRange
+  }, [visibleRange])
 
   useEffect(() => {
     onVisibleRangeChangeRef.current = onVisibleRangeChange
@@ -1264,6 +1277,14 @@ function DrawdownChart({
 
     const ro = new ResizeObserver(() => {
       chart.applyOptions({ width: Math.floor(innerWidth()) })
+      const vr = visibleRangeRef.current
+      if (vr) {
+        try {
+          chart.timeScale().setVisibleRange(vr)
+        } catch {
+          // ignore
+        }
+      }
     })
     ro.observe(el)
 
@@ -5374,6 +5395,18 @@ function BacktesterPanel({
     return { start: isoFromUtcSeconds(visibleRange.from), end: isoFromUtcSeconds(visibleRange.to) }
   }, [visibleRange])
 
+  const tradingDaysInRange = useMemo(() => {
+    if (!result || !visibleRange) return 0
+    const from = Number(visibleRange.from)
+    const to = Number(visibleRange.to)
+    if (!(Number.isFinite(from) && Number.isFinite(to) && from <= to)) return 0
+    const nPoints = points.filter((p) => {
+      const t = Number(p.time)
+      return t >= from && t <= to
+    }).length
+    return Math.max(0, nPoints - 1)
+  }, [result, visibleRange, points])
+
   const applyPreset = (preset: '1m' | '3m' | '6m' | 'ytd' | '1y' | '5y' | 'max') => {
     if (!points.length) return
     if (preset === 'max') {
@@ -5578,17 +5611,54 @@ function BacktesterPanel({
         {result && tab === 'Overview' ? (
           <>
             <div className="backtester-summary">
-              <div className="stat-card">
+              <div
+                className="stat-card"
+                ref={rangePickerRef}
+                role="button"
+                tabIndex={0}
+                onClick={() => {
+                  if (!rangePickerOpen && visibleRange) {
+                    setRangeStart(isoFromUtcSeconds(visibleRange.from))
+                    setRangeEnd(isoFromUtcSeconds(visibleRange.to))
+                  }
+                  setRangePickerOpen((v) => !v)
+                }}
+                onKeyDown={(e) => {
+                  if (e.key !== 'Enter' && e.key !== ' ') return
+                  e.preventDefault()
+                  if (!rangePickerOpen && visibleRange) {
+                    setRangeStart(isoFromUtcSeconds(visibleRange.from))
+                    setRangeEnd(isoFromUtcSeconds(visibleRange.to))
+                  }
+                  setRangePickerOpen((v) => !v)
+                }}
+                style={{ cursor: 'pointer', position: 'relative' }}
+                title="Click to set a custom date range"
+              >
                 <div className="stat-label">Date range</div>
                 <div className="stat-value">
-                  {result.metrics.startDate} → {result.metrics.endDate}
+                  {rangeLabel.start} → {rangeLabel.end}
                 </div>
-                <div className="stat-sub">{result.metrics.days} trading days</div>
-              </div>
-              <div className="stat-card">
-                <div className="stat-label">Total return</div>
-                <div className="stat-value">{formatPct(result.metrics.totalReturn)}</div>
-                <div className="stat-sub">{result.metrics.years.toFixed(2)} yrs</div>
+                <div className="stat-sub">{tradingDaysInRange} trading days</div>
+
+                {rangePickerOpen ? (
+                  <div className="range-popover" role="dialog" aria-label="Choose date range" onClick={(e) => e.stopPropagation()}>
+                    <div className="range-popover-row">
+                      <label className="range-field">
+                        <span>Start</span>
+                        <input type="date" value={rangeStart} onChange={(e) => setRangeStart(e.target.value)} />
+                      </label>
+                      <label className="range-field">
+                        <span>End</span>
+                        <input type="date" value={rangeEnd} onChange={(e) => setRangeEnd(e.target.value)} />
+                      </label>
+                    </div>
+                    <div className="range-popover-actions">
+                      <button onClick={() => setRangePickerOpen(false)}>Cancel</button>
+                      <button onClick={applyCustomRange}>Apply</button>
+                    </div>
+                  </div>
+                ) : null}
               </div>
               <div className="stat-card">
                 <div className="stat-label">CAGR</div>
@@ -5596,7 +5666,7 @@ function BacktesterPanel({
                 <div className="stat-sub">Annualized (252)</div>
               </div>
               <div className="stat-card">
-                <div className="stat-label">Max drawdown</div>
+                <div className="stat-label">Max DD</div>
                 <div className="stat-value">{formatPct(result.metrics.maxDrawdown)}</div>
                 <div className="stat-sub">Peak-to-trough</div>
               </div>
@@ -5654,38 +5724,6 @@ function BacktesterPanel({
             <div className="drawdown-wrap">
               <div className="drawdown-head">
                 <div style={{ fontWeight: 900 }}>Drawdown</div>
-                <div className="range-picker" ref={rangePickerRef}>
-                  <button
-                    className="range-pill"
-                    onClick={() => {
-                      if (!rangePickerOpen && visibleRange) {
-                        setRangeStart(isoFromUtcSeconds(visibleRange.from))
-                        setRangeEnd(isoFromUtcSeconds(visibleRange.to))
-                      }
-                      setRangePickerOpen((v) => !v)
-                    }}
-                  >
-                    {rangeLabel.start} → {rangeLabel.end}
-                  </button>
-                  {rangePickerOpen ? (
-                    <div className="range-popover" role="dialog" aria-label="Choose date range">
-                      <div className="range-popover-row">
-                        <label className="range-field">
-                          <span>Start</span>
-                          <input type="date" value={rangeStart} onChange={(e) => setRangeStart(e.target.value)} />
-                        </label>
-                        <label className="range-field">
-                          <span>End</span>
-                          <input type="date" value={rangeEnd} onChange={(e) => setRangeEnd(e.target.value)} />
-                        </label>
-                      </div>
-                      <div className="range-popover-actions">
-                        <button onClick={() => setRangePickerOpen(false)}>Cancel</button>
-                        <button onClick={applyCustomRange}>Apply</button>
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
               </div>
               <DrawdownChart
                 points={result.drawdownPoints}
@@ -6754,8 +6792,34 @@ function App() {
       if (!file) return
       try {
         const text = await file.text()
-        const parsed = JSON.parse(text) as FlowNode
-        const ensured = ensureSlots(parsed)
+        const parsed = JSON.parse(text) as unknown
+
+        const isFlowNodeLike = (v: unknown): v is FlowNode => {
+          if (!v || typeof v !== 'object') return false
+          const o = v as Partial<FlowNode>
+          return typeof o.id === 'string' && typeof o.kind === 'string' && typeof o.title === 'string' && typeof o.children === 'object'
+        }
+
+        const extractRoot = (v: unknown): FlowNode => {
+          if (isFlowNodeLike(v)) return v
+          if (v && typeof v === 'object') {
+            const o = v as { payload?: unknown; root?: unknown; name?: unknown }
+            if (isFlowNodeLike(o.payload)) {
+              const name = typeof o.name === 'string' ? o.name.trim() : ''
+              return name ? { ...o.payload, title: name } : o.payload
+            }
+            if (isFlowNodeLike(o.root)) return o.root
+          }
+          throw new Error('Invalid JSON shape for bot import.')
+        }
+
+        const inferredTitle = file.name.replace(/\.json$/i, '').replace(/_/g, ' ').trim()
+        const root0 = extractRoot(parsed)
+        const hasTitle = Boolean(root0.title?.trim())
+        const shouldInfer = !hasTitle || (root0.title.trim() === 'Algo Name Here' && inferredTitle && inferredTitle !== 'Algo Name Here')
+        const root1 = shouldInfer ? { ...root0, title: inferredTitle || 'Imported Bot' } : root0
+        const ensured0 = ensureSlots(root1)
+        const ensured = hasLegacyIdsOrDuplicates(ensured0) ? ensureSlots(regenerateIds(ensured0)) : ensured0
         setBots((prev) =>
           prev.map((b) => (b.id === activeBot.id ? { ...b, history: [ensured], historyIndex: 0 } : b)),
         )

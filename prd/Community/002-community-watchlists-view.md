@@ -1,11 +1,11 @@
-# PRD 005 - Community Tab (Watchlists View)
+# PRD 002 - Community Tab (Watchlists View)
 
 ## Metadata
-- ID: 005
+- ID: 002
 - Title: Community tab watchlists view
 - Status: draft
 - Owner:
-- Depends on: PRD 004 (watchlists data model), PRD 007 (backtest metrics)
+- Depends on: watchlists data model + backtest metrics (implemented)
 - Created: 2025-12-15
 - Last updated: 2025-12-17
 
@@ -44,8 +44,8 @@ Add a grid-based Community tab: left shows system “Top Community Bots” place
 - Actions on community bots: `Add to my watchlist` and `View in Analyze`. No “Go to Build” for community-marked bots (code hidden).
 
 ## Data Model / State
-- Uses per-user watchlists from PRD 004.
-- System lists are computed from saved bots + backtest results (PRD 007) but still visible to all users.
+- Uses per-user watchlists from the current app state.
+- System lists are computed from saved bots + backtest results but still visible to all users.
 
 ## Acceptance Criteria
 - Community tab renders the 4x3 grid layout with the specified section titles.
@@ -62,6 +62,8 @@ Add a grid-based Community tab: left shows system “Top Community Bots” place
 ## Implementation Notes / Recommended UI & Libraries
 - Layout: responsive grid; collapse to stacked sections on small screens while preserving the placeholder order.
 - Lists: virtualize if counts grow (e.g., `react-window`/`react-virtualized`); otherwise paginated sections.
-- Actions: buttons per row for `Add to my watchlist` (opens PRD 004 combobox) and `View in Analyze`; hide/remove any Build action for community bots.
+- Actions: buttons per row for `Add to my watchlist` and `View in Analyze`; hide/remove any Build action for community bots.
 - Indicators: badge on community bots to signal code hidden; tooltip to explain why Build is unavailable.
-- Data: reuse backtest metrics from PRD 007; cache/fetch via TanStack Query.
+- Data: reuse backtest metrics; cache/fetch via TanStack Query.
+
+

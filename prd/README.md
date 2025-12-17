@@ -16,16 +16,7 @@ General templates/live docs:
 
 ## Current Priority Order
 
-1. `Build/007-backtesting-engine-integration.md`
-2. `Build/008-backtester-chart-ux.md`
-3. `Build/009-backtester-range-controls.md`
-4. `Build/010-backtester-summary-cards-layout.md`
-5. `Build/011-monthly-returns-heatmap-v2.md`
-6. `Build/012-call-chains.md`
-7. `Build/014-backtester-ux-and-bot-metadata.md`
-8. `Build/015-conditional-logic-validation.md`
-9. `Bot DB/003-analyze-tab-collapsible-bot-cards.md`
-10. `Community/004-watchlists-crud-and-membership.md`
-11. `Community/005-community-watchlists-view.md`
-12. `Backlog/013-theming-and-user-data-persistence.md`
-13. `Portfolio/006-portfolio-dashboard.md` (placeholders only; last)
+1. `Bot DB/001-analyze-tab-collapsible-bot-cards.md`
+2. `Community/002-community-watchlists-view.md`
+3. `Build/003-conditional-logic-validation.md`
+4. `Backlog/004-theming-and-user-data-persistence.md`

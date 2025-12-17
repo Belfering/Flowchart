@@ -1,16 +1,16 @@
-# PRD 013 - Theming Toggle + Per-Profile Persistence
+# PRD 004 - Theming Toggle + Per-Profile Persistence
 
 ## Metadata
-- ID: 013
+- ID: 004
 - Title: Theming toggle + per-profile persistence
 - Status: draft
 - Owner:
 - Depends on:
 - Created: 2025-12-15
-- Last updated: 2025-12-15
+- Last updated: 2025-12-17
 
 ## Summary
-Add a global light/dark mode toggle next to the `System.app` brand and introduce per-profile storage for bots/layouts so profiles reliably reload saved work. Provide a lightweight, clearable persistence layer (e.g., user-data temp folder) to avoid recreating profiles during testing.
+Add a global light/dark mode toggle next to the `System.app` brand and introduce per-profile storage for bots/layouts so profiles reliably reload saved work. Provide a lightweight, clearable persistence layer (e.g., a user-data folder) to avoid recreating profiles during testing.
 
 ## Goals
 - Quick theming switch visible at top-left beside the brand.
@@ -23,11 +23,12 @@ Add a global light/dark mode toggle next to the `System.app` brand and introduce
 
 ## UX / UI
 - Header: add `Light/Dark` toggle next to `System.app`; show current mode state.
+- Theme persists **per profile** (switching profiles restores that profile’s theme).
 - Persistence controls: add `Clear saved data` per profile somewhere unobtrusive (e.g., settings menu or user badge dropdown).
 - On load: auto-restore last saved bots/layouts for the active profile; show a brief toast if nothing is saved.
 
 ## Data Model / State
-- Theme: `theme` in UI state (`light` | `dark`), persisted per profile (switching profiles restores each profile’s theme).
+- Theme: `theme` in UI state (`light` | `dark`), persisted per profile.
 - Profile data root: per-profile storage (local-only) containing:
   - Saved bots with metadata (name, tags such as `private`, `builderId`).
   - Layout/graph state for Build tab.
@@ -35,7 +36,7 @@ Add a global light/dark mode toggle next to the `System.app` brand and introduce
 - Provide a clear function to wipe the active profile’s stored data without touching other users.
 
 ## Acceptance Criteria
-- Toggle appears next to `System.app`, switches theme app-wide, and persists selection between sessions.
+- Toggle appears next to `System.app`, switches theme app-wide, and persists selection between sessions per profile.
 - Saving/loading bots/layouts works per profile; reopening profile restores its saved data without recreating bots.
 - A clear-data action wipes the active profile’s stored data (including theme) and confirms completion.
 

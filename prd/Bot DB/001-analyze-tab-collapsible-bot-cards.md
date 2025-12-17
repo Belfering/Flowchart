@@ -1,11 +1,11 @@
-# PRD 003 - Analyze Tab (Collapsible Bot Cards + Performance)
+# PRD 001 - Analyze Tab (Collapsible Bot Cards + Performance)
 
 ## Metadata
-- ID: 003
+- ID: 001
 - Title: Analyze tab (collapsible bot cards + performance)
 - Status: draft
 - Owner:
-- Depends on: PRD 004 (watchlists), PRD 007 (backtesting)
+- Depends on: watchlists + backtest metrics (implemented)
 - Created: 2025-12-15
 - Last updated: 2025-12-17
 
@@ -20,8 +20,8 @@ Rename `Bot Database` to `Analyze` and render bots as collapsible cards instead 
 - Respect per-user data (login determines bots/watchlists shown).
 
 ## Non-goals
-- Building the backtesting engine itself (see PRD 007).
-- Full watchlist management UI beyond what’s required for `Add to Watchlist` (see PRD 004).
+- Building the backtesting engine itself.
+- Full watchlist management UI beyond what’s required for `Add to Watchlist`.
 
 ## UX / UI
 
@@ -68,9 +68,9 @@ Rename `Bot Database` to `Analyze` and render bots as collapsible cards instead 
   - Right: “Combined portfolio and allocations based on suggestions”.
 
 ## Data Model / State
-- Scoped to logged-in user (see PRD 004 auth).
+- Scoped to logged-in user.
 - Adds per-user `collapsed` UI state for Analyze.
-- Uses watchlist membership from PRD 004.
+- Uses watchlist membership from the current app state.
 - Performance summary + timeseries source: local compute vs stored (TBD).
 
 ## Implementation Notes / Recommended UI & Libraries
@@ -94,3 +94,6 @@ Rename `Bot Database` to `Analyze` and render bots as collapsible cards instead 
 ## Open Questions
 - Equity curve benchmark choice for the overlay.
 - Should auto-run-on-expand be debounced/throttled when rapidly expanding multiple bots?
+
+
+
