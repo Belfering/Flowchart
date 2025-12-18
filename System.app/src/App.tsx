@@ -15,7 +15,7 @@ import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert'
 import { cn } from '@/lib/utils'
 import {
   AreaSeries,
@@ -5751,25 +5751,25 @@ function BacktesterPanel({
   }, [result])
 
   return (
-    <section className="backtester-card">
-      <div className="backtester-head">
+    <Card>
+      <CardHeader>
         <div>
-          <div className="eyebrow">Build</div>
-          <h2 className="backtester-title">Backtester</h2>
+          <div className="text-xs tracking-widest uppercase text-muted mb-1">Build</div>
+          <h2 className="text-xl font-black">Backtester</h2>
         </div>
-        <div className="backtester-controls">
-          <label className="backtester-field">
-            <span>Mode</span>
-            <select value={mode} onChange={(e) => setMode(e.target.value as BacktesterPanelProps['mode'])}>
+        <div className="flex flex-wrap gap-3 items-end mt-2">
+          <label className="grid gap-1">
+            <span className="text-sm font-bold">Mode</span>
+            <Select value={mode} onChange={(e) => setMode(e.target.value as BacktesterPanelProps['mode'])}>
               <option value="CC">Close→Close</option>
               <option value="OO">Open→Open</option>
               <option value="OC">Open→Close</option>
               <option value="CO">Close→Open</option>
-            </select>
+            </Select>
           </label>
-          <label className="backtester-field">
-            <span>Cost (bps)</span>
-            <input
+          <label className="grid gap-1">
+            <span className="text-sm font-bold">Cost (bps)</span>
+            <Input
               type="number"
               min={0}
               step={1}
@@ -5777,61 +5777,62 @@ function BacktesterPanel({
               onChange={(e) => setCostBps(Number(e.target.value || 0))}
             />
           </label>
-          <label className="backtester-field">
-            <span>Benchmark</span>
-            <input
+          <label className="grid gap-1">
+            <span className="text-sm font-bold">Benchmark</span>
+            <Input
               list={TICKER_DATALIST_ID}
               value={benchmark}
               onChange={(e) => setBenchmark(e.target.value)}
               placeholder="SPY"
               spellCheck={false}
-              style={{ width: 120 }}
+              className="w-[120px]"
             />
           </label>
           {!benchmarkKnown && benchmark.trim() ? (
-            <div style={{ color: '#b91c1c', fontWeight: 800, fontSize: 12 }}>Unknown ticker</div>
+            <div className="text-danger font-extrabold text-xs">Unknown ticker</div>
           ) : null}
-          <label className="backtester-field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <label className="flex items-center gap-2">
             <input type="checkbox" checked={showBenchmark} onChange={(e) => setShowBenchmark(e.target.checked)} />
-            <span>Show benchmark</span>
+            <span className="text-sm font-bold">Show benchmark</span>
           </label>
-          <button onClick={handleRun} disabled={status === 'running'}>
+          <Button onClick={handleRun} disabled={status === 'running'}>
             {status === 'running' ? 'Running…' : 'Run Backtest'}
-          </button>
+          </Button>
         </div>
-      </div>
-      <div className="backtester-body">
-        <div className="backtester-tabs">
+      </CardHeader>
+      <CardContent className="grid gap-3">
+        <div className="flex gap-2">
           {(['Overview', 'Allocations', 'Rebalances', 'Warnings'] as const).map((t) => (
-            <button key={t} className={`tab-btn ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>
+            <Button key={t} variant={tab === t ? 'accent' : 'secondary'} size="sm" onClick={() => setTab(t)}>
               {t}
-            </button>
+            </Button>
           ))}
         </div>
 
         {errors.length > 0 && (
-          <div className="backtester-message" style={{ borderColor: '#fecaca', background: '#fef2f2', color: '#991b1b' }}>
-            <div style={{ fontWeight: 900, marginBottom: 6 }}>Fix these errors before running:</div>
-            <div style={{ display: 'grid', gap: 6 }}>
-              {errors.map((e, idx) => (
-                <button
-                  key={`${e.nodeId}-${e.field}-${idx}`}
-                  className="link-btn"
-                  style={{ textAlign: 'left', color: 'inherit' }}
-                  onClick={() => onJumpToError(e)}
-                >
-                  {e.message}
-                </button>
-              ))}
-            </div>
-          </div>
+          <Alert variant="destructive">
+            <AlertTitle>Fix these errors before running:</AlertTitle>
+            <AlertDescription>
+              <div className="grid gap-1.5">
+                {errors.map((e, idx) => (
+                  <Button
+                    key={`${e.nodeId}-${e.field}-${idx}`}
+                    variant="link"
+                    className="justify-start h-auto p-0 text-inherit"
+                    onClick={() => onJumpToError(e)}
+                  >
+                    {e.message}
+                  </Button>
+                ))}
+              </div>
+            </AlertDescription>
+          </Alert>
         )}
 
         {result && tab === 'Overview' ? (
           <>
-            <div className="backtester-summary">
-              <div
-                className="stat-card"
+            <div className="grid grid-cols-4 gap-3">
+              <Card
                 ref={rangePickerRef}
                 role="button"
                 tabIndex={0}
@@ -5853,50 +5854,50 @@ function BacktesterPanel({
                   setRangePopoverPos(computeRangePopoverPos())
                   setRangePickerOpen((v) => !v)
                 }}
-                style={{ cursor: 'pointer', position: 'relative' }}
+                className="cursor-pointer relative"
                 title="Click to set a custom date range"
               >
-                <div className="stat-label">Date range</div>
-                <div className="stat-value">
+                <div className="text-xs font-bold text-muted mb-1">Date range</div>
+                <div className="text-lg font-black">
                   {rangeLabel.start} → {rangeLabel.end}
                 </div>
-                <div className="stat-sub">{tradingDaysInRange} trading days</div>
-              </div>
-              <div className="stat-card">
-                <div className="stat-label">CAGR</div>
-                <div className="stat-value">{formatPct(result.metrics.cagr)}</div>
-                <div className="stat-sub">Annualized (252)</div>
-              </div>
-              <div className="stat-card">
-                <div className="stat-label">Max DD</div>
-                <div className="stat-value">{formatPct(result.metrics.maxDrawdown)}</div>
-                <div className="stat-sub">Peak-to-trough</div>
-              </div>
-              <div className="stat-card">
-                <div className="stat-label">Sharpe</div>
-                <div className="stat-value">{Number.isFinite(result.metrics.sharpe) ? result.metrics.sharpe.toFixed(2) : '—'}</div>
-                <div className="stat-sub">Annualized (252)</div>
-              </div>
-              <div className="stat-card">
-                <div className="stat-label">Vol (ann.)</div>
-                <div className="stat-value">{formatPct(result.metrics.vol)}</div>
-                <div className="stat-sub">Std dev × √252</div>
-              </div>
-              <div className="stat-card">
-                <div className="stat-label">Win rate</div>
-                <div className="stat-value">{formatPct(result.metrics.winRate)}</div>
-                <div className="stat-sub">Daily</div>
-              </div>
-              <div className="stat-card">
-                <div className="stat-label">Avg turnover</div>
-                <div className="stat-value">{formatPct(result.metrics.avgTurnover)}</div>
-                <div className="stat-sub">Per day</div>
-              </div>
-              <div className="stat-card">
-                <div className="stat-label">Avg holdings</div>
-                <div className="stat-value">{result.metrics.avgHoldings.toFixed(2)}</div>
-                <div className="stat-sub">Tickers/day</div>
-              </div>
+                <div className="text-xs text-muted mt-0.5">{tradingDaysInRange} trading days</div>
+              </Card>
+              <Card>
+                <div className="text-xs font-bold text-muted mb-1">CAGR</div>
+                <div className="text-lg font-black">{formatPct(result.metrics.cagr)}</div>
+                <div className="text-xs text-muted mt-0.5">Annualized (252)</div>
+              </Card>
+              <Card>
+                <div className="text-xs font-bold text-muted mb-1">Max DD</div>
+                <div className="text-lg font-black">{formatPct(result.metrics.maxDrawdown)}</div>
+                <div className="text-xs text-muted mt-0.5">Peak-to-trough</div>
+              </Card>
+              <Card>
+                <div className="text-xs font-bold text-muted mb-1">Sharpe</div>
+                <div className="text-lg font-black">{Number.isFinite(result.metrics.sharpe) ? result.metrics.sharpe.toFixed(2) : '—'}</div>
+                <div className="text-xs text-muted mt-0.5">Annualized (252)</div>
+              </Card>
+              <Card>
+                <div className="text-xs font-bold text-muted mb-1">Vol (ann.)</div>
+                <div className="text-lg font-black">{formatPct(result.metrics.vol)}</div>
+                <div className="text-xs text-muted mt-0.5">Std dev × √252</div>
+              </Card>
+              <Card>
+                <div className="text-xs font-bold text-muted mb-1">Win rate</div>
+                <div className="text-lg font-black">{formatPct(result.metrics.winRate)}</div>
+                <div className="text-xs text-muted mt-0.5">Daily</div>
+              </Card>
+              <Card>
+                <div className="text-xs font-bold text-muted mb-1">Avg turnover</div>
+                <div className="text-lg font-black">{formatPct(result.metrics.avgTurnover)}</div>
+                <div className="text-xs text-muted mt-0.5">Per day</div>
+              </Card>
+              <Card>
+                <div className="text-xs font-bold text-muted mb-1">Avg holdings</div>
+                <div className="text-lg font-black">{result.metrics.avgHoldings.toFixed(2)}</div>
+                <div className="text-xs text-muted mt-0.5">Tickers/day</div>
+              </Card>
             </div>
 
               <div className="equity-wrap">
@@ -6109,14 +6110,14 @@ function BacktesterPanel({
             ) : null}
           </div>
         ) : status === 'running' ? (
-          <div className="backtester-chart-placeholder">Running backtest…</div>
+          <div className="text-muted font-bold p-4 text-center">Running backtest…</div>
         ) : (
-          <div className="backtester-chart-placeholder">
+          <div className="text-muted font-bold p-4 text-center">
             Tip: Start `npm run api` so tickers and candles load. Use the tabs to see allocations and rebalances after running.
           </div>
         )}
-      </div>
-    </section>
+      </CardContent>
+    </Card>
   )
 }
 
