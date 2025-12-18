@@ -111,6 +111,7 @@ def _download_batch(batch: list[str], cfg: DownloadConfig) -> pd.DataFrame:
                 progress=False,
                 group_by="ticker",
                 threads=cfg.threads,
+                timeout=60,  # 60 second timeout per ticker to handle slow responses
             )
         except Exception as e:
             last_exc = e

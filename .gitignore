@@ -29,10 +29,8 @@ venv/
 ENV/
 *.egg-info/
 
-# Data files
-# System.app/ticker-data/data/
-# *.parquet
-# *.csv
+# Data files (TEMPORARY: Keep parquet files locally for testing, don't commit)
+System.app/ticker-data/data/ticker_data_parquet/*.parquet
 
 # Logs
 logs/

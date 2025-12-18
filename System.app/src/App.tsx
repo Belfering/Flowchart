@@ -333,6 +333,7 @@ type AdminStatus = {
   parquetDir: string
   tickersExists: boolean
   parquetDirExists: boolean
+  loadedTickersCount: number
 }
 
 type AdminCandlesResponse = {
@@ -1862,7 +1863,7 @@ function AdminPanel({
   const [tickersSaveMsg, setTickersSaveMsg] = useState<string | null>(null)
   const [downloadConfig, setDownloadConfig] = useState<{ batchSize: number; sleepSeconds: number; maxRetries: number; threads: boolean; limit: number }>(() => ({
     batchSize: 100,
-    sleepSeconds: 2,
+    sleepSeconds: 3,
     maxRetries: 3,
     threads: true,
     limit: 0,
@@ -1871,6 +1872,7 @@ function AdminPanel({
   const [error, setError] = useState<string | null>(null)
   const [downloadJob, setDownloadJob] = useState<AdminDownloadJob | null>(null)
   const [downloadMsg, setDownloadMsg] = useState<string | null>(null)
+  const [editMode, setEditMode] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -1911,7 +1913,7 @@ function AdminPanel({
     return () => {
       cancelled = true
     }
-  }, [tickersDirty, onTickersUpdated])
+  }, [tickersDirty])
 
   const startDownload = useCallback(async () => {
     setDownloadMsg(null)
@@ -2044,48 +2046,254 @@ function AdminPanel({
   }, [downloadJob?.id, downloadJob?.status, onTickersUpdated])
 
   return (
-    <div className="placeholder">
-      <div className="tabs">
-        {(['Ticker List', 'Data'] as const).map((t) => (
-          <button key={t} className={`tab-btn ${adminTab === t ? 'active' : ''}`} onClick={() => setAdminTab(t)}>
-            {t}
-          </button>
-        ))}
-      </div>
-      <div className="mt-4">
-        {adminTab === 'Ticker List' ? (
-          <AdminTickerList
-            status={status}
-            tickers={tickers}
-            tickersText={tickersText}
-            onTickersTextChange={(next) => {
-              setTickersText(next)
-              setTickersDirty(true)
-              setTickersSaveMsg(null)
-            }}
-            error={error}
-            onSaveTickers={() => void saveTickers()}
-            saveDisabled={tickersSaving || !tickersDirty}
-            saveStatus={tickersSaveMsg}
-            downloadConfig={downloadConfig}
-            onChangeDownloadConfig={(next) => setDownloadConfig((prev) => ({ ...prev, ...next }))}
-            onDownload={startDownload}
-            downloadDisabled={!status?.tickersExists || downloadJob?.status === 'running'}
-            downloadStatus={downloadMsg}
-          />
-        ) : (
-          <AdminDataPanel tickers={parquetTickers.length ? parquetTickers : tickers} error={error} />
-        )}
-        {adminTab === 'Ticker List' && downloadJob?.logs?.length ? (
-          <div className="mt-3.5">
-            <div className="font-extrabold mb-1.5">Downloader log</div>
-            <pre className="max-h-[260px] overflow-auto p-2.5 rounded-xl border border-border bg-white">
-              {downloadJob.logs.join('\n')}
-            </pre>
+    <>
+        {/* Section 1: Ticker Management */}
+        <div className="mb-6">
+          <div className="font-black text-lg mb-4">Ticker Management</div>
+
+          {/* Status info */}
+          <div className="mb-4 p-3 bg-muted rounded-lg text-sm space-y-1">
+            <div>
+              <strong>Ticker data root:</strong> {status?.root || '...'}
+            </div>
+            <div>
+              <strong>tickers.txt:</strong> {status?.tickersPath || '...'} {status ? (status.tickersExists ? '✓' : '✗') : ''}
+            </div>
+            <div>
+              <strong>Parquet dir:</strong> {status?.parquetDir || '...'} {status ? (status.parquetDirExists ? '✓' : '✗') : ''}
+            </div>
           </div>
-        ) : null}
-      </div>
-    </div>
+
+          {error && <div className="mb-4 p-3 bg-destructive/10 border border-destructive rounded-lg text-sm text-destructive">{error}</div>}
+
+          {/* Ticker list display */}
+          <div className="mb-4">
+            <div className="text-sm font-semibold mb-2">
+              {tickers.length} tickers loaded from tickers.txt
+            </div>
+            <div className="max-h-[200px] overflow-auto border rounded-lg p-2 bg-background text-xs font-mono">
+              {tickers.join(', ') || 'No tickers found.'}
+            </div>
+          </div>
+
+          {/* Edit mode toggle */}
+          <Button onClick={() => setEditMode(!editMode)} variant={editMode ? 'outline' : 'default'}>
+            {editMode ? 'Cancel Edit' : 'Edit Tickers'}
+          </Button>
+
+          {editMode && (
+            <div className="mt-4">
+              <div className="text-sm font-semibold mb-2">Edit tickers.txt (one per line)</div>
+              <textarea
+                value={tickersText}
+                onChange={(e) => {
+                  setTickersText(e.target.value)
+                  setTickersDirty(true)
+                  setTickersSaveMsg(null)
+                }}
+                rows={15}
+                spellCheck={false}
+                className="w-full font-mono text-sm p-3 rounded-lg border border-border bg-background"
+                placeholder="Enter tickers (one per line)"
+              />
+              <div className="mt-2 flex gap-2 items-center">
+                <Button
+                  onClick={() => void saveTickers()}
+                  disabled={tickersSaving || !tickersDirty}
+                >
+                  {tickersSaving ? 'Saving...' : 'Save Tickers'}
+                </Button>
+                {tickersSaveMsg && (
+                  <div className={`text-sm ${tickersSaveMsg.includes('Saved') ? 'text-success' : 'text-destructive'}`}>
+                    {tickersSaveMsg}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Divider */}
+        <div className="border-t border-border mb-6"></div>
+
+        {/* Section 2: Data Status */}
+        <div className="mb-6">
+          <div className="font-black text-lg mb-4">Data Status</div>
+
+          {/* Pre-loaded data info */}
+          <div className="mb-4 p-3 bg-success/10 border border-success rounded-lg">
+            <div className="text-sm font-semibold mb-2 text-success">Pre-loaded Data</div>
+            <div className="text-xs space-y-1">
+              <div>✓ {status?.loadedTickersCount ?? 0} parquet files loaded in memory</div>
+              <div className="text-muted">
+                Data is pre-loaded on server startup for fast backtesting (temporary for development)
+              </div>
+            </div>
+          </div>
+
+          {/* Available parquet files */}
+          {parquetTickers.length > 0 && (
+            <div className="mb-4">
+              <div className="text-sm font-semibold mb-2">
+                Available Parquet Files ({parquetTickers.length})
+              </div>
+              <div className="max-h-[200px] overflow-auto border rounded-lg p-2 bg-background text-xs font-mono">
+                {parquetTickers.join(', ')}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Divider */}
+        <div className="border-t border-border mb-6"></div>
+
+        {/* Section 3: Data Download */}
+        <div className="mb-6">
+          <div className="font-black text-lg mb-4">Download Ticker Data</div>
+
+          {/* Download configuration */}
+          <div className="mb-4">
+            <div className="text-sm font-semibold mb-3">Download Settings</div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="text-xs font-semibold text-muted mb-1 block">Batch Size</label>
+                <Input
+                  type="number"
+                  value={downloadConfig.batchSize}
+                  onChange={(e) => setDownloadConfig((prev) => ({ ...prev, batchSize: Number(e.target.value) }))}
+                  min="1"
+                  max="500"
+                />
+                <div className="text-xs text-muted mt-1">
+                  Recommended: 50-100 (lower = more reliable)
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-muted mb-1 block">Sleep (seconds)</label>
+                <Input
+                  type="number"
+                  value={downloadConfig.sleepSeconds}
+                  onChange={(e) => setDownloadConfig((prev) => ({ ...prev, sleepSeconds: Number(e.target.value) }))}
+                  min="0"
+                  max="60"
+                  step="0.5"
+                />
+                <div className="text-xs text-muted mt-1">
+                  Recommended: 2-3s (prevents rate limiting)
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-muted mb-1 block">Max Retries</label>
+                <Input
+                  type="number"
+                  value={downloadConfig.maxRetries}
+                  onChange={(e) => setDownloadConfig((prev) => ({ ...prev, maxRetries: Number(e.target.value) }))}
+                  min="0"
+                  max="10"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-muted mb-1 block">Limit (0 = all)</label>
+                <Input
+                  type="number"
+                  value={downloadConfig.limit}
+                  onChange={(e) => setDownloadConfig((prev) => ({ ...prev, limit: Number(e.target.value) }))}
+                  min="0"
+                  max="100000"
+                />
+                <div className="text-xs text-muted mt-1">
+                  For testing, try limiting to 10-20 tickers
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-3">
+              <label className="flex gap-2 items-center">
+                <input
+                  type="checkbox"
+                  checked={downloadConfig.threads}
+                  onChange={(e) => setDownloadConfig((prev) => ({ ...prev, threads: e.target.checked }))}
+                />
+                <span className="text-sm font-semibold">Use threads inside batch</span>
+              </label>
+            </div>
+          </div>
+
+          {/* Download button */}
+          <Button
+            onClick={startDownload}
+            disabled={!status?.tickersExists || downloadJob?.status === 'running'}
+          >
+            {downloadJob?.status === 'running' ? 'Downloading...' : 'Start Download'}
+          </Button>
+
+          {downloadMsg && (
+            <div className="mt-2 text-sm text-muted">
+              {downloadMsg}
+            </div>
+          )}
+
+          {/* Download progress */}
+          {downloadJob && (
+            <div className="mt-4 p-3 bg-muted rounded-lg">
+              <div className="text-sm font-semibold mb-2">
+                Download Status: <span className={
+                  downloadJob.status === 'done' ? 'text-success' :
+                  downloadJob.status === 'error' ? 'text-destructive' :
+                  'text-warning'
+                }>{downloadJob.status}</span>
+              </div>
+
+              {/* Progress info from events */}
+              {downloadJob.events && downloadJob.events.length > 0 && (
+                <div className="text-xs mb-2">
+                  {(() => {
+                    const lastEvent = downloadJob.events[downloadJob.events.length - 1] as Record<string, unknown>
+                    return (
+                      <div>
+                        Success: {lastEvent.success || 0} | Failed: {lastEvent.failed || 0}
+                      </div>
+                    )
+                  })()}
+                </div>
+              )}
+
+              {/* Live logs */}
+              {downloadJob.logs && downloadJob.logs.length > 0 && (
+                <div className="mt-2">
+                  <div className="text-xs font-semibold mb-1">Live Log</div>
+                  <div className="max-h-[300px] overflow-auto border rounded p-2 bg-background text-xs font-mono">
+                    {downloadJob.logs.map((log, i) => (
+                      <div key={i}>{log}</div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Error display */}
+              {downloadJob.error && (
+                <div className="mt-2 p-2 bg-destructive/10 border border-destructive rounded text-sm text-destructive">
+                  Error: {downloadJob.error}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Divider */}
+        {parquetTickers.length > 0 && <div className="border-t border-border mb-6"></div>}
+
+        {/* Section 4: Data Viewer (optional) */}
+        {parquetTickers.length > 0 && (
+          <div>
+            <div className="font-black text-lg mb-4">Data Viewer</div>
+            <AdminDataPanel tickers={parquetTickers} error={error} />
+          </div>
+        )}
+    </>
   )
 }
 
@@ -7472,9 +7680,9 @@ function App() {
       <main className="flex-1 overflow-hidden min-h-0">
         {tab === 'Build' ? (
           <Card className="h-full flex flex-col overflow-hidden m-4">
-            <CardContent className="flex-1 flex flex-col gap-4 p-4 overflow-hidden min-h-0">
+            <CardContent className="flex-1 flex flex-col gap-4 p-4 overflow-auto min-h-0">
               {/* Top Zone - Backtester */}
-              <div className="shrink-0 border-b border-border pb-4">
+              <div className="shrink-0 border-b border-border pb-4 max-h-[40vh] overflow-auto">
                 <BacktesterPanel
                   mode={backtestMode}
                   setMode={setBacktestMode}
@@ -7775,15 +7983,20 @@ function App() {
             </CardContent>
           </Card>
         ) : tab === 'Admin' ? (
-          <AdminPanel
-            adminTab={adminTab}
-            setAdminTab={setAdminTab}
-            onTickersUpdated={(next) => {
-              setAvailableTickers(next)
-            }}
-          />
+          <Card className="h-full flex flex-col overflow-hidden m-4">
+            <CardContent className="p-6 flex flex-col h-full overflow-auto">
+              <AdminPanel
+                adminTab={adminTab}
+                setAdminTab={setAdminTab}
+                onTickersUpdated={(next) => {
+                  setAvailableTickers(next)
+                }}
+              />
+            </CardContent>
+          </Card>
         ) : tab === 'Analyze' ? (
-          <div className="p-4">
+          <Card className="h-full flex flex-col overflow-hidden m-4">
+            <CardContent className="p-4 flex flex-col h-full overflow-auto">
             <div className="flex items-center justify-between gap-3 flex-wrap">
               <div className="flex items-center gap-2.5 flex-wrap">
                 <div className="font-black">Analyze</div>
@@ -8261,9 +8474,11 @@ function App() {
             )}
               </>
             )}
-          </div>
+            </CardContent>
+          </Card>
         ) : tab === 'Community' ? (
-          <div className="placeholder">
+          <Card className="h-full flex flex-col overflow-hidden m-4">
+            <CardContent className="p-4 flex flex-col h-full overflow-auto">
             {(() => {
               const firstWatchlistId = watchlists[0]?.id ?? null
               const secondWatchlistId = watchlists[1]?.id ?? firstWatchlistId
@@ -8453,9 +8668,11 @@ function App() {
                 </div>
               )
             })()}
-          </div>
+            </CardContent>
+          </Card>
         ) : tab === 'Dashboard' ? (
-          <div className="placeholder">
+          <Card className="h-full flex flex-col overflow-hidden m-4">
+            <CardContent className="p-4 flex flex-col h-full overflow-auto">
             <div className="flex gap-2.5 items-center flex-wrap">
               {(['Portfolio', 'Partner Program'] as const).map((t) => (
                 <button
@@ -8647,7 +8864,8 @@ function App() {
                 </div>
               </div>
             )}
-          </div>
+            </CardContent>
+          </Card>
         ) : (
           <div className="placeholder" />
         )}
@@ -8699,8 +8917,8 @@ function App() {
                     </div>
                   </div>
                 </div>
-              </CardContent>
-            </Card>
+            </CardContent>
+          </Card>
           </div>
         ) : null}
       </main>

@@ -8,19 +8,19 @@ const buttonVariants = cva(
     variants: {
       variant: {
         default:
-          "bg-surface border border-border text-text hover:bg-surface-2",
+          "bg-slate-100 border border-slate-300 text-slate-900 hover:bg-slate-200 shadow-sm dark:bg-slate-700 dark:border-slate-600 dark:text-slate-100 dark:hover:bg-slate-600",
         destructive:
-          "bg-surface border border-red-300 text-danger hover:bg-red-50 dark:hover:bg-red-950",
+          "bg-red-50 border border-red-300 text-red-700 hover:bg-red-100 shadow-sm dark:bg-red-950 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-900",
         outline:
-          "border border-dashed border-muted bg-surface text-text hover:bg-surface-2",
+          "border border-dashed border-slate-400 bg-white text-slate-900 hover:bg-slate-50 shadow-sm dark:bg-slate-800 dark:border-slate-600 dark:text-slate-100 dark:hover:bg-slate-700",
         secondary:
-          "bg-surface-2 border border-border text-text hover:bg-surface",
+          "bg-slate-200 border border-slate-300 text-slate-900 hover:bg-slate-300 shadow-sm dark:bg-slate-600 dark:border-slate-500 dark:text-slate-100 dark:hover:bg-slate-500",
         ghost:
-          "hover:bg-surface-2 text-text",
+          "hover:bg-slate-100 text-slate-900 dark:hover:bg-slate-800 dark:text-slate-100",
         link:
-          "text-accent-text underline-offset-4 hover:underline bg-transparent border-none p-0",
+          "text-blue-600 underline-offset-4 hover:underline bg-transparent border-none p-0 dark:text-blue-400",
         accent:
-          "bg-accent-bg border border-accent-border text-accent-text hover:bg-accent-bg/80",
+          "bg-blue-50 border border-blue-300 text-blue-700 hover:bg-blue-100 shadow-sm dark:bg-blue-950 dark:border-blue-800 dark:text-blue-300 dark:hover:bg-blue-900",
       },
       size: {
         default: "h-9 px-3 py-2",

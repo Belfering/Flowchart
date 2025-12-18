@@ -22,6 +22,61 @@ const db = new duckdb.Database(':memory:')
 const conn = db.connect()
 
 const jobs = new Map()
+const loadedTickers = new Set() // Track which tickers are loaded into memory
+
+// ============================================================================
+// TEMPORARY: Pre-load parquet files into memory for fast development/testing
+// TODO: Remove this in production - queries should read from disk on-demand
+// ============================================================================
+async function preloadParquetData() {
+  console.log('[api] Pre-loading parquet data into memory...')
+  const startTime = Date.now()
+
+  try {
+    const tickers = await listParquetTickers()
+    console.log(`[api] Found ${tickers.length} parquet files to load`)
+
+    let loaded = 0
+    let failed = 0
+
+    for (const ticker of tickers) {
+      try {
+        const parquetPath = path.join(PARQUET_DIR, `${ticker}.parquet`)
+        const fileForDuckdb = parquetPath.replace(/\\/g, '/').replace(/'/g, "''")
+
+        // Create a table for this ticker and load data from parquet
+        const tableName = `ticker_${ticker.replace(/[^A-Z0-9]/g, '_')}`
+        const createSql = `
+          CREATE TABLE ${tableName} AS
+          SELECT * FROM read_parquet('${fileForDuckdb}')
+        `
+
+        await new Promise((resolve, reject) => {
+          conn.run(createSql, (err) => {
+            if (err) reject(err)
+            else resolve()
+          })
+        })
+
+        loadedTickers.add(ticker)
+        loaded++
+
+        if (loaded % 10 === 0) {
+          console.log(`[api] Loaded ${loaded}/${tickers.length} tickers...`)
+        }
+      } catch (err) {
+        console.warn(`[api] Failed to load ${ticker}:`, err.message)
+        failed++
+      }
+    }
+
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(2)
+    console.log(`[api] Pre-load complete: ${loaded} loaded, ${failed} failed in ${elapsed}s`)
+  } catch (err) {
+    console.error('[api] Pre-load failed:', err.message)
+  }
+}
+// ============================================================================
 
 function normalizeTicker(ticker) {
   return String(ticker || '')
@@ -94,6 +149,7 @@ app.get('/api/status', async (_req, res) => {
     parquetDir: PARQUET_DIR,
     tickersExists: await exists(TICKERS_PATH),
     parquetDirExists: await exists(PARQUET_DIR),
+    loadedTickersCount: loadedTickers.size,
   })
 })
 
@@ -106,7 +162,7 @@ app.post('/api/download', async (req, res) => {
   const startedAt = Date.now()
 
   const batchSize = Math.max(1, Math.min(500, Number(req.body?.batchSize ?? 100)))
-  const sleepSeconds = Math.max(0, Math.min(60, Number(req.body?.sleepSeconds ?? 2)))
+  const sleepSeconds = Math.max(0, Math.min(60, Number(req.body?.sleepSeconds ?? 3)))
   const maxRetries = Math.max(0, Math.min(10, Number(req.body?.maxRetries ?? 3)))
   const threads = Boolean(req.body?.threads ?? true)
   const limit = Math.max(0, Math.min(100000, Number(req.body?.limit ?? 0)))
@@ -239,6 +295,31 @@ app.get('/api/parquet-tickers', async (_req, res) => {
   }
 })
 
+app.get('/api/debug/:ticker', async (req, res) => {
+  const ticker = normalizeTicker(req.params.ticker)
+  if (!ticker) {
+    res.status(400).json({ error: 'Missing ticker' })
+    return
+  }
+
+  const tableName = `ticker_${ticker.replace(/[^A-Z0-9]/g, '_')}`
+
+  if (!loadedTickers.has(ticker)) {
+    res.status(404).json({ error: `Ticker ${ticker} not loaded`, loadedTickers: Array.from(loadedTickers).slice(0, 10) })
+    return
+  }
+
+  // Get raw data sample
+  const sampleSql = `SELECT * FROM ${tableName} LIMIT 5`
+  conn.all(sampleSql, (err, rows) => {
+    if (err) {
+      res.status(500).json({ error: String(err?.message || err), tableName })
+      return
+    }
+    res.json({ ticker, tableName, rowCount: rows?.length || 0, sampleRows: rows })
+  })
+})
+
 app.get('/api/candles/:ticker', async (req, res) => {
   const ticker = normalizeTicker(req.params.ticker)
   const limit = Math.max(50, Math.min(20000, Number(req.query.limit || 1500)))
@@ -247,55 +328,88 @@ app.get('/api/candles/:ticker', async (req, res) => {
     return
   }
 
-  const parquetPath = path.join(PARQUET_DIR, `${ticker}.parquet`)
-  try {
-    await fs.access(parquetPath)
-  } catch {
-    res.status(404).json({ error: `Missing Parquet file: ${parquetPath}` })
+  // TEMPORARY: Query from pre-loaded in-memory table for fast development
+  // TODO: In production, query directly from parquet files on disk
+  const tableName = `ticker_${ticker.replace(/[^A-Z0-9]/g, '_')}`
+
+  // Check if ticker is loaded in memory
+  if (!loadedTickers.has(ticker)) {
+    res.status(404).json({ error: `Ticker ${ticker} not loaded in memory` })
     return
   }
 
-  const fileForDuckdb = parquetPath.replace(/\\/g, '/').replace(/'/g, "''")
-  const sql = `
-    SELECT
-      epoch_ms("Date") AS ts_ms,
-      "Open"  AS open,
-      "High"  AS high,
-      "Low"   AS low,
-      "Close" AS close
-    FROM read_parquet('${fileForDuckdb}')
-    WHERE "Open" IS NOT NULL AND "High" IS NOT NULL AND "Low" IS NOT NULL AND "Close" IS NOT NULL
-    ORDER BY "Date" DESC
-    LIMIT ${limit};
-  `
-
-  conn.all(sql, (err, rows) => {
-    if (err) {
-      res.status(500).json({ error: String(err?.message || err) })
+  // First, get a sample row to debug column structure
+  const sampleSql = `SELECT * FROM ${tableName} WHERE "Open" IS NOT NULL LIMIT 1`
+  conn.all(sampleSql, (sampleErr, sampleRows) => {
+    if (sampleErr) {
+      res.status(500).json({ error: `Sample query failed: ${String(sampleErr?.message || sampleErr)}` })
       return
     }
-    const ordered = (rows || []).slice().reverse()
-    const candles = ordered.map((r) => ({
-      time: Math.floor(Number(r.ts_ms) / 1000),
-      open: Number(r.open),
-      high: Number(r.high),
-      low: Number(r.low),
-      close: Number(r.close),
-    }))
-    const preview = ordered.slice(-50).map((r) => ({
-      Date: new Date(Number(r.ts_ms)).toISOString(),
-      Open: Number(r.open),
-      High: Number(r.high),
-      Low: Number(r.low),
-      Close: Number(r.close),
-    }))
-    res.json({ ticker, candles, preview })
+
+    // If no rows, data might be empty
+    if (!sampleRows || sampleRows.length === 0) {
+      res.status(404).json({ error: `No data in table ${tableName}. The parquet file may be empty or corrupted. Try re-downloading ticker data from the Admin tab.` })
+      return
+    }
+
+    // Check if data is all nulls
+    const firstRow = sampleRows[0]
+    if (firstRow.Open === null && firstRow.High === null && firstRow.Low === null && firstRow.Close === null) {
+      res.status(404).json({ error: `Ticker ${ticker} has no price data (all null values). Please re-download ticker data from the Admin tab.` })
+      return
+    }
+
+    // Check what columns exist
+    const availableColumns = Object.keys(sampleRows[0])
+
+    const sql = `
+      SELECT
+        epoch_ms("Date") AS ts_ms,
+        "Open"  AS open,
+        "High"  AS high,
+        "Low"   AS low,
+        "Close" AS close
+      FROM ${tableName}
+      WHERE "Open" IS NOT NULL AND "High" IS NOT NULL AND "Low" IS NOT NULL AND "Close" IS NOT NULL
+      ORDER BY "Date" DESC
+      LIMIT ${limit};
+    `
+
+    conn.all(sql, (err, rows) => {
+      if (err) {
+        res.status(500).json({
+          error: String(err?.message || err),
+          availableColumns,
+          sampleRow: sampleRows[0]
+        })
+        return
+      }
+      const ordered = (rows || []).slice().reverse()
+      const candles = ordered.map((r) => ({
+        time: Math.floor(Number(r.ts_ms) / 1000),
+        open: Number(r.open),
+        high: Number(r.high),
+        low: Number(r.low),
+        close: Number(r.close),
+      }))
+      const preview = ordered.slice(-50).map((r) => ({
+        Date: new Date(Number(r.ts_ms)).toISOString(),
+        Open: Number(r.open),
+        High: Number(r.high),
+        Low: Number(r.low),
+        Close: Number(r.close),
+      }))
+      res.json({ ticker, candles, preview })
+    })
   })
 })
 
 const PORT = Number(process.env.PORT || 8787)
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`[api] listening on http://localhost:${PORT}`)
   console.log(`[api] tickers: ${TICKERS_PATH}`)
   console.log(`[api] parquet:  ${PARQUET_DIR}`)
+
+  // TEMPORARY: Pre-load all parquet data for fast development
+  await preloadParquetData()
 })
