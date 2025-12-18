@@ -2800,80 +2800,95 @@ const NodeCard = ({
               className="indent with-line"
               style={{ width: depthPx * 1 + 14 + (slot === 'then' || slot === 'else' ? 14 : 0) }}
             />
-            <div className="add-row">
-              <button
-                className="add-more"
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
                 onClick={(e) => {
                   e.stopPropagation()
                   setAddRowOpen((v) => (v === key ? null : key))
                 }}
               >
                 + insert Node here
-              </button>
+              </Button>
               {addRowOpen === key ? (
                 <div
-                  className="menu"
+                  className="absolute top-full mt-1 left-0 flex flex-col bg-surface border border-border rounded-lg shadow-lg z-10 min-w-[180px]"
                   onClick={(e) => {
                     e.stopPropagation()
                   }}
                 >
-                  <button
+                  <Button
+                    variant="ghost"
+                    className="justify-start rounded-none first:rounded-t-lg"
                     onClick={() => {
                       onAdd(node.id, slot, 0, 'basic')
                       setAddRowOpen(null)
                     }}
                   >
                     Add Basic
-                  </button>
-                  <button
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    className="justify-start rounded-none"
                     onClick={() => {
                       onAdd(node.id, slot, 0, 'function')
                       setAddRowOpen(null)
                     }}
                   >
                     Add Sort
-                  </button>
-                  <button
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    className="justify-start rounded-none"
                     onClick={() => {
                       onAdd(node.id, slot, 0, 'indicator')
                       setAddRowOpen(null)
                     }}
                   >
                     Add Indicator
-                  </button>
-                  <button
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    className="justify-start rounded-none"
                     onClick={() => {
                       onAdd(node.id, slot, 0, 'numbered')
                       setAddRowOpen(null)
                     }}
                   >
                     Add Numbered
-                  </button>
-                  <button
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    className="justify-start rounded-none"
                     onClick={() => {
                       onAdd(node.id, slot, 0, 'position')
                       setAddRowOpen(null)
                     }}
                   >
                     Add Position
-                  </button>
-                  <button
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    className="justify-start rounded-none"
                     onClick={() => {
                       onAdd(node.id, slot, 0, 'call')
                       setAddRowOpen(null)
                     }}
                   >
                     Add Call Reference
-                  </button>
+                  </Button>
                   {clipboard && (
-                    <button
+                    <Button
+                      variant="ghost"
+                      className="justify-start rounded-none"
                       onClick={() => {
                         onPaste(node.id, slot, 0, clipboard)
                         setAddRowOpen(null)
                       }}
                     >
                       Paste
-                    </button>
+                    </Button>
                   )}
                 </div>
               ) : null}
@@ -2934,9 +2949,9 @@ const NodeCard = ({
                   onUpdateCallRef={onUpdateCallRef}
                 />
                 {node.kind === 'function' && slot === 'next' && index > 0 ? (
-                  <button className="icon-btn delete inline" onClick={() => onRemoveSlotEntry(node.id, slot, index)}>
+                  <Button variant="destructive" size="icon" className="h-7 w-7" onClick={() => onRemoveSlotEntry(node.id, slot, index)}>
                     X
-                  </button>
+                  </Button>
                 ) : null}
               </div>
             </div>
@@ -3092,17 +3107,17 @@ const NodeCard = ({
               })()}
             </div>
             {idx > 0 && (
-              <button className="icon-btn delete inline" onClick={() => onRemovePosition(node.id, idx)}>
+              <Button variant="destructive" size="icon" className="h-7 w-7" onClick={() => onRemovePosition(node.id, idx)}>
                 X
-              </button>
+              </Button>
             )}
           </div>
         ))}
-        <div className="position-row">
-          <div className="indent" style={{ width: 14 }} />
-          <button className="add-more" onClick={() => onAddPosition(node.id)}>
+        <div className="flex items-center gap-2">
+          <div className="w-3.5" />
+          <Button variant="outline" size="sm" onClick={() => onAddPosition(node.id)}>
             +
-          </button>
+          </Button>
         </div>
       </div>
     )
@@ -3112,17 +3127,17 @@ const NodeCard = ({
     if (node.kind !== 'call') return null
     const linked = node.callRefId ? callChainMap.get(node.callRefId) : null
     return (
-      <div className="line">
-        <div className="indent with-line" style={{ width: 14 }} />
-        <div className="call-ref-wrap">
+      <div className="flex items-center gap-2">
+        <div className="w-3.5 h-full border-l border-border" />
+        <div className="py-2">
           {callChains.length === 0 ? (
-            <div style={{ color: '#64748b', fontWeight: 700 }}>Create a Call in the side panel first.</div>
+            <div className="text-muted font-bold">Create a Call in the side panel first.</div>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              <select
+            <div className="flex flex-col gap-1.5">
+              <Select
                 value={node.callRefId ?? ''}
                 onChange={(e) => onUpdateCallRef(node.id, e.target.value || null)}
-                style={{ maxWidth: 260 }}
+                className="max-w-64"
               >
                 <option value="">Select a call chain…</option>
                 {callChains.map((c) => (
@@ -3130,11 +3145,11 @@ const NodeCard = ({
                     {c.name}
                   </option>
                 ))}
-              </select>
+              </Select>
               {linked ? (
-                <div style={{ fontSize: 12, color: '#475569', fontWeight: 800 }}>Linked to: {linked.name}</div>
+                <div className="text-xs text-slate-600 font-extrabold">Linked to: {linked.name}</div>
               ) : (
-                <div style={{ fontSize: 12, color: '#94a3b8', fontWeight: 700 }}>No call selected.</div>
+                <div className="text-xs text-muted font-bold">No call selected.</div>
               )}
             </div>
           )}
@@ -3179,9 +3194,9 @@ const NodeCard = ({
       }
 
       return (
-        <div className="chip tag capped-chip">
+        <Badge variant="default" className="gap-1.5 py-1 px-2.5">
           <span>Fallback</span>
-          <input
+          <Input
             list={TICKER_DATALIST_ID}
             value={shown}
             onClick={(e) => e.stopPropagation()}
@@ -3218,26 +3233,25 @@ const NodeCard = ({
             }}
             placeholder="Ticker"
             spellCheck={false}
-            style={{ width: 120 }}
+            className="w-[120px] h-7 px-1.5 inline-flex"
           />
-        </div>
+        </Badge>
       )
     }
 
     return (
-      <div className="chip tag capped-chip">
+      <Badge variant="default" className="gap-1.5 py-1 px-2.5">
         <span>of the last</span>
-        <input
-          className="inline-number"
+        <Input
           type="number"
           value={volDays ?? 20}
           onClick={(e) => e.stopPropagation()}
           onChange={(e) => onUpdateVolWindow(node.id, Number(e.target.value), branch)}
-          style={{ width: 70 }}
+          className="w-[70px] h-7 px-1.5 inline-flex"
           min={1}
         />
         <span>days</span>
-      </div>
+      </Badge>
     )
   }
 
@@ -3467,38 +3481,41 @@ const NodeCard = ({
             )}
           </div>
         )}
-        <div className="head-actions">
-          <button
-            className="icon-btn"
+        <div className="flex items-center gap-1.5">
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={(e) => {
               e.stopPropagation()
               onCopy(node.id)
             }}
           >
             Copy
-          </button>
-          <button
-            className="icon-btn"
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={(e) => {
               e.stopPropagation()
               onToggleCollapse(node.id, !collapsed)
             }}
           >
             {collapsed ? 'Expand' : 'Collapse'}
-          </button>
-          <div className="color-picker">
-            <button
-              className="icon-btn"
+          </Button>
+          <div className="relative">
+            <Button
+              variant="ghost"
+              size="sm"
               onClick={(e) => {
                 e.stopPropagation()
                 setColorOpen((v) => !v)
               }}
             >
               Color
-            </button>
+            </Button>
             {colorOpen ? (
               <div
-                className="color-menu"
+                className="absolute top-full mt-1 right-0 flex gap-1 p-2 bg-surface border border-border rounded-lg shadow-lg z-10"
                 onClick={(e) => {
                   e.stopPropagation()
                 }}
@@ -3506,7 +3523,7 @@ const NodeCard = ({
                 {palette.map((c) => (
                   <button
                     key={c}
-                    className="color-swatch"
+                    className="w-6 h-6 rounded border border-border hover:scale-110 transition-transform"
                     style={{ background: c }}
                     onClick={() => {
                       onColorChange(node.id, c)
@@ -3516,7 +3533,7 @@ const NodeCard = ({
                   />
                 ))}
                 <button
-                  className="color-swatch reset"
+                  className="w-6 h-6 rounded border border-border hover:scale-110 transition-transform bg-surface text-muted flex items-center justify-center text-xs"
                   onClick={() => {
                     onColorChange(node.id, undefined)
                     setColorOpen(false)
@@ -3528,15 +3545,16 @@ const NodeCard = ({
               </div>
             ) : null}
           </div>
-          <button
-            className="icon-btn delete"
+          <Button
+            variant="destructive"
+            size="sm"
             onClick={(e) => {
               e.stopPropagation()
               onDelete(node.id)
             }}
           >
             Delete
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -3700,11 +3718,12 @@ const NodeCard = ({
                   <div className="w-7 h-full border-l border-border" />
                   <div className="text-sm font-extrabold">Then</div>
                 </div>
-                <div className="line">
+                <div className="flex items-center gap-2">
                   <div className="indent with-line" style={{ width: 3 * 14 }} />
-                  <div className="weight-wrap">
-                  <button
-                    className="chip tag"
+                  <div className="relative flex items-center gap-2">
+                  <Badge
+                    variant="default"
+                    className="cursor-pointer gap-1 py-1 px-2.5"
                     onClick={(e) => {
                       e.stopPropagation()
                       setWeightThenOpen((v) => !v)
@@ -3713,18 +3732,20 @@ const NodeCard = ({
                     }}
                   >
                     {weightLabel(node.weightingThen ?? node.weighting)}
-                  </button>
+                  </Badge>
                   {renderWeightDetailChip('then')}
                   {weightThenOpen ? (
                     <div
-                      className="menu"
+                      className="absolute top-full mt-1 left-0 flex flex-col bg-surface border border-border rounded-lg shadow-lg z-10 min-w-[120px]"
                       onClick={(e) => {
                         e.stopPropagation()
                       }}
                     >
                       {(['equal', 'defined', 'inverse', 'pro', 'capped'] as WeightMode[]).map((w) => (
-                        <button
+                        <Button
                           key={w}
+                          variant="ghost"
+                          className="justify-start rounded-none first:rounded-t-lg last:rounded-b-lg"
                           onClick={() => {
                             onWeightChange(node.id, w, 'then')
                             if (w !== 'capped') {
@@ -3735,22 +3756,23 @@ const NodeCard = ({
                           }}
                         >
                           {weightLabel(w)}
-                        </button>
+                        </Button>
                       ))}
                     </div>
                   ) : null}
                 </div>
               </div>
                 {renderSlot('then', 3 * 14)}
-                <div className="line">
+                <div className="flex items-center gap-2">
                   <div className="indent with-line" style={{ width: 2 * 14 }} />
-                  <div className="chip title">Else</div>
+                  <div className="text-sm font-extrabold">Else</div>
                 </div>
-                <div className="line">
+                <div className="flex items-center gap-2">
                   <div className="indent with-line" style={{ width: 3 * 14 }} />
-                  <div className="weight-wrap">
-                  <button
-                    className="chip tag"
+                  <div className="relative flex items-center gap-2">
+                  <Badge
+                    variant="default"
+                    className="cursor-pointer gap-1 py-1 px-2.5"
                     onClick={(e) => {
                       e.stopPropagation()
                       setWeightElseOpen((v) => !v)
@@ -3759,18 +3781,20 @@ const NodeCard = ({
                     }}
                   >
                     {weightLabel(node.weightingElse ?? node.weighting)}
-                  </button>
+                  </Badge>
                   {renderWeightDetailChip('else')}
                   {weightElseOpen ? (
                     <div
-                      className="menu"
+                      className="absolute top-full mt-1 left-0 flex flex-col bg-surface border border-border rounded-lg shadow-lg z-10 min-w-[120px]"
                       onClick={(e) => {
                         e.stopPropagation()
                       }}
                     >
                       {(['equal', 'defined', 'inverse', 'pro', 'capped'] as WeightMode[]).map((w) => (
-                        <button
+                        <Button
                           key={w}
+                          variant="ghost"
+                          className="justify-start rounded-none first:rounded-t-lg last:rounded-b-lg"
                           onClick={() => {
                             onWeightChange(node.id, w, 'else')
                             if (w !== 'capped') {
@@ -3781,7 +3805,7 @@ const NodeCard = ({
                           }}
                         >
                           {weightLabel(w)}
-                        </button>
+                        </Button>
                       ))}
                     </div>
                   ) : null}
@@ -3791,12 +3815,12 @@ const NodeCard = ({
               </>
             ) : node.kind === 'numbered' ? (
               <>
-                <div className="line">
+                <div className="flex items-center gap-2">
                   <div className="indent with-line" style={{ width: 14 }} />
-                  <div className="chip">
+                  <Badge variant="default" className="gap-1.5 py-1 px-2.5">
                     If{' '}
-                    <select
-                      className="inline-select"
+                    <Select
+                      className="h-7 px-1.5 mx-1 inline-flex"
                       value={node.numbered?.quantifier ?? 'all'}
                       onChange={(e) => onNumberedQuantifier(node.id, e.target.value as NumberedQuantifier)}
                     >
@@ -3805,28 +3829,28 @@ const NodeCard = ({
                       <option value="exactly">Exactly</option>
                       <option value="atLeast">At Least</option>
                       <option value="atMost">At Most</option>
-                    </select>{' '}
+                    </Select>{' '}
                     {node.numbered?.quantifier === 'exactly' ||
                     node.numbered?.quantifier === 'atLeast' ||
                     node.numbered?.quantifier === 'atMost' ? (
                       <>
-                        <input
-                          className="inline-number"
+                        <Input
                           type="number"
+                          className="w-14 h-7 px-1.5 inline-flex"
                           value={node.numbered?.n ?? 1}
                           onChange={(e) => onNumberedN(node.id, Number(e.target.value))}
                         />{' '}
                       </>
                     ) : null}
                     of the following conditions are true
-                  </div>
+                  </Badge>
                 </div>
 
                 {(node.numbered?.items ?? []).map((item, idx) => (
                   <div key={item.id}>
-                    <div className="line">
+                    <div className="flex items-center gap-2">
                       <div className="indent with-line" style={{ width: 14 }} />
-                      <div className="chip title">Indicator</div>
+                      <div className="text-sm font-extrabold">Indicator</div>
                     </div>
                     <div className="line condition-block">
                       <div className="indent with-line" style={{ width: 2 * 14 }} />
@@ -3836,56 +3860,60 @@ const NodeCard = ({
                         )}
                       </div>
                     </div>
-                    <div className="line">
+                    <div className="flex items-center gap-2">
                       <div className="indent with-line" style={{ width: 2 * 14 }} />
-                      <div className="add-row">
-                        <button
-                          className="add-more"
+                      <div className="flex gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
                           onClick={(e) => {
                             e.stopPropagation()
                             onAddCondition(node.id, 'and', item.id)
                           }}
                         >
                           And If
-                        </button>
-                        <button
-                          className="add-more"
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
                           onClick={(e) => {
                             e.stopPropagation()
                             onAddCondition(node.id, 'or', item.id)
                           }}
                         >
                           Or If
-                        </button>
+                        </Button>
                       </div>
                     </div>
                   </div>
                 ))}
 
-                <div className="line">
+                <div className="flex items-center gap-2">
                   <div className="indent with-line" style={{ width: 14 }} />
-                  <div className="add-row">
-                    <button
-                      className="add-more"
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
                       onClick={(e) => {
                         e.stopPropagation()
                         onAddNumberedItem(node.id)
                       }}
                     >
                       Add Indicator
-                    </button>
+                    </Button>
                   </div>
                 </div>
 
-                <div className="line">
+                <div className="flex items-center gap-2">
                   <div className="indent with-line" style={{ width: 2 * 14 }} />
-                  <div className="chip title">Then</div>
+                  <div className="text-sm font-extrabold">Then</div>
                 </div>
-                <div className="line">
+                <div className="flex items-center gap-2">
                   <div className="indent with-line" style={{ width: 3 * 14 }} />
-                  <div className="weight-wrap">
-                    <button
-                      className="chip tag"
+                  <div className="relative flex items-center gap-2">
+                    <Badge
+                      variant="default"
+                      className="cursor-pointer gap-1 py-1 px-2.5"
                       onClick={(e) => {
                         e.stopPropagation()
                         setWeightThenOpen((v) => !v)
@@ -3894,18 +3922,20 @@ const NodeCard = ({
                       }}
                     >
                       {weightLabel(node.weightingThen ?? node.weighting)}
-                    </button>
+                    </Badge>
                     {renderWeightDetailChip('then')}
                     {weightThenOpen ? (
                       <div
-                        className="menu"
+                        className="absolute top-full mt-1 left-0 flex flex-col bg-surface border border-border rounded-lg shadow-lg z-10 min-w-[120px]"
                         onClick={(e) => {
                           e.stopPropagation()
                         }}
                       >
                         {(['equal', 'defined', 'inverse', 'pro', 'capped'] as WeightMode[]).map((w) => (
-                          <button
+                          <Button
                             key={w}
+                            variant="ghost"
+                            className="justify-start rounded-none first:rounded-t-lg last:rounded-b-lg"
                             onClick={() => {
                               onWeightChange(node.id, w, 'then')
                               if (w !== 'capped') {
@@ -3916,7 +3946,7 @@ const NodeCard = ({
                             }}
                           >
                             {weightLabel(w)}
-                          </button>
+                          </Button>
                         ))}
                       </div>
                     ) : null}
@@ -3924,15 +3954,16 @@ const NodeCard = ({
                 </div>
                 {renderSlot('then', 3 * 14)}
 
-                <div className="line">
+                <div className="flex items-center gap-2">
                   <div className="indent with-line" style={{ width: 2 * 14 }} />
-                  <div className="chip title">Else</div>
+                  <div className="text-sm font-extrabold">Else</div>
                 </div>
-                <div className="line">
+                <div className="flex items-center gap-2">
                   <div className="indent with-line" style={{ width: 3 * 14 }} />
-                  <div className="weight-wrap">
-                    <button
-                      className="chip tag"
+                  <div className="relative flex items-center gap-2">
+                    <Badge
+                      variant="default"
+                      className="cursor-pointer gap-1 py-1 px-2.5"
                       onClick={(e) => {
                         e.stopPropagation()
                         setWeightElseOpen((v) => !v)
@@ -3941,18 +3972,20 @@ const NodeCard = ({
                       }}
                     >
                       {weightLabel(node.weightingElse ?? node.weighting)}
-                    </button>
+                    </Badge>
                     {renderWeightDetailChip('else')}
                     {weightElseOpen ? (
                       <div
-                        className="menu"
+                        className="absolute top-full mt-1 left-0 flex flex-col bg-surface border border-border rounded-lg shadow-lg z-10 min-w-[120px]"
                         onClick={(e) => {
                           e.stopPropagation()
                         }}
                       >
                         {(['equal', 'defined', 'inverse', 'pro', 'capped'] as WeightMode[]).map((w) => (
-                          <button
+                          <Button
                             key={w}
+                            variant="ghost"
+                            className="justify-start rounded-none first:rounded-t-lg last:rounded-b-lg"
                             onClick={() => {
                               onWeightChange(node.id, w, 'else')
                               if (w !== 'capped') {
@@ -3963,7 +3996,7 @@ const NodeCard = ({
                             }}
                           >
                             {weightLabel(w)}
-                          </button>
+                          </Button>
                         ))}
                       </div>
                     ) : null}
@@ -4019,21 +4052,21 @@ const NodeCard = ({
                           ) : null}
                         </div>
                       ) : isFunctionDesc ? (
-                        <div className="chip">
+                        <Badge variant="default" className="gap-1.5 py-1 px-2.5">
                           Of the{' '}
                           {node.metric === 'Current Price' ? null : (
                             <>
-                              <input
-                                className="inline-number"
+                              <Input
                                 type="number"
+                                className="w-14 h-7 px-1.5 inline-flex"
                                 value={node.window ?? 10}
                                 onChange={(e) => onFunctionWindow(node.id, Number(e.target.value))}
                               />
                               d{' '}
                             </>
                           )}
-                          <select
-                            className="inline-select"
+                          <Select
+                            className="h-7 px-1.5 mx-1 inline-flex"
                             value={node.metric ?? 'Relative Strength Index'}
                             onChange={(e) => onFunctionMetric(node.id, e.target.value as MetricChoice)}
                           >
@@ -4043,23 +4076,23 @@ const NodeCard = ({
                             <option value="Relative Strength Index">Relative Strength Index</option>
                             <option value="Max Drawdown">Max Drawdown</option>
                             <option value="Standard Deviation">Standard Deviation</option>
-                          </select>
+                          </Select>
                           {node.metric === 'Current Price' ? ' pick the ' : 's pick the '}
-                          <select
-                            className="inline-select"
+                          <Select
+                            className="h-7 px-1.5 mx-1 inline-flex"
                             value={node.rank ?? 'Bottom'}
                             onChange={(e) => onFunctionRank(node.id, e.target.value as RankChoice)}
                           >
                             <option value="Bottom">Bottom</option>
                             <option value="Top">Top</option>
-                          </select>{' '}
-                          <input
-                            className="inline-number"
+                          </Select>{' '}
+                          <Input
                             type="number"
+                            className="w-14 h-7 px-1.5 inline-flex"
                           value={node.bottom ?? 1}
                             onChange={(e) => onFunctionBottom(node.id, Number(e.target.value))}
                           />
-                        </div>
+                        </Badge>
                       ) : (
                         <div className={`chip ${line.tone ?? ''}`}>{line.text}</div>
                       )}
@@ -7792,26 +7825,26 @@ function App() {
             }}
           />
         ) : tab === 'Analyze' ? (
-          <div className="placeholder">
-            <div style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap' }}>
-              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-                <div style={{ fontWeight: 900 }}>Analyze</div>
-                <div style={{ display: 'flex', gap: 8 }}>
+          <div className="p-4">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <div className="font-black">Analyze</div>
+                <div className="flex gap-2">
                   {(['Bots', 'Correlation Tool'] as const).map((t) => (
-                    <button
+                    <Button
                       key={t}
-                      className={`tab-btn ${analyzeSubtab === t ? 'active' : ''}`}
+                      variant={analyzeSubtab === t ? 'accent' : 'secondary'}
+                      size="sm"
                       onClick={() => setAnalyzeSubtab(t)}
-                      style={{ padding: '6px 10px', fontSize: 12 }}
                     >
                       {t}
-                    </button>
+                    </Button>
                   ))}
                 </div>
               </div>
-              <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted)' }}>Filter</div>
-                <select
+              <label className="flex items-center gap-2">
+                <div className="text-xs font-bold text-muted">Filter</div>
+                <Select
                   value={uiState.analyzeFilterWatchlistId ?? ''}
                   onChange={(e) =>
                     setUiState((prev) => ({ ...prev, analyzeFilterWatchlistId: e.target.value ? e.target.value : null }))
@@ -7823,30 +7856,30 @@ function App() {
                       {w.name}
                     </option>
                   ))}
-                </select>
+                </Select>
               </label>
             </div>
 
             {analyzeSubtab === 'Correlation Tool' ? (
-              <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
-                <div className="saved-item" style={{ display: 'grid', placeItems: 'center', minHeight: 220, fontWeight: 900 }}>
+              <div className="mt-3 grid grid-cols-3 gap-3">
+                <Card className="grid place-items-center min-h-[220px] font-black">
                   Placeholder Text: Invested Systems
-                </div>
-                <div className="saved-item" style={{ display: 'grid', placeItems: 'center', minHeight: 220, fontWeight: 900 }}>
+                </Card>
+                <Card className="grid place-items-center min-h-[220px] font-black">
                   Placeholder Text: Community suggestions based on filters (Beta, Correlation, Volatility weighting)
-                </div>
-                <div className="saved-item" style={{ display: 'grid', placeItems: 'center', minHeight: 220, fontWeight: 900 }}>
+                </Card>
+                <Card className="grid place-items-center min-h-[220px] font-black">
                   Combined portfolio and allocations based on suggestions
-                </div>
+                </Card>
               </div>
             ) : null}
 
             {analyzeSubtab !== 'Bots' ? null : (
               <>
                 {analyzeVisibleBotIds.length === 0 ? (
-              <div style={{ marginTop: 12, color: 'var(--muted)' }}>No bots in your watchlists yet.</div>
+              <div className="mt-3 text-muted">No bots in your watchlists yet.</div>
             ) : (
-              <div className="saved-list" style={{ marginTop: 12 }}>
+              <div className="grid gap-3 mt-3">
                 {analyzeVisibleBotIds
                   .map((id) => savedBots.find((b) => b.id === id))
                   .filter((b): b is SavedBot => Boolean(b))
@@ -7855,9 +7888,11 @@ function App() {
                     const analyzeState = analyzeBacktests[b.id]
                     const tags = watchlistsByBotId.get(b.id) ?? []
                     return (
-                      <div key={b.id} className="saved-item" style={{ display: 'grid', gap: 10 }}>
-                        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-                          <button
+                      <Card key={b.id} className="grid gap-2.5">
+                        <div className="flex items-center gap-2.5 flex-wrap">
+                          <Button
+                            variant="ghost"
+                            size="sm"
                             onClick={() => {
                               const next = !(uiState.analyzeCollapsedByBotId[b.id] ?? true)
                               setUiState((prev) => ({
@@ -7866,45 +7901,47 @@ function App() {
                               }))
                               if (!next) runAnalyzeBacktest(b)
                             }}
-                            style={{ padding: '6px 10px' }}
                           >
                             {collapsed ? 'Expand' : 'Collapse'}
-                          </button>
-                          <div style={{ fontWeight: 900 }}>{b.name}</div>
-                          <span className={`bot-tag ${b.visibility === 'community' ? 'muted' : ''}`}>
+                          </Button>
+                          <div className="font-black">{b.name}</div>
+                          <Badge variant={b.visibility === 'community' ? 'default' : 'accent'}>
                             {b.visibility === 'community' ? 'Community' : 'Private'}
-                          </span>
-                          <span className="bot-tag">Builder: {b.builderId}</span>
-                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                          </Badge>
+                          <Badge variant="default">Builder: {b.builderId}</Badge>
+                          <div className="flex gap-1.5 flex-wrap">
                             {tags.map((w) => (
-                              <div key={w.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px', borderRadius: 999, background: '#eff6ff', fontSize: 12, fontWeight: 800 }}>
+                              <Badge key={w.id} variant="accent" className="gap-1.5">
                                 {w.name}
-                                <button
-                                  className="icon-btn delete inline"
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-4 w-4 p-0 hover:bg-transparent"
                                   onClick={() => removeBotFromWatchlist(b.id, w.id)}
                                   title={`Remove from ${w.name}`}
                                 >
                                   X
-                                </button>
-                              </div>
+                                </Button>
+                              </Badge>
                             ))}
                           </div>
-                          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                          <div className="ml-auto flex gap-2 flex-wrap">
                             {b.visibility !== 'community' ? (
-                              <button onClick={() => handleOpenSaved(b)}>Open in Build</button>
+                              <Button size="sm" onClick={() => handleOpenSaved(b)}>Open in Build</Button>
                             ) : null}
-                            <button
+                            <Button
+                              size="sm"
                               onClick={() => {
                                 setAddToWatchlistBotId(b.id)
                                 setAddToWatchlistNewName('')
                               }}
                             >
                               Add to Watchlist
-                            </button>
+                            </Button>
                             {b.visibility !== 'community' ? (
-                              <button onClick={() => handleCopySaved(b)}>Copy</button>
+                              <Button size="sm" onClick={() => handleCopySaved(b)}>Copy</Button>
                             ) : null}
-                            <button onClick={() => handleDeleteSaved(b.id)}>Delete</button>
+                            <Button variant="destructive" size="sm" onClick={() => handleDeleteSaved(b.id)}>Delete</Button>
                           </div>
                         </div>
 
@@ -8346,7 +8383,7 @@ function App() {
                             </div>
                           </div>
                         ) : null}
-                      </div>
+                      </Card>
                     )
                   })}
               </div>
