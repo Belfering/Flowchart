@@ -1,15 +1,49 @@
-:root {
-  font-family: 'Segoe UI', 'Helvetica Neue', Arial, system-ui, -apple-system, sans-serif;
-  line-height: 1.6;
-  font-weight: 400;
-  color: #0f172a;
-  background-color: #f5f7fb;
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+@import "tailwindcss";
+
+@theme {
+  /* Colors - Light mode defaults */
+  --color-bg: #f6f8fb;
+  --color-surface: #ffffff;
+  --color-surface-2: #f8fafc;
+  --color-text: #0f172a;
+  --color-muted: #64748b;
+  --color-border: #cbd5e1;
+  --color-border-soft: #e5e7eb;
+  --color-accent-bg: #e0f2fe;
+  --color-accent-border: #bae6fd;
+  --color-accent-text: #075985;
+  --color-danger: #b91c1c;
+  --color-success: #15803d;
+
+  /* Border radius */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --radius-2xl: 14px;
+  --radius-3xl: 16px;
+
+  /* Font family */
+  --font-sans: 'Segoe UI', system-ui, -apple-system, sans-serif;
 }
 
+/* Dark mode colors */
+.dark {
+  --color-bg: #0b1220;
+  --color-surface: #0f172a;
+  --color-surface-2: #111c33;
+  --color-text: #e5e7eb;
+  --color-muted: #9ca3af;
+  --color-border: #24324a;
+  --color-border-soft: #24324a;
+  --color-accent-bg: rgba(14, 165, 233, 0.16);
+  --color-accent-border: rgba(14, 165, 233, 0.35);
+  --color-accent-text: #7dd3fc;
+  --color-danger: #f87171;
+  --color-success: #34d399;
+}
+
+/* Base styles */
 * {
   box-sizing: border-box;
 }
@@ -17,7 +51,14 @@
 body {
   margin: 0;
   min-height: 100vh;
-  background: #f5f7fb;
+  font-family: var(--font-sans);
+  line-height: 1.6;
+  color: var(--color-text);
+  background-color: var(--color-bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 #root {

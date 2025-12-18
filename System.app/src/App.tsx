@@ -10,6 +10,13 @@ import {
 } from 'react'
 import { createPortal } from 'react-dom'
 import './App.css'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Select } from '@/components/ui/select'
+import { Card } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { cn } from '@/lib/utils'
 import {
   AreaSeries,
   CandlestickSeries,
@@ -3253,13 +3260,13 @@ const NodeCard = ({
     const prefix = cond.type === 'and' ? 'And if the ' : cond.type === 'or' ? 'Or if the ' : 'If the '
     const isSingleLineItem = total === 1
     return (
-      <div className="condition-row" key={cond.id}>
-        <div className="chip">
+      <div className="flex items-center gap-2" key={cond.id}>
+        <Badge variant="default" className="gap-1 py-1 px-2.5">
           {prefix}
           {cond.metric === 'Current Price' ? null : (
             <>
-              <input
-                className="inline-number"
+              <Input
+                className="w-14 h-7 px-1.5 mx-1 inline-flex"
                 type="number"
                 value={cond.window}
                 onChange={(e) => onUpdateCondition(ownerId, cond.id, { window: Number(e.target.value) }, itemId)}
@@ -3267,8 +3274,8 @@ const NodeCard = ({
               d{' '}
             </>
           )}
-          <select
-            className="inline-select"
+          <Select
+            className="h-7 px-1.5 mx-1"
             value={cond.metric}
             onChange={(e) => onUpdateCondition(ownerId, cond.id, { metric: e.target.value as MetricChoice }, itemId)}
           >
@@ -3278,10 +3285,10 @@ const NodeCard = ({
             <option value="Relative Strength Index">Relative Strength Index</option>
             <option value="Max Drawdown">Max Drawdown</option>
             <option value="Standard Deviation">Standard Deviation</option>
-          </select>
+          </Select>
           {' of '}
-          <select
-            className="inline-select"
+          <Select
+            className="h-7 px-1.5 mx-1"
             value={cond.ticker}
             onChange={(e) => onUpdateCondition(ownerId, cond.id, { ticker: e.target.value as PositionChoice }, itemId)}
           >
@@ -3290,10 +3297,10 @@ const NodeCard = ({
                 {t}
               </option>
             ))}
-          </select>{' '}
+          </Select>{' '}
           is{' '}
-          <select
-            className="inline-select"
+          <Select
+            className="h-7 px-1.5 mx-1"
             value={cond.comparator}
             onChange={(e) =>
               onUpdateCondition(ownerId, cond.id, { comparator: e.target.value as ComparatorChoice }, itemId)
@@ -3301,10 +3308,10 @@ const NodeCard = ({
           >
             <option value="lt">Less Than</option>
             <option value="gt">Greater Than</option>
-          </select>{' '}
+          </Select>{' '}
           {cond.expanded ? null : (
-            <input
-              className="inline-number"
+            <Input
+              className="w-14 h-7 px-1.5 mx-1 inline-flex"
               type="number"
               value={cond.threshold}
               onChange={(e) => onUpdateCondition(ownerId, cond.id, { threshold: Number(e.target.value) }, itemId)}
@@ -3316,8 +3323,8 @@ const NodeCard = ({
               the{' '}
               {cond.rightMetric === 'Current Price' ? null : (
                 <>
-                  <input
-                    className="inline-number"
+                  <Input
+                    className="w-14 h-7 px-1.5 mx-1 inline-flex"
                     type="number"
                     value={cond.rightWindow ?? 14}
                     onChange={(e) => onUpdateCondition(ownerId, cond.id, { rightWindow: Number(e.target.value) }, itemId)}
@@ -3325,8 +3332,8 @@ const NodeCard = ({
                   d{' '}
                 </>
               )}
-              <select
-                className="inline-select"
+              <Select
+                className="h-7 px-1.5 mx-1"
                 value={cond.rightMetric ?? 'Relative Strength Index'}
                 onChange={(e) => onUpdateCondition(ownerId, cond.id, { rightMetric: e.target.value as MetricChoice }, itemId)}
               >
@@ -3336,10 +3343,10 @@ const NodeCard = ({
                 <option value="Relative Strength Index">Relative Strength Index</option>
                 <option value="Max Drawdown">Max Drawdown</option>
                 <option value="Standard Deviation">Standard Deviation</option>
-              </select>{' '}
+              </Select>{' '}
               of{' '}
-              <select
-                className="inline-select"
+              <Select
+                className="h-7 px-1.5 mx-1"
                 value={cond.rightTicker ?? 'SPY'}
                 onChange={(e) =>
                   onUpdateCondition(ownerId, cond.id, { rightTicker: e.target.value as PositionChoice }, itemId)
@@ -3350,11 +3357,13 @@ const NodeCard = ({
                     {t}
                   </option>
                 ))}
-              </select>{' '}
+              </Select>{' '}
             </>
           ) : null}
-          <button
-            className="icon-btn inline"
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 p-0"
             onClick={(e) => {
               e.stopPropagation()
               onUpdateCondition(ownerId, cond.id, { expanded: !cond.expanded }, itemId)
@@ -3362,11 +3371,13 @@ const NodeCard = ({
             title="Flip condition"
           >
             ↔
-          </button>
-        </div>
+          </Button>
+        </Badge>
         {((total > 1 && (idx > 0 || allowDeleteFirst)) || (allowDeleteFirst && isSingleLineItem)) ? (
-          <button
-            className="icon-btn delete inline"
+          <Button
+            variant="destructive"
+            size="icon"
+            className="h-7 w-7 p-0"
             onClick={() => {
               if (allowDeleteFirst && isSingleLineItem && itemId) {
                 onDeleteNumberedItem(ownerId, itemId)
@@ -3376,7 +3387,7 @@ const NodeCard = ({
             }}
           >
             X
-          </button>
+          </Button>
         ) : null}
       </div>
     )
@@ -3547,14 +3558,14 @@ const NodeCard = ({
                   const prefix =
                     cond.type === 'and' ? 'And if the ' : cond.type === 'or' ? 'Or if the ' : 'If the '
                   return (
-                    <div className="line" key={cond.id}>
-                      <div className="indent with-line" style={{ width: 14 }} />
-                      <div className="chip">
+                    <div className="flex items-center gap-2" key={cond.id}>
+                      <div className="w-3.5 h-full border-l border-border" />
+                      <Badge variant="default" className="gap-1 py-1 px-2.5">
                         {prefix}
                         {cond.metric === 'Current Price' ? null : (
                           <>
-                            <input
-                              className="inline-number"
+                            <Input
+                              className="w-14 h-7 px-1.5 mx-1 inline-flex"
                               type="number"
                               value={cond.window}
                               onChange={(e) => onUpdateCondition(node.id, cond.id, { window: Number(e.target.value) })}
@@ -3562,8 +3573,8 @@ const NodeCard = ({
                             d{' '}
                           </>
                         )}
-                        <select
-                          className="inline-select"
+                        <Select
+                          className="h-7 px-1.5 mx-1"
                           value={cond.metric}
                           onChange={(e) =>
                             onUpdateCondition(node.id, cond.id, { metric: e.target.value as MetricChoice })
@@ -3575,10 +3586,10 @@ const NodeCard = ({
                           <option value="Relative Strength Index">Relative Strength Index</option>
                           <option value="Max Drawdown">Max Drawdown</option>
                           <option value="Standard Deviation">Standard Deviation</option>
-                        </select>
+                        </Select>
                         {' of '}
-                        <select
-                          className="inline-select"
+                        <Select
+                          className="h-7 px-1.5 mx-1"
                           value={cond.ticker}
                           onChange={(e) =>
                             onUpdateCondition(node.id, cond.id, { ticker: e.target.value as PositionChoice })
@@ -3589,10 +3600,10 @@ const NodeCard = ({
                               {t}
                             </option>
                           ))}
-                        </select>{' '}
+                        </Select>{' '}
                         is{' '}
-                        <select
-                          className="inline-select"
+                        <Select
+                          className="h-7 px-1.5 mx-1"
                           value={cond.comparator}
                           onChange={(e) =>
                             onUpdateCondition(node.id, cond.id, { comparator: e.target.value as ComparatorChoice })
@@ -3600,10 +3611,10 @@ const NodeCard = ({
                         >
                           <option value="lt">Less Than</option>
                           <option value="gt">Greater Than</option>
-                        </select>{' '}
+                        </Select>{' '}
                         {cond.expanded ? null : (
-                          <input
-                            className="inline-number"
+                          <Input
+                            className="w-14 h-7 px-1.5 mx-1 inline-flex"
                             type="number"
                             value={cond.threshold}
                             onChange={(e) => onUpdateCondition(node.id, cond.id, { threshold: Number(e.target.value) })}
@@ -3615,8 +3626,8 @@ const NodeCard = ({
                             the{' '}
                             {cond.rightMetric === 'Current Price' ? null : (
                               <>
-                                <input
-                                  className="inline-number"
+                                <Input
+                                  className="w-14 h-7 px-1.5 mx-1 inline-flex"
                                   type="number"
                                   value={cond.rightWindow ?? 14}
                                   onChange={(e) =>
@@ -3626,8 +3637,8 @@ const NodeCard = ({
                                 d{' '}
                               </>
                             )}
-                            <select
-                              className="inline-select"
+                            <Select
+                              className="h-7 px-1.5 mx-1"
                               value={cond.rightMetric ?? 'Relative Strength Index'}
                               onChange={(e) =>
                                 onUpdateCondition(node.id, cond.id, { rightMetric: e.target.value as MetricChoice })
@@ -3639,10 +3650,10 @@ const NodeCard = ({
                               <option value="Relative Strength Index">Relative Strength Index</option>
                               <option value="Max Drawdown">Max Drawdown</option>
                               <option value="Standard Deviation">Standard Deviation</option>
-                            </select>{' '}
+                            </Select>{' '}
                             of{' '}
-                            <select
-                              className="inline-select"
+                            <Select
+                              className="h-7 px-1.5 mx-1"
                               value={cond.rightTicker ?? 'SPY'}
                               onChange={(e) =>
                                 onUpdateCondition(node.id, cond.id, { rightTicker: e.target.value as PositionChoice })
@@ -3656,11 +3667,13 @@ const NodeCard = ({
                                   {t}
                                 </option>
                               ))}
-                            </select>{' '}
+                            </Select>{' '}
                           </>
                         ) : null}
-                        <button
-                          className="icon-btn inline"
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 p-0"
                           onClick={(e) => {
                             e.stopPropagation()
                             onUpdateCondition(node.id, cond.id, { expanded: !cond.expanded })
@@ -3668,32 +3681,32 @@ const NodeCard = ({
                           title="Flip condition"
                         >
                           ⇆
-                        </button>
-                      </div>
+                        </Button>
+                      </Badge>
                       {idx > 0 ? (
-                        <button className="icon-btn delete inline" onClick={() => onDeleteCondition(node.id, cond.id)}>
+                        <Button variant="destructive" size="icon" className="h-7 w-7 p-0" onClick={() => onDeleteCondition(node.id, cond.id)}>
                           X
-                        </button>
+                        </Button>
                       ) : null}
                     </div>
                   )
                 })}
                 </div>
-                <div className="line">
-                  <div className="indent with-line" style={{ width: 14 }} />
-                  <div className="add-row">
-                    <button className="add-more" onClick={(e) => { e.stopPropagation(); onAddCondition(node.id, 'and') }}>
+                <div className="flex items-center gap-2">
+                  <div className="w-3.5 h-full border-l border-border" />
+                  <div className="flex items-center gap-1.5">
+                    <Button variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); onAddCondition(node.id, 'and') }}>
                       And If
-                    </button>
-                    <button className="add-more" onClick={(e) => { e.stopPropagation(); onAddCondition(node.id, 'or') }}>
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); onAddCondition(node.id, 'or') }}>
                       Or If
-                    </button>
+                    </Button>
                   </div>
                 </div>
 
-                <div className="line">
-                  <div className="indent with-line" style={{ width: 2 * 14 }} />
-                  <div className="chip title">Then</div>
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-full border-l border-border" />
+                  <div className="text-sm font-extrabold">Then</div>
                 </div>
                 <div className="line">
                   <div className="indent with-line" style={{ width: 3 * 14 }} />
@@ -7295,40 +7308,47 @@ function App() {
 
   if (!userId) {
     return (
-      <div className={`app ${theme === 'dark' ? 'theme-dark' : ''}`}>
+      <div className={cn('min-h-screen bg-bg text-text font-sans', theme === 'dark' && 'dark')}>
         <LoginScreen onLogin={handleLogin} />
       </div>
     )
   }
 
   return (
-    <div className={`app ${theme === 'dark' ? 'theme-dark' : ''}`}>
-      <header className="app-header">
+    <div className={cn('min-h-screen bg-bg text-text font-sans', theme === 'dark' && 'dark')}>
+      <header className="flex items-center justify-between px-4 py-3.5 border-b border-border bg-surface sticky top-0 z-10">
         <div>
-          <div className="eyebrow">System</div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            <h1 style={{ marginRight: 4 }}>System.app</h1>
-            <button
+          <div className="text-xs tracking-widest uppercase text-muted mb-1">System</div>
+          <div className="flex items-center gap-2.5 flex-wrap">
+            <h1 className="m-0 text-2xl font-extrabold tracking-tight mr-1">System.app</h1>
+            <Button
+              variant="default"
+              size="sm"
               onClick={() => setUiState((prev) => ({ ...prev, theme: prev.theme === 'dark' ? 'light' : 'dark' }))}
-              style={{ padding: '6px 10px', fontSize: 12 }}
               title="Toggle light/dark mode"
             >
               {theme === 'dark' ? 'Light mode' : 'Dark mode'}
-            </button>
+            </Button>
           </div>
-          <p className="lede">Click any Node or + to extend with Basic, Function, Indicator, or Position. Paste uses the last copied node.</p>
-          <div className="tabs">
+          <p className="mt-1.5 mb-0 text-muted text-sm">Click any Node or + to extend with Basic, Function, Indicator, or Position. Paste uses the last copied node.</p>
+          <div className="flex gap-2 mt-3">
             {(['Dashboard', 'Community', 'Analyze', 'Build', 'Admin'] as const).map((t) => (
-              <button key={t} className={`tab-btn ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>
+              <Button
+                key={t}
+                variant={tab === t ? 'accent' : 'secondary'}
+                onClick={() => setTab(t)}
+              >
                 {t}
-              </button>
+              </Button>
             ))}
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
-            <div style={{ fontSize: 12, color: 'var(--muted)' }}>
-              Logged in as <span style={{ fontWeight: 800 }}>{userId}</span>
+          <div className="flex items-center gap-2.5 mt-2">
+            <div className="text-xs text-muted">
+              Logged in as <span className="font-extrabold">{userId}</span>
             </div>
-            <button
+            <Button
+              variant="default"
+              size="sm"
               onClick={() => {
                 if (!confirm(`Clear saved data for user ${userId}? This will remove saved bots, watchlists, and UI state.`)) return
                 try {
@@ -7343,117 +7363,129 @@ function App() {
                 setUiState(data.ui)
                 setAnalyzeBacktests({})
               }}
-              style={{ padding: '6px 10px', fontSize: 12 }}
               title="Clear all locally saved data for this user"
             >
               Clear Data
-            </button>
-            <button onClick={handleLogout} style={{ padding: '6px 10px', fontSize: 12 }}>
+            </Button>
+            <Button variant="default" size="sm" onClick={handleLogout}>
               Logout
-            </button>
+            </Button>
           </div>
           {tab === 'Build' && (
-            <div className="build-actions">
-              <button onClick={handleNewBot}>New Bot</button>
-              <div style={{ position: 'relative', display: 'inline-block' }}>
-                <button
+            <div className="flex gap-2 mt-3">
+              <Button onClick={handleNewBot}>New Bot</Button>
+              <div className="relative inline-block">
+                <Button
                   onClick={() => setSaveMenuOpen((v) => !v)}
                   title="Save this bot to a watchlist"
                 >
                   Save to Watchlist
-                </button>
+                </Button>
                 {saveMenuOpen ? (
-                  <div
-                    className="menu"
-                    style={{ position: 'absolute', top: '100%', left: 0, zIndex: 50, minWidth: 240 }}
+                  <Card
+                    className="absolute top-full left-0 z-50 min-w-60 p-1.5 mt-1"
                     onClick={(e) => e.stopPropagation()}
                   >
-                    {watchlists.map((w) => (
-                      <button key={w.id} onClick={() => handleSaveToWatchlist(w.id)}>
-                        {w.name}
-                      </button>
-                    ))}
-                    <div style={{ padding: 10 }}>
-                      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>New watchlist</div>
-                      <input
+                    <div className="flex flex-col gap-1">
+                      {watchlists.map((w) => (
+                        <Button key={w.id} variant="ghost" className="justify-start" onClick={() => handleSaveToWatchlist(w.id)}>
+                          {w.name}
+                        </Button>
+                      ))}
+                    </div>
+                    <div className="p-2.5 border-t border-border-soft mt-1">
+                      <div className="text-xs font-bold mb-1.5">New watchlist</div>
+                      <Input
                         value={saveNewWatchlistName}
                         placeholder="Type a name…"
                         onChange={(e) => setSaveNewWatchlistName(e.target.value)}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter') handleSaveToWatchlist(saveNewWatchlistName)
                         }}
-                        style={{ width: '100%' }}
+                        className="w-full"
                       />
-                      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-                        <button onClick={() => handleSaveToWatchlist(saveNewWatchlistName)} style={{ flex: 1 }}>
+                      <div className="flex gap-2 mt-2">
+                        <Button onClick={() => handleSaveToWatchlist(saveNewWatchlistName)} className="flex-1">
                           Save
-                        </button>
-                        <button
+                        </Button>
+                        <Button
+                          variant="secondary"
                           onClick={() => {
                             setSaveMenuOpen(false)
                             setSaveNewWatchlistName('')
                           }}
-                          style={{ flex: 1 }}
+                          className="flex-1"
                         >
                           Cancel
-                        </button>
+                        </Button>
                       </div>
                     </div>
-                  </div>
+                  </Card>
                 ) : null}
               </div>
-              <button onClick={() => setTab('Analyze')}>Open</button>
-              <button onClick={handleImport}>Import</button>
-              <button onClick={handleExport}>Export</button>
+              <Button onClick={() => setTab('Analyze')}>Open</Button>
+              <Button onClick={handleImport}>Import</Button>
+              <Button onClick={handleExport}>Export</Button>
             </div>
           )}
           {tab === 'Build' && (
-            <div className="bot-tabs">
+            <div className="flex gap-2 mt-3">
               {bots.map((b) => {
                 const root = b.history[b.historyIndex] ?? b.history[0]
                 const label = root?.title || 'Untitled'
                 return (
-                  <div key={b.id} className={`bot-tab-wrapper ${b.id === activeBotId ? 'active' : ''}`}>
-                    <button
-                      className="bot-tab-btn"
+                  <div
+                    key={b.id}
+                    className={cn(
+                      'flex items-center gap-1 border rounded-lg p-1 pr-1.5',
+                      b.id === activeBotId
+                        ? 'bg-accent-bg border-accent-border text-accent-text'
+                        : 'bg-surface border-border'
+                    )}
+                  >
+                    <Button
+                      variant="ghost"
+                      size="sm"
                       onClick={() => setActiveBotId(b.id)}
                     >
                       {label}
-                    </button>
-                    <button
-                      className="bot-tab-close"
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-danger px-1 h-auto"
                       onClick={(e) => {
                         e.stopPropagation()
                         handleCloseBot(b.id)
                       }}
                     >
                       ✕
-                    </button>
+                    </Button>
                   </div>
                 )
               })}
             </div>
           )}
         </div>
-        <div className="header-actions">
-          <button onClick={undo} disabled={!activeBot || activeBot.historyIndex === 0}>
+        <div className="flex gap-2">
+          <Button onClick={undo} disabled={!activeBot || activeBot.historyIndex === 0}>
             Undo
-          </button>
-          <button
+          </Button>
+          <Button
             onClick={redo}
             disabled={!activeBot || activeBot.historyIndex === activeBot.history.length - 1}
           >
             Redo
-          </button>
+          </Button>
         </div>
       </header>
       {tickerApiError && (
-        <div className="api-warning">
-          <span>{tickerApiError}</span>
-        </div>
+        <Alert variant="destructive" className="rounded-none border-x-0">
+          <AlertDescription>{tickerApiError}</AlertDescription>
+        </Alert>
       )}
       <TickerDatalist id={TICKER_DATALIST_ID} options={tickerOptions} />
-      <main className="canvas">
+      <main className="p-4">
         {tab === 'Build' ? (
           <div className="build-layout">
             <BacktesterPanel

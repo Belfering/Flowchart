@@ -9,7 +9,12 @@
       "Bash(gh api:*)",
       "Bash(git commit -m \"$(cat <<''EOF''\nUpdate README to reflect actual implementation\n\nReplace outdated money flow allocation spec with accurate documentation\nfor System Block Chain - a visual trading algorithm flowchart builder.\n\nIncludes:\n- Project overview and features\n- Tech stack (React, TypeScript, Vite, Express, DuckDB)\n- Getting started guide with installation and setup\n- API endpoints documentation\n- Development and build instructions\n- Data flow architecture\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n)\")",
       "Bash(git push:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(dir:*)",
+      "Bash(npm install:*)",
+      "Bash(npx tailwindcss:*)",
+      "Bash(ls:*)",
+      "Bash(npm run build:*)"
     ]
   }
 }

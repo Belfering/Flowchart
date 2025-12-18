@@ -21,3 +21,5 @@ General templates/live docs:
 3. `Build/003-conditional-logic-validation.md`
 4. `Backlog/004-theming-and-user-data-persistence.md`
 5. `Build/004-custom-indicator-zone.md`
+6. `Build/005-composer-symphony-integration.md`
+7. `Backlog/005-branding-atlas-nexus.md`
