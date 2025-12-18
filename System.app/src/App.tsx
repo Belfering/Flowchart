@@ -5900,33 +5900,33 @@ function BacktesterPanel({
               </Card>
             </div>
 
-              <div className="equity-wrap">
-                <div className="chart-toolbar">
-                  <div className="chart-presets">
-                    <button className={activePreset === '1m' ? 'active' : ''} onClick={() => applyPreset('1m')}>
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="flex gap-1">
+                    <Button variant={activePreset === '1m' ? 'accent' : 'secondary'} size="sm" onClick={() => applyPreset('1m')}>
                       1m
-                    </button>
-                    <button className={activePreset === '3m' ? 'active' : ''} onClick={() => applyPreset('3m')}>
+                    </Button>
+                    <Button variant={activePreset === '3m' ? 'accent' : 'secondary'} size="sm" onClick={() => applyPreset('3m')}>
                       3m
-                    </button>
-                    <button className={activePreset === '6m' ? 'active' : ''} onClick={() => applyPreset('6m')}>
+                    </Button>
+                    <Button variant={activePreset === '6m' ? 'accent' : 'secondary'} size="sm" onClick={() => applyPreset('6m')}>
                       6m
-                    </button>
-                    <button className={activePreset === 'ytd' ? 'active' : ''} onClick={() => applyPreset('ytd')}>
+                    </Button>
+                    <Button variant={activePreset === 'ytd' ? 'accent' : 'secondary'} size="sm" onClick={() => applyPreset('ytd')}>
                       YTD
-                    </button>
-                    <button className={activePreset === '1y' ? 'active' : ''} onClick={() => applyPreset('1y')}>
+                    </Button>
+                    <Button variant={activePreset === '1y' ? 'accent' : 'secondary'} size="sm" onClick={() => applyPreset('1y')}>
                       1yr
-                    </button>
-                    <button className={activePreset === '5y' ? 'active' : ''} onClick={() => applyPreset('5y')}>
+                    </Button>
+                    <Button variant={activePreset === '5y' ? 'accent' : 'secondary'} size="sm" onClick={() => applyPreset('5y')}>
                       5yr
-                    </button>
-                    <button className={activePreset === 'max' ? 'active' : ''} onClick={() => applyPreset('max')}>
+                    </Button>
+                    <Button variant={activePreset === 'max' ? 'accent' : 'secondary'} size="sm" onClick={() => applyPreset('max')}>
                       Max
-                    </button>
-                    <button className={logScale ? 'active' : ''} onClick={() => setLogScale((v) => !v)}>
+                    </Button>
+                    <Button variant={logScale ? 'accent' : 'secondary'} size="sm" onClick={() => setLogScale((v) => !v)}>
                       Log
-                    </button>
+                    </Button>
                   </div>
                 </div>
                 <EquityChart
@@ -5939,9 +5939,9 @@ function BacktesterPanel({
               </div>
               {rangePopover}
 
-            <div className="drawdown-wrap">
-              <div className="drawdown-head">
-                <div style={{ fontWeight: 900 }}>Drawdown</div>
+            <div>
+              <div className="mb-2">
+                <div className="font-black">Drawdown</div>
               </div>
               <DrawdownChart
                 points={result.drawdownPoints}
@@ -5953,11 +5953,12 @@ function BacktesterPanel({
             </div>
 
             {result.warnings.length > 0 && (
-              <div className="backtester-message" style={{ borderColor: '#fde68a', background: '#fffbeb', color: '#92400e' }}>
-                <div style={{ fontWeight: 900, marginBottom: 6 }}>
+              <Alert variant="warning">
+                <AlertTitle>
                   Warnings ({result.warnings.length})
-                </div>
-                <div style={{ maxHeight: 140, overflow: 'auto', display: 'grid', gap: 4 }}>
+                </AlertTitle>
+                <AlertDescription>
+                <div className="max-h-[140px] overflow-auto grid gap-1">
                   {result.warnings.slice(0, 50).map((w, idx) => (
                     <div key={`${w.time}-${idx}`}>
                       {w.date}: {w.message}
@@ -5965,7 +5966,8 @@ function BacktesterPanel({
                   ))}
                   {result.warnings.length > 50 ? <div>…</div> : null}
                 </div>
-              </div>
+                </AlertDescription>
+              </Alert>
             )}
 
           </>
@@ -7600,28 +7602,29 @@ function App() {
                         pointerEvents: 'auto',
                       }}
                     >
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                        <div style={{ fontWeight: 900 }}>Calls</div>
-                        <button className="icon-btn" onClick={() => setCallPanelOpen(false)} title="Collapse">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="font-black">Calls</div>
+                        <Button variant="ghost" size="sm" onClick={() => setCallPanelOpen(false)} title="Collapse">
                           Collapse
-                        </button>
+                        </Button>
                       </div>
-                      <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-                        <button onClick={handleAddCallChain}>Make new Call</button>
+                      <div className="flex gap-2 mt-2.5">
+                        <Button onClick={handleAddCallChain}>Make new Call</Button>
                       </div>
-                      <div style={{ display: 'grid', gap: 10, marginTop: 10 }}>
+                      <div className="grid gap-2.5 mt-2.5">
                         {callChains.length === 0 ? (
-                          <div style={{ color: '#64748b' }}>No call chains yet.</div>
+                          <div className="text-muted">No call chains yet.</div>
                         ) : (
                           callChains.map((c) => (
-                            <div key={c.id} style={{ border: '1px solid #e5e7eb', borderRadius: 12, padding: 10 }}>
-                              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                                <input value={c.name} onChange={(e) => handleRenameCallChain(c.id, e.target.value)} style={{ flex: 1 }} />
-                                <button className="icon-btn" onClick={() => handleToggleCallChainCollapse(c.id)}>
+                            <Card key={c.id}>
+                              <div className="flex gap-2 items-center">
+                                <Input value={c.name} onChange={(e) => handleRenameCallChain(c.id, e.target.value)} className="flex-1" />
+                                <Button variant="ghost" size="sm" onClick={() => handleToggleCallChainCollapse(c.id)}>
                                   {c.collapsed ? 'Expand' : 'Collapse'}
-                                </button>
-                                <button
-                                  className="icon-btn"
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
                                   onClick={async () => {
                                     try {
                                       await navigator.clipboard.writeText(c.id)
@@ -7632,9 +7635,10 @@ function App() {
                                   title="Copy call ID"
                                 >
                                   Copy ID
-                                </button>
-                                <button
-                                  className="icon-btn delete"
+                                </Button>
+                                <Button
+                                  variant="destructive"
+                                  size="sm"
                                   onClick={() => {
                                     if (!confirm(`Delete call chain "${c.name}"?`)) return
                                     handleDeleteCallChain(c.id)
@@ -7642,11 +7646,11 @@ function App() {
                                   title="Delete call chain"
                                 >
                                   X
-                                </button>
+                                </Button>
                               </div>
-                              <div style={{ fontSize: 12, color: '#64748b', marginTop: 6 }}>ID: {c.id}</div>
+                              <div className="text-xs text-muted mt-1.5">ID: {c.id}</div>
                               {!c.collapsed ? (
-                                <div style={{ marginTop: 10 }}>
+                                <div className="mt-2.5">
                                   <NodeCard
                                     node={c.root}
                                     depth={0}
@@ -7765,7 +7769,7 @@ function App() {
                                   />
                                 </div>
                               ) : null}
-                            </div>
+                            </Card>
                           ))
                         )}
                       </div>
