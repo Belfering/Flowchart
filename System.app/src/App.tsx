@@ -53,6 +53,9 @@ type MetricChoice =
   | 'Relative Strength Index'
   | 'Max Drawdown'
   | 'Standard Deviation'
+  | 'Standard Deviation of Price'
+  | 'Cumulative Return'
+  | 'SMA of Returns'
 type RankChoice = 'Bottom' | 'Top'
 type ComparatorChoice = 'lt' | 'gt'
 
@@ -141,6 +144,14 @@ type NumberedQuantifier = 'all' | 'none' | 'exactly' | 'atLeast' | 'atMost'
 type NumberedItem = {
   id: string
   conditions: ConditionLine[]
+}
+
+// Dashboard types
+type DashboardTimePeriod = '1D' | '1W' | '1M' | '3M' | '6M' | 'YTD' | '1Y' | 'ALL'
+
+type EquityCurvePoint = {
+  time: UTCTimestamp
+  value: number
 }
 
 const TICKER_DATALIST_ID = 'systemapp-tickers'
@@ -395,6 +406,7 @@ type PortfolioSnapshot = {
     allocation: number
     pnl: number
     pnlPct: number
+    color: string
   }>
   bots: PortfolioBotRow[]
 }
@@ -668,6 +680,188 @@ type EquityMarker = { time: UTCTimestamp; text: string }
 type VisibleRange = IRange<UTCTimestamp>
 
 const EMPTY_EQUITY_POINTS: EquityPoint[] = []
+
+// Dashboard Equity + Drawdown Chart Component
+const DashboardEquityChart = ({
+  data,
+  theme,
+}: {
+  data: EquityCurvePoint[]
+  theme: ThemeMode
+}) => {
+  const equityContainerRef = useRef<HTMLDivElement>(null)
+  const drawdownContainerRef = useRef<HTMLDivElement>(null)
+  const equityChartRef = useRef<IChartApi | null>(null)
+  const drawdownChartRef = useRef<IChartApi | null>(null)
+  const equitySeriesRef = useRef<ISeriesApi<'Area'> | null>(null)
+  const drawdownSeriesRef = useRef<ISeriesApi<'Area'> | null>(null)
+
+  // Compute drawdown from equity data
+  const drawdownData = useMemo(() => {
+    if (data.length === 0) return []
+    let peak = data[0].value
+    return data.map((p) => {
+      if (p.value > peak) peak = p.value
+      const dd = peak > 0 ? (p.value - peak) / peak : 0
+      return { time: p.time, value: dd * 100 } // percentage
+    })
+  }, [data])
+
+  useEffect(() => {
+    const equityEl = equityContainerRef.current
+    const drawdownEl = drawdownContainerRef.current
+    if (!equityEl || !drawdownEl) return
+
+    const isDark = theme === 'dark'
+    const bgColor = isDark ? '#1e293b' : '#ffffff'
+    const textColor = isDark ? '#e2e8f0' : '#0f172a'
+    const gridColor = isDark ? '#334155' : '#eef2f7'
+    const borderColor = isDark ? '#475569' : '#cbd5e1'
+
+    // Equity chart
+    const equityChart = createChart(equityEl, {
+      width: equityEl.clientWidth,
+      height: 150,
+      layout: { background: { type: ColorType.Solid, color: bgColor }, textColor },
+      grid: { vertLines: { color: gridColor }, horzLines: { color: gridColor } },
+      rightPriceScale: { borderColor },
+      timeScale: { borderColor, visible: false }, // Hide time scale on equity chart
+      handleScroll: false, // Disable scroll
+      handleScale: false, // Disable zoom
+    })
+
+    const equitySeries = equityChart.addSeries(AreaSeries, {
+      lineColor: '#3b82f6',
+      topColor: 'rgba(59, 130, 246, 0.4)',
+      bottomColor: 'rgba(59, 130, 246, 0.0)',
+      lineWidth: 2,
+    })
+
+    // Drawdown chart
+    const drawdownChart = createChart(drawdownEl, {
+      width: drawdownEl.clientWidth,
+      height: 80,
+      layout: { background: { type: ColorType.Solid, color: bgColor }, textColor },
+      grid: { vertLines: { color: gridColor }, horzLines: { color: gridColor } },
+      rightPriceScale: { borderColor },
+      timeScale: { borderColor },
+      handleScroll: false, // Disable scroll
+      handleScale: false, // Disable zoom
+    })
+
+    const drawdownSeries = drawdownChart.addSeries(AreaSeries, {
+      lineColor: '#ef4444',
+      topColor: 'rgba(239, 68, 68, 0.0)',
+      bottomColor: 'rgba(239, 68, 68, 0.4)',
+      lineWidth: 2,
+      invertFilledArea: true,
+    })
+
+    equityChartRef.current = equityChart
+    drawdownChartRef.current = drawdownChart
+    equitySeriesRef.current = equitySeries
+    drawdownSeriesRef.current = drawdownSeries
+
+    // Synchronize time scales
+    const syncTimeScale = (sourceChart: IChartApi, targetChart: IChartApi) => {
+      sourceChart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+        if (range) {
+          targetChart.timeScale().setVisibleLogicalRange(range)
+        }
+      })
+    }
+
+    syncTimeScale(equityChart, drawdownChart)
+    syncTimeScale(drawdownChart, equityChart)
+
+    // Resize observer
+    const ro = new ResizeObserver(() => {
+      equityChart.applyOptions({ width: equityEl.clientWidth })
+      drawdownChart.applyOptions({ width: drawdownEl.clientWidth })
+    })
+    ro.observe(equityEl)
+
+    return () => {
+      ro.disconnect()
+      equityChart.remove()
+      drawdownChart.remove()
+      equityChartRef.current = null
+      drawdownChartRef.current = null
+      equitySeriesRef.current = null
+      drawdownSeriesRef.current = null
+    }
+  }, [theme])
+
+  useEffect(() => {
+    if (!equitySeriesRef.current || !drawdownSeriesRef.current) return
+    equitySeriesRef.current.setData(data.map((p) => ({ time: p.time, value: p.value })))
+    drawdownSeriesRef.current.setData(drawdownData)
+    equityChartRef.current?.timeScale().fitContent()
+    drawdownChartRef.current?.timeScale().fitContent()
+  }, [data, drawdownData])
+
+  return (
+    <div className="w-full flex flex-col gap-1">
+      <div ref={equityContainerRef} className="w-full h-[150px] rounded-t-lg border border-b-0 border-border overflow-hidden" />
+      <div className="text-[10px] text-muted font-bold px-1">Drawdown</div>
+      <div ref={drawdownContainerRef} className="w-full h-[80px] rounded-b-lg border border-border overflow-hidden" />
+    </div>
+  )
+}
+
+// Position Pie Chart Component (SVG)
+const PositionPieChart = ({
+  positions,
+}: {
+  positions: Array<{ ticker: string; allocation: number; color: string }>
+}) => {
+  const size = 180
+  const radius = 70
+  const cx = size / 2
+  const cy = size / 2
+
+  // Calculate pie slices
+  let cumulativeAngle = -90 // Start from top
+
+  const slices = positions.map((pos) => {
+    const startAngle = cumulativeAngle
+    const sweepAngle = pos.allocation * 360
+    cumulativeAngle += sweepAngle
+
+    const startRad = (startAngle * Math.PI) / 180
+    const endRad = ((startAngle + sweepAngle) * Math.PI) / 180
+
+    const x1 = cx + radius * Math.cos(startRad)
+    const y1 = cy + radius * Math.sin(startRad)
+    const x2 = cx + radius * Math.cos(endRad)
+    const y2 = cy + radius * Math.sin(endRad)
+
+    const largeArc = sweepAngle > 180 ? 1 : 0
+
+    const d = `M ${cx} ${cy} L ${x1} ${y1} A ${radius} ${radius} 0 ${largeArc} 1 ${x2} ${y2} Z`
+
+    return { ...pos, d }
+  })
+
+  return (
+    <div className="flex flex-col items-center gap-3">
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+        {slices.map((slice, idx) => (
+          <path key={idx} d={slice.d} fill={slice.color} stroke="#fff" strokeWidth={2} />
+        ))}
+      </svg>
+      <div className="flex flex-wrap justify-center gap-2">
+        {positions.map((pos, idx) => (
+          <div key={idx} className="flex items-center gap-1.5 text-xs">
+            <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: pos.color }} />
+            <span className="font-medium">{pos.ticker}</span>
+            <span className="text-muted">{(pos.allocation * 100).toFixed(1)}%</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
 
 type CommunitySortKey = 'name' | 'tags' | 'oosCagr' | 'oosMaxdd' | 'oosSharpe'
 type SortDir = 'asc' | 'desc'
@@ -3330,6 +3524,9 @@ const NodeCard = ({
             <option value="Relative Strength Index">Relative Strength Index</option>
             <option value="Max Drawdown">Max Drawdown</option>
             <option value="Standard Deviation">Standard Deviation</option>
+            <option value="Standard Deviation of Price">Standard Deviation of Price</option>
+            <option value="Cumulative Return">Cumulative Return</option>
+            <option value="SMA of Returns">SMA of Returns</option>
           </Select>
           {' of '}
           <Select
@@ -3388,6 +3585,9 @@ const NodeCard = ({
                 <option value="Relative Strength Index">Relative Strength Index</option>
                 <option value="Max Drawdown">Max Drawdown</option>
                 <option value="Standard Deviation">Standard Deviation</option>
+                <option value="Standard Deviation of Price">Standard Deviation of Price</option>
+                <option value="Cumulative Return">Cumulative Return</option>
+                <option value="SMA of Returns">SMA of Returns</option>
               </Select>{' '}
               of{' '}
               <Select
@@ -3635,6 +3835,9 @@ const NodeCard = ({
                           <option value="Relative Strength Index">Relative Strength Index</option>
                           <option value="Max Drawdown">Max Drawdown</option>
                           <option value="Standard Deviation">Standard Deviation</option>
+                          <option value="Standard Deviation of Price">Standard Deviation of Price</option>
+                          <option value="Cumulative Return">Cumulative Return</option>
+                          <option value="SMA of Returns">SMA of Returns</option>
                         </Select>
                         {' of '}
                         <Select
@@ -3699,6 +3902,9 @@ const NodeCard = ({
                               <option value="Relative Strength Index">Relative Strength Index</option>
                               <option value="Max Drawdown">Max Drawdown</option>
                               <option value="Standard Deviation">Standard Deviation</option>
+                              <option value="Standard Deviation of Price">Standard Deviation of Price</option>
+                              <option value="Cumulative Return">Cumulative Return</option>
+                              <option value="SMA of Returns">SMA of Returns</option>
                             </Select>{' '}
                             of{' '}
                             <Select
@@ -4115,6 +4321,9 @@ const NodeCard = ({
                             <option value="Relative Strength Index">Relative Strength Index</option>
                             <option value="Max Drawdown">Max Drawdown</option>
                             <option value="Standard Deviation">Standard Deviation</option>
+                            <option value="Standard Deviation of Price">Standard Deviation of Price</option>
+                            <option value="Cumulative Return">Cumulative Return</option>
+                            <option value="SMA of Returns">SMA of Returns</option>
                           </Select>
                           {node.metric === 'Current Price' ? ' pick the ' : 's pick the '}
                           <Select
@@ -4736,6 +4945,9 @@ type IndicatorCache = {
   ema: Map<string, Map<number, Array<number | null>>>
   std: Map<string, Map<number, Array<number | null>>>
   maxdd: Map<string, Map<number, Array<number | null>>>
+  stdPrice: Map<string, Map<number, Array<number | null>>>
+  cumRet: Map<string, Map<number, Array<number | null>>>
+  smaRet: Map<string, Map<number, Array<number | null>>>
 }
 
 const emptyCache = (): IndicatorCache => ({
@@ -4744,6 +4956,9 @@ const emptyCache = (): IndicatorCache => ({
   ema: new Map(),
   std: new Map(),
   maxdd: new Map(),
+  stdPrice: new Map(),
+  cumRet: new Map(),
+  smaRet: new Map(),
 })
 
 const getSeriesKey = (ticker: string) => normalizeChoice(ticker)
@@ -4892,6 +5107,40 @@ const rollingMaxDrawdown = (values: number[], period: number): Array<number | nu
   return out
 }
 
+// Cumulative Return: (current - start) / start over window
+const rollingCumulativeReturn = (values: number[], period: number): Array<number | null> => {
+  const out: Array<number | null> = new Array(values.length).fill(null)
+  for (let i = 0; i < values.length; i++) {
+    if (i < period - 1) continue
+    const startIdx = i - period + 1
+    const startVal = values[startIdx]
+    const endVal = values[i]
+    if (Number.isNaN(startVal) || Number.isNaN(endVal) || startVal === 0) continue
+    out[i] = (endVal - startVal) / startVal
+  }
+  return out
+}
+
+// SMA of Returns: smoothed daily returns over window
+const rollingSmaOfReturns = (values: number[], period: number): Array<number | null> => {
+  // First compute daily returns
+  const returns: number[] = new Array(values.length).fill(NaN)
+  for (let i = 1; i < values.length; i++) {
+    const prev = values[i - 1]
+    const cur = values[i]
+    if (!Number.isNaN(prev) && !Number.isNaN(cur) && prev !== 0) {
+      returns[i] = cur / prev - 1
+    }
+  }
+  // Then compute SMA of returns
+  return rollingSma(returns, period)
+}
+
+// Standard Deviation of Prices (absolute price volatility)
+const rollingStdDevOfPrices = (values: number[], period: number): Array<number | null> => {
+  return rollingStdDev(values, period)
+}
+
 const getCachedSeries = (cache: IndicatorCache, kind: keyof IndicatorCache, ticker: string, period: number, compute: () => Array<number | null>) => {
   const t = getSeriesKey(ticker)
   const map = cache[kind]
@@ -4958,6 +5207,18 @@ const metricAt = (ctx: EvalCtx, ticker: string, metric: MetricChoice, window: nu
     }
     case 'Max Drawdown': {
       const series = getCachedSeries(ctx.cache, 'maxdd', t, w, () => rollingMaxDrawdown(closes, w))
+      return series[i] ?? null
+    }
+    case 'Standard Deviation of Price': {
+      const series = getCachedSeries(ctx.cache, 'stdPrice', t, w, () => rollingStdDevOfPrices(closes, w))
+      return series[i] ?? null
+    }
+    case 'Cumulative Return': {
+      const series = getCachedSeries(ctx.cache, 'cumRet', t, w, () => rollingCumulativeReturn(closes, w))
+      return series[i] ?? null
+    }
+    case 'SMA of Returns': {
+      const series = getCachedSeries(ctx.cache, 'smaRet', t, w, () => rollingSmaOfReturns(closes, w))
       return series[i] ?? null
     }
   }
@@ -6352,6 +6613,10 @@ function App() {
   const [communityWatchlistSort1, setCommunityWatchlistSort1] = useState<CommunitySort>({ key: 'name', dir: 'asc' })
   const [communityWatchlistSort2, setCommunityWatchlistSort2] = useState<CommunitySort>({ key: 'name', dir: 'asc' })
 
+  // Dashboard state
+  const [dashboardTimePeriod, setDashboardTimePeriod] = useState<DashboardTimePeriod>('1Y')
+  const [dashboardBotExpanded, setDashboardBotExpanded] = useState<Record<string, boolean>>({})
+
   const activeBot = useMemo(() => {
     return bots.find((b) => b.id === activeBotId) ?? bots[0]
   }, [bots, activeBotId])
@@ -6405,6 +6670,9 @@ function App() {
     ]
   }, [])
 
+  // Pie chart colors
+  const PIE_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16']
+
   const portfolioSnapshot = useMemo<PortfolioSnapshot>(() => {
     const basePositions = [
       { ticker: 'SPY', value: 42000, costBasis: 38000, todaysChange: 320 },
@@ -6415,11 +6683,11 @@ function App() {
     const cash = 9500
     const positionsValue = basePositions.reduce((sum, pos) => sum + pos.value, 0)
     const investedCapital = basePositions.reduce((sum, pos) => sum + pos.costBasis, 0)
-    const enrichedPositions = basePositions.map((pos) => {
+    const enrichedPositions = basePositions.map((pos, idx) => {
       const pnl = pos.value - pos.costBasis
       const allocation = positionsValue > 0 ? pos.value / positionsValue : 0
       const pnlPct = pos.costBasis > 0 ? pnl / pos.costBasis : 0
-      return { ...pos, allocation, pnl, pnlPct }
+      return { ...pos, allocation, pnl, pnlPct, color: PIE_COLORS[idx % PIE_COLORS.length] }
     })
     const totalPnl = enrichedPositions.reduce((sum, pos) => sum + pos.pnl, 0)
     const accountValue = cash + positionsValue
@@ -6471,6 +6739,36 @@ function App() {
     positions,
     bots: investedBots,
   } = portfolioSnapshot
+
+  // Generate mock equity curve data
+  const dashboardEquityCurve = useMemo<EquityCurvePoint[]>(() => {
+    const points: EquityCurvePoint[] = []
+    const now = Date.now()
+    const oneDay = 24 * 60 * 60 * 1000
+    const startValue = 85000 // Starting capital
+    const endValue = accountValue // Current account value
+
+    // Generate 365 days of data with realistic volatility
+    let value = startValue
+    const dailyDrift = Math.pow(endValue / startValue, 1 / 365) - 1 // Average daily return
+    const volatility = 0.012 // Daily volatility ~12% annualized
+
+    for (let i = 365; i >= 0; i--) {
+      const timestamp = Math.floor((now - i * oneDay) / 1000) as UTCTimestamp
+      points.push({ time: timestamp, value })
+
+      // Random walk with drift
+      const randomReturn = (Math.random() - 0.5) * 2 * volatility + dailyDrift
+      value = value * (1 + randomReturn)
+    }
+
+    // Ensure last point matches actual account value
+    if (points.length > 0) {
+      points[points.length - 1].value = accountValue
+    }
+
+    return points
+  }, [accountValue])
 
   const push = useCallback(
     (next: FlowNode) => {
@@ -8531,57 +8829,66 @@ function App() {
               )
 
               return (
-                <div className="grid grid-cols-4 gap-3 min-h-[calc(100vh-260px)] items-stretch">
-                  <div className="flex flex-col gap-3">
-                    <div className="font-black">Top Community Bots</div>
-                    <div className="flex flex-col gap-3 flex-1">
-                      <div className="saved-item flex-1 flex flex-col items-stretch justify-start gap-2.5 overflow-hidden">
-                        <div className="font-black">Top community bots by CAGR</div>
-                        {renderTable([], communityTopSort, setCommunityTopSort, { headerOnly: true })}
-                      </div>
-                      <div className="saved-item flex-1 flex flex-col items-stretch justify-start gap-2.5 overflow-hidden">
-                        <div className="font-black">Top community bots by Calmar Ratio</div>
-                        {renderTable([], communityTopSort, setCommunityTopSort, { headerOnly: true })}
-                      </div>
-                      <div className="saved-item flex-1 flex flex-col items-stretch justify-start gap-2.5 overflow-hidden">
-                        <div className="font-black">Top community bots by Sharpe Ratio</div>
-                        {renderTable([], communityTopSort, setCommunityTopSort, { headerOnly: true })}
-                      </div>
+                <div className="grid grid-cols-4 gap-4 min-h-[calc(100vh-260px)] items-stretch">
+                  {/* Left Column - Top Community Bots */}
+                  <Card className="flex flex-col p-4">
+                    <div className="font-black text-center mb-4">Top Community Bots</div>
+                    <div className="flex flex-col gap-4 flex-1">
+                      <Card className="flex-1 flex flex-col p-3 border-2">
+                        <div className="font-bold text-center mb-2">Top community bots by CAGR</div>
+                        <div className="flex-1 overflow-auto">
+                          {renderTable([], communityTopSort, setCommunityTopSort, { headerOnly: true })}
+                        </div>
+                      </Card>
+                      <Card className="flex-1 flex flex-col p-3 border-2">
+                        <div className="font-bold text-center mb-2">Top community bots by Calmar Ratio</div>
+                        <div className="flex-1 overflow-auto">
+                          {renderTable([], communityTopSort, setCommunityTopSort, { headerOnly: true })}
+                        </div>
+                      </Card>
+                      <Card className="flex-1 flex flex-col p-3 border-2">
+                        <div className="font-bold text-center mb-2">Top community bots by Sharpe Ratio</div>
+                        <div className="flex-1 overflow-auto">
+                          {renderTable([], communityTopSort, setCommunityTopSort, { headerOnly: true })}
+                        </div>
+                      </Card>
                     </div>
-                  </div>
+                  </Card>
 
-                  <div className="col-span-2 flex flex-col gap-3">
-                    <div className="saved-item flex-[2] grid place-items-center font-black">
-                      News and Select Bots
-                    </div>
-                    <div className="saved-item flex-1 grid place-items-center font-black">
-                      Search for other community bots by metrics or by Builder's names.
-                    </div>
-                  </div>
+                  {/* Middle Column - News and Search */}
+                  <Card className="col-span-2 flex flex-col gap-4 p-4">
+                    <Card className="flex-[2] flex items-center justify-center p-4 border-2">
+                      <div className="font-black text-center">News and Select Bots</div>
+                    </Card>
+                    <Card className="flex-1 flex items-center justify-center p-4 border-2">
+                      <div className="font-bold text-center text-muted">Search for other community bots by metrics or by Builder's names.</div>
+                    </Card>
+                  </Card>
 
-                  <div className="flex flex-col gap-3">
-                    <div className="font-black">Personal Watchlists</div>
-                    <div className="flex flex-col gap-3 flex-1">
-                      <div className="saved-item flex-1 flex flex-col items-stretch justify-start gap-2.5 overflow-auto">
-                        <div className="flex items-center justify-between gap-2.5">
-                          <div className="font-black">Watchlist Zone #1</div>
+                  {/* Right Column - Personal Watchlists */}
+                  <Card className="flex flex-col p-4">
+                    <div className="font-black text-center mb-4">Personal Watchlists</div>
+                    <div className="flex flex-col gap-4 flex-1">
+                      <Card className="flex-1 flex flex-col p-3 border-2 overflow-auto">
+                        <div className="flex items-center justify-center gap-2.5 mb-2">
+                          <div className="font-bold">Watchlist Zone #1</div>
                           {watchlistSelect(slot1Id, (id) => setUiState((p) => ({ ...p, communityWatchlistSlot1Id: id })))}
                         </div>
                         {renderTable(rowsForWatchlist(slot1Id), communityWatchlistSort1, setCommunityWatchlistSort1, {
                           emptyMessage: 'No bots in this watchlist.',
                         })}
-                      </div>
-                      <div className="saved-item flex-1 flex flex-col items-stretch justify-start gap-2.5 overflow-auto">
-                        <div className="flex items-center justify-between gap-2.5">
-                          <div className="font-black">Watchlist Zone #2</div>
+                      </Card>
+                      <Card className="flex-1 flex flex-col p-3 border-2 overflow-auto">
+                        <div className="flex items-center justify-center gap-2.5 mb-2">
+                          <div className="font-bold">Watchlist Zone #2</div>
                           {watchlistSelect(slot2Id, (id) => setUiState((p) => ({ ...p, communityWatchlistSlot2Id: id })))}
                         </div>
                         {renderTable(rowsForWatchlist(slot2Id), communityWatchlistSort2, setCommunityWatchlistSort2, {
                           emptyMessage: 'No bots in this watchlist.',
                         })}
-                      </div>
+                      </Card>
                     </div>
-                  </div>
+                  </Card>
                 </div>
               )
             })()}
@@ -8603,89 +8910,134 @@ function App() {
             </div>
 
             {dashboardSubtab === 'Portfolio' ? (
-              <div className="mt-3">
-                <div className="grid grid-cols-3 gap-3">
-                  <Card>
-                    <div className="text-xs font-bold text-muted mb-1">Account value</div>
-                    <div className="text-2xl font-black">{formatUsd(accountValue)}</div>
-                    <div className="text-xs font-bold text-muted mt-1">Cash available {formatUsd(cash)}</div>
+              <div className="mt-3 flex flex-col gap-4">
+                {/* 5 Stat Bubbles */}
+                <div className="grid grid-cols-5 gap-3">
+                  <Card className="p-3 text-center">
+                    <div className="text-[10px] font-bold text-muted">Account Value</div>
+                    <div className="text-lg font-black">{formatUsd(accountValue)}</div>
                   </Card>
-                  <Card>
-                    <div className="text-xs font-bold text-muted mb-1">Total PnL</div>
-                    <div className={cn("text-2xl font-black", totalPnl >= 0 ? 'text-success' : 'text-danger')}>
+                  <Card className="p-3 text-center">
+                    <div className="text-[10px] font-bold text-muted">Cash Available</div>
+                    <div className="text-lg font-black">{formatUsd(cash)}</div>
+                  </Card>
+                  <Card className="p-3 text-center">
+                    <div className="text-[10px] font-bold text-muted">Total PnL</div>
+                    <div className={cn("text-lg font-black", totalPnl >= 0 ? 'text-success' : 'text-danger')}>
                       {formatSignedUsd(totalPnl)}
                     </div>
-                    <div className="text-xs font-bold text-muted mt-1">{formatPct(totalPnlPct)}</div>
+                    <div className="text-[10px] text-muted">{formatPct(totalPnlPct)}</div>
                   </Card>
-                  <Card>
-                    <div className="text-xs font-bold text-muted mb-1">Day change</div>
-                    <div className={cn("text-2xl font-black", todaysChange >= 0 ? 'text-success' : 'text-danger')}>
+                  <Card className="p-3 text-center">
+                    <div className="text-[10px] font-bold text-muted">Day Change</div>
+                    <div className={cn("text-lg font-black", todaysChange >= 0 ? 'text-success' : 'text-danger')}>
                       {formatSignedUsd(todaysChange)}
                     </div>
-                    <div className="text-xs font-bold text-muted mt-1">{formatPct(todaysChangePct)}</div>
+                    <div className="text-[10px] text-muted">{formatPct(todaysChangePct)}</div>
+                  </Card>
+                  <Card className="p-3 text-center">
+                    <div className="text-[10px] font-bold text-muted">Positions</div>
+                    <div className="text-lg font-black">{positions.length}</div>
                   </Card>
                 </div>
 
-                <div className="grid grid-cols-2 gap-3 mt-3">
-                  <Card>
-                    <div className="font-black mb-2">Current positions</div>
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>Ticker</TableHead>
-                          <TableHead>Allocation</TableHead>
-                          <TableHead>Value</TableHead>
-                          <TableHead>PnL</TableHead>
-                          <TableHead>PnL %</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {positions.map((pos) => (
-                          <TableRow key={pos.ticker}>
-                            <TableCell>{pos.ticker}</TableCell>
-                            <TableCell>{formatPct(pos.allocation)}</TableCell>
-                            <TableCell>{formatUsd(pos.value)}</TableCell>
-                            <TableCell className={cn(pos.pnl >= 0 ? 'text-success' : 'text-danger')}>{formatSignedUsd(pos.pnl)}</TableCell>
-                            <TableCell className={cn(pos.pnl >= 0 ? 'text-success' : 'text-danger')}>{formatPct(pos.pnlPct)}</TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </Card>
-
-                  <Card>
-                    <div className="font-black mb-2">Bots invested in</div>
-                    {investedBots.length === 0 ? (
-                      <div className="text-muted">No bots saved yet.</div>
-                    ) : (
-                      <div className="grid gap-2">
-                        {investedBots.map((bot) => (
-                          <div key={bot.id} className="bot-row">
-                            <div className="flex-1">
-                              <div className="bot-row-title">
-                                {bot.name}
-                                {bot.readonly ? <span className="bot-tag muted">Community</span> : null}
-                              </div>
-                              <div className="bot-row-meta">
-                                Allocation {formatPct(bot.allocation)} · Capital {formatUsd(bot.capital)}
-                              </div>
-                              <div className="bot-tags">
-                                {(bot.tags.length ? bot.tags : ['Unassigned']).map((tag) => (
-                                  <span key={tag} className="bot-tag">
-                                    {tag}
-                                  </span>
-                                ))}
-                              </div>
-                            </div>
-                            <div className={`bot-row-pnl ${bot.pnl >= 0 ? 'pnl-positive' : 'pnl-negative'}`}>
-                              {formatSignedUsd(bot.pnl)}
-                            </div>
-                          </div>
+                {/* Equity Chart and Pie Chart Row */}
+                <div className="grid grid-cols-3 gap-4">
+                  {/* Equity Chart - 2/3 width */}
+                  <Card className="col-span-2 p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="font-black">Portfolio Performance</div>
+                      <div className="flex gap-1">
+                        {(['1D', '1W', '1M', '3M', '6M', 'YTD', '1Y', 'ALL'] as DashboardTimePeriod[]).map((period) => (
+                          <Button
+                            key={period}
+                            size="sm"
+                            variant={dashboardTimePeriod === period ? 'accent' : 'ghost'}
+                            className="h-6 px-2 text-xs"
+                            onClick={() => setDashboardTimePeriod(period)}
+                          >
+                            {period}
+                          </Button>
                         ))}
                       </div>
-                    )}
+                    </div>
+                    <DashboardEquityChart data={dashboardEquityCurve} theme={uiState.theme} />
+                  </Card>
+
+                  {/* Pie Chart - 1/3 width */}
+                  <Card className="p-4 flex flex-col">
+                    <div className="font-black mb-3 text-center">Current Holdings</div>
+                    <div className="flex-1 flex items-center justify-center">
+                      <PositionPieChart positions={positions.map(p => ({ ticker: p.ticker, allocation: p.allocation, color: p.color }))} />
+                    </div>
                   </Card>
                 </div>
+
+                {/* Bots Invested In - Collapsible Cards */}
+                <Card className="p-4">
+                  <div className="font-black mb-3">Bots Invested In</div>
+                  {investedBots.length === 0 ? (
+                    <div className="text-muted text-center py-4">No bots saved yet.</div>
+                  ) : (
+                    <div className="grid gap-2">
+                      {investedBots.map((bot) => {
+                        const isExpanded = dashboardBotExpanded[bot.id] ?? false
+                        return (
+                          <Card key={bot.id} className="p-3 border">
+                            <div
+                              className="flex items-center gap-3 cursor-pointer"
+                              onClick={() => setDashboardBotExpanded((prev) => ({ ...prev, [bot.id]: !isExpanded }))}
+                            >
+                              <Button size="sm" variant="ghost" className="h-6 w-6 p-0">
+                                {isExpanded ? '▼' : '▶'}
+                              </Button>
+                              <div className="flex-1">
+                                <div className="font-bold flex items-center gap-2">
+                                  {bot.name}
+                                  {bot.readonly ? <Badge variant="secondary" className="text-[10px]">Community</Badge> : null}
+                                </div>
+                              </div>
+                              <div className="text-sm text-muted">
+                                {formatPct(bot.allocation)} · {formatUsd(bot.capital)}
+                              </div>
+                              <div className={cn("font-bold", bot.pnl >= 0 ? 'text-success' : 'text-danger')}>
+                                {formatSignedUsd(bot.pnl)}
+                              </div>
+                            </div>
+                            {isExpanded && (
+                              <div className="mt-3 pt-3 border-t border-border">
+                                <div className="grid grid-cols-4 gap-4 text-sm">
+                                  <div>
+                                    <div className="text-[10px] text-muted font-bold">Allocation</div>
+                                    <div className="font-bold">{formatPct(bot.allocation)}</div>
+                                  </div>
+                                  <div>
+                                    <div className="text-[10px] text-muted font-bold">Capital</div>
+                                    <div className="font-bold">{formatUsd(bot.capital)}</div>
+                                  </div>
+                                  <div>
+                                    <div className="text-[10px] text-muted font-bold">PnL</div>
+                                    <div className={cn("font-bold", bot.pnl >= 0 ? 'text-success' : 'text-danger')}>
+                                      {formatSignedUsd(bot.pnl)}
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <div className="text-[10px] text-muted font-bold">Tags</div>
+                                    <div className="flex flex-wrap gap-1">
+                                      {(bot.tags.length ? bot.tags : ['Unassigned']).map((tag) => (
+                                        <Badge key={tag} variant="outline" className="text-[10px]">{tag}</Badge>
+                                      ))}
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                          </Card>
+                        )
+                      })}
+                    </div>
+                  )}
+                </Card>
               </div>
             ) : (
               <div className="mt-3 grid gap-3">
