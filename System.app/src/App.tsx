@@ -1088,11 +1088,19 @@ function EquityChart({
     el.appendChild(overlay)
     overlayRef.current = overlay
 
+    // Always show overlay in center with stats
+    overlay.style.display = 'block'
+    overlay.innerHTML = `<div class="chart-hover-date">Hover to see stats</div>
+<div class="chart-hover-stats">
+  <div class="chart-hover-stat"><span class="chart-hover-label">CAGR</span> <span class="chart-hover-value">—</span></div>
+  <div class="chart-hover-stat"><span class="chart-hover-label">Max DD</span> <span class="chart-hover-value">—</span></div>
+</div>`
+
     chart.subscribeCrosshairMove((param: MouseEventParams<Time>) => {
       if (!showCursorStats) return
       const time = toUtcSeconds(param.time)
       if (!time) {
-        overlay.style.display = 'none'
+        // Keep overlay visible but show placeholder when not hovering
         lastCursorTimeRef.current = null
         segKeyRef.current = ''
         cursorSeg.setData([])
@@ -1101,14 +1109,11 @@ function EquityChart({
       lastCursorTimeRef.current = time
       const stats = computeWindowStats(time)
       updateCursorSegment(time)
-      overlay.style.display = 'block'
       overlay.innerHTML = `<div class="chart-hover-date">${isoFromUtcSeconds(time)}</div>
 <div class="chart-hover-stats">
   <div class="chart-hover-stat"><span class="chart-hover-label">CAGR</span> <span class="chart-hover-value">${stats ? formatPct(stats.cagr) : '—'}</span></div>
   <div class="chart-hover-stat"><span class="chart-hover-label">Max DD</span> <span class="chart-hover-value">${stats ? formatPct(stats.maxDD) : '—'}</span></div>
 </div>`
-
-      // keep overlay centered; only its values change with the cursor
     })
 
     const handleVisibleRangeChange: TimeRangeChangeEventHandler<Time> = (r) => {
@@ -1167,7 +1172,16 @@ function EquityChart({
   useEffect(() => {
     if (!seriesRef.current) return
     const main = sanitizeSeriesPoints(points)
-    if (main.length > 0) baseEquityRef.current = main[0].value
+    // Set base to first point in visible range (or first point if no range)
+    if (main.length > 0) {
+      if (visibleRange) {
+        const fromTime = Number(visibleRange.from)
+        const firstVisibleIdx = main.findIndex(p => Number(p.time) >= fromTime)
+        baseEquityRef.current = firstVisibleIdx >= 0 ? main[firstVisibleIdx].value : main[0].value
+      } else {
+        baseEquityRef.current = main[0].value
+      }
+    }
     seriesRef.current.setData(main)
     cursorSegRef.current?.setData([])
     segKeyRef.current = ''
@@ -5689,6 +5703,30 @@ function BacktesterPanel({
     return clampVisibleRangeToPoints(points, r)
   }, [points, selectedRange])
 
+  // Rebase points so the first visible point = 1 (0%)
+  const rebasedPoints = useMemo(() => {
+    if (!points.length || !visibleRange) return points
+    const fromTime = Number(visibleRange.from)
+    // Find the first point at or after the visible range start
+    const firstVisibleIdx = points.findIndex(p => Number(p.time) >= fromTime)
+    if (firstVisibleIdx < 0) return points
+    const baseValue = points[firstVisibleIdx].value
+    if (!baseValue || baseValue <= 0) return points
+    return points.map(p => ({ ...p, value: p.value / baseValue }))
+  }, [points, visibleRange])
+
+  // Also rebase benchmark points
+  const rebasedBenchmarkPoints = useMemo(() => {
+    const benchPts = result?.benchmarkPoints
+    if (!benchPts?.length || !visibleRange) return benchPts
+    const fromTime = Number(visibleRange.from)
+    const firstVisibleIdx = benchPts.findIndex(p => Number(p.time) >= fromTime)
+    if (firstVisibleIdx < 0) return benchPts
+    const baseValue = benchPts[firstVisibleIdx].value
+    if (!baseValue || baseValue <= 0) return benchPts
+    return benchPts.map(p => ({ ...p, value: p.value / baseValue }))
+  }, [result?.benchmarkPoints, visibleRange])
+
   const handleRun = useCallback(() => {
     // Reset to full period ("max") on each run.
     setSelectedRange(null)
@@ -6092,8 +6130,8 @@ function BacktesterPanel({
                   </div>
                 </div>
                 <EquityChart
-                  points={result.points}
-                  benchmarkPoints={showBenchmark ? result.benchmarkPoints : undefined}
+                  points={rebasedPoints}
+                  benchmarkPoints={showBenchmark ? rebasedBenchmarkPoints : undefined}
                   markers={result.markers}
                   visibleRange={visibleRange}
                   logScale={logScale}
