@@ -603,143 +603,6 @@ const regenerateIds = (node: FlowNode): FlowNode => {
   }
 }
 
-function AdminTickerList({
-  status,
-  tickers,
-  tickersText,
-  onTickersTextChange,
-  error,
-  onSaveTickers,
-  saveDisabled,
-  saveStatus,
-  downloadConfig,
-  onChangeDownloadConfig,
-  onDownload,
-  downloadDisabled,
-  downloadStatus,
-}: {
-  status: AdminStatus | null
-  tickers: string[]
-  tickersText: string
-  onTickersTextChange: (next: string) => void
-  error: string | null
-  onSaveTickers: () => void
-  saveDisabled: boolean
-  saveStatus: string | null
-  downloadConfig: { batchSize: number; sleepSeconds: number; maxRetries: number; threads: boolean; limit: number }
-  onChangeDownloadConfig: (
-    next: Partial<{ batchSize: number; sleepSeconds: number; maxRetries: number; threads: boolean; limit: number }>,
-  ) => void
-  onDownload: () => void
-  downloadDisabled: boolean
-  downloadStatus: string | null
-}) {
-  return (
-    <div>
-      <div className="grid gap-1.5">
-        <div>
-          <strong>Ticker data root:</strong> {status?.root || '...'}
-        </div>
-        <div>
-          <strong>tickers.txt:</strong> {status?.tickersPath || '...'} {status ? (status.tickersExists ? '✓' : '✗') : ''}
-        </div>
-        <div>
-          <strong>Parquet dir:</strong> {status?.parquetDir || '...'} {status ? (status.parquetDirExists ? '✓' : '✗') : ''}
-        </div>
-      </div>
-
-      {error && <div className="mt-2.5 text-danger font-bold">{error}</div>}
-
-      <div className="mt-3">
-        <div className="font-extrabold">Tickers ({tickers.length})</div>
-
-        <div className="mt-2">
-          <div className="font-bold mb-1.5">Edit tickers.txt</div>
-          <textarea
-            value={tickersText}
-            onChange={(e) => onTickersTextChange(e.target.value)}
-            rows={10}
-            spellCheck={false}
-            className="w-full font-mono p-2.5 rounded-xl border border-border"
-          />
-          <div className="mt-2 flex gap-2.5 items-center flex-wrap">
-            <Button onClick={onSaveTickers} disabled={saveDisabled}>
-              Save tickers.txt
-            </Button>
-            {saveStatus ? <div className="text-muted">{saveStatus}</div> : null}
-          </div>
-        </div>
-
-        <div className="mt-3.5">
-          <div className="font-extrabold mb-1.5">Download settings</div>
-          <div className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-2.5">
-            <label className="grid gap-1.5">
-              <span className="font-bold">Batch size</span>
-              <input
-                type="number"
-                min={1}
-                max={500}
-                value={downloadConfig.batchSize}
-                onChange={(e) => onChangeDownloadConfig({ batchSize: Number(e.target.value) })}
-              />
-            </label>
-            <label className="grid gap-1.5">
-              <span className="font-bold">Sleep seconds</span>
-              <Input
-                type="number"
-                min={0}
-                max={60}
-                step={0.5}
-                value={downloadConfig.sleepSeconds}
-                onChange={(e) => onChangeDownloadConfig({ sleepSeconds: Number(e.target.value) })}
-              />
-            </label>
-            <label className="grid gap-1.5">
-              <span className="font-bold">Max retries</span>
-              <Input
-                type="number"
-                min={0}
-                max={10}
-                value={downloadConfig.maxRetries}
-                onChange={(e) => onChangeDownloadConfig({ maxRetries: Number(e.target.value) })}
-              />
-            </label>
-            <label className="grid gap-1.5">
-              <span className="font-bold">Limit tickers (0 = no limit)</span>
-              <Input
-                type="number"
-                min={0}
-                max={100000}
-                value={downloadConfig.limit}
-                onChange={(e) => onChangeDownloadConfig({ limit: Number(e.target.value) })}
-              />
-            </label>
-            <label className="flex gap-2.5 items-center pt-6">
-              <input
-                type="checkbox"
-                checked={downloadConfig.threads}
-                onChange={(e) => onChangeDownloadConfig({ threads: e.target.checked })}
-              />
-              <span className="font-bold">Threads inside batch</span>
-            </label>
-          </div>
-        </div>
-
-        <div className="mt-2.5 flex gap-2.5 items-center flex-wrap">
-          <Button onClick={onDownload} disabled={downloadDisabled}>
-            Download
-          </Button>
-          {downloadStatus ? <div className="text-muted">{downloadStatus}</div> : null}
-        </div>
-
-        <pre className="mt-2.5 max-h-[340px] overflow-auto p-2.5 rounded-xl border border-border bg-white">
-          {tickers.join('\n') || 'No tickers found.'}
-        </pre>
-      </div>
-    </div>
-  )
-}
-
 function CandlesChart({ candles }: { candles: CandlestickData[] }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -1862,7 +1725,7 @@ function AdminDataPanel({
 
 function AdminPanel({
   adminTab,
-  setAdminTab,
+  setAdminTab: _setAdminTab,
   onTickersUpdated,
 }: {
   adminTab: 'Ticker List' | 'Data'
@@ -2268,7 +2131,7 @@ function AdminPanel({
                     const lastEvent = downloadJob.events[downloadJob.events.length - 1] as Record<string, unknown>
                     return (
                       <div>
-                        Success: {lastEvent.success || 0} | Failed: {lastEvent.failed || 0}
+                        Success: {String(lastEvent.success || 0)} | Failed: {String(lastEvent.failed || 0)}
                       </div>
                     )
                   })()}
@@ -4391,7 +4254,9 @@ type BacktestResult = {
     cagr: number
     vol: number
     maxDrawdown: number
+    calmar: number
     sharpe: number
+    sortino: number
     winRate: number
     bestDay: number
     worstDay: number
@@ -5536,6 +5401,13 @@ const computeBacktestSummary = (points: EquityPoint[], drawdowns: number[], days
   const dailyStd = Math.sqrt(Math.max(0, variance))
   const vol = dailyStd * Math.sqrt(252)
 
+  // Sortino: uses downside deviation (only negative returns)
+  const negativeReturns = returns.filter((r) => r < 0)
+  const downsideVariance =
+    negativeReturns.length > 1 ? negativeReturns.reduce((a, b) => a + b ** 2, 0) / (negativeReturns.length - 1) : 0
+  const downsideStd = Math.sqrt(Math.max(0, downsideVariance))
+  const sortino = downsideStd > 0 ? (Math.sqrt(252) * mean) / downsideStd : 0
+
   const winRate = returns.length ? returns.filter((r) => r > 0).length / returns.length : 0
   const bestDay = returns.length ? Math.max(...returns) : 0
   const worstDay = returns.length ? Math.min(...returns) : 0
@@ -5546,6 +5418,9 @@ const computeBacktestSummary = (points: EquityPoint[], drawdowns: number[], days
   const endDate = points.length ? isoFromUtcSeconds(points[points.length - 1].time) : ''
   const maxDrawdown = drawdowns.length ? Math.min(...drawdowns) : 0
 
+  // Calmar: CAGR / abs(maxDrawdown)
+  const calmar = maxDrawdown !== 0 ? base.cagr / Math.abs(maxDrawdown) : 0
+
   return {
     startDate,
     endDate,
@@ -5555,7 +5430,9 @@ const computeBacktestSummary = (points: EquityPoint[], drawdowns: number[], days
     cagr: base.cagr,
     vol,
     maxDrawdown,
+    calmar,
     sharpe: base.sharpe,
+    sortino,
     winRate,
     bestDay,
     worstDay,
@@ -6031,7 +5908,7 @@ function BacktesterPanel({
 
         {result && tab === 'Overview' ? (
           <>
-            <div className="grid grid-cols-4 gap-3">
+            <div className="grid grid-cols-10 gap-2">
               <Card
                 ref={rangePickerRef}
                 role="button"
@@ -6054,49 +5931,48 @@ function BacktesterPanel({
                   setRangePopoverPos(computeRangePopoverPos())
                   setRangePickerOpen((v) => !v)
                 }}
-                className="cursor-pointer relative"
+                className="cursor-pointer relative p-2 text-center"
                 title="Click to set a custom date range"
               >
-                <div className="text-xs font-bold text-muted mb-1">Date range</div>
-                <div className="text-lg font-black">
-                  {rangeLabel.start} → {rangeLabel.end}
-                </div>
-                <div className="text-xs text-muted mt-0.5">{tradingDaysInRange} trading days</div>
+                <div className="text-[10px] font-bold text-muted">Date range</div>
+                <div className="text-sm font-black">{rangeLabel.start} → {rangeLabel.end}</div>
+                <div className="text-[10px] text-muted">{tradingDaysInRange} days</div>
               </Card>
-              <Card>
-                <div className="text-xs font-bold text-muted mb-1">CAGR</div>
-                <div className="text-lg font-black">{formatPct(result.metrics.cagr)}</div>
-                <div className="text-xs text-muted mt-0.5">Annualized (252)</div>
+              <Card className="p-2 text-center">
+                <div className="text-[10px] font-bold text-muted">CAGR</div>
+                <div className="text-sm font-black">{formatPct(result.metrics.cagr)}</div>
               </Card>
-              <Card>
-                <div className="text-xs font-bold text-muted mb-1">Max DD</div>
-                <div className="text-lg font-black">{formatPct(result.metrics.maxDrawdown)}</div>
-                <div className="text-xs text-muted mt-0.5">Peak-to-trough</div>
+              <Card className="p-2 text-center">
+                <div className="text-[10px] font-bold text-muted">Max DD</div>
+                <div className="text-sm font-black">{formatPct(result.metrics.maxDrawdown)}</div>
               </Card>
-              <Card>
-                <div className="text-xs font-bold text-muted mb-1">Sharpe</div>
-                <div className="text-lg font-black">{Number.isFinite(result.metrics.sharpe) ? result.metrics.sharpe.toFixed(2) : '—'}</div>
-                <div className="text-xs text-muted mt-0.5">Annualized (252)</div>
+              <Card className="p-2 text-center">
+                <div className="text-[10px] font-bold text-muted">Calmar</div>
+                <div className="text-sm font-black">{Number.isFinite(result.metrics.calmar) ? result.metrics.calmar.toFixed(2) : '—'}</div>
               </Card>
-              <Card>
-                <div className="text-xs font-bold text-muted mb-1">Vol (ann.)</div>
-                <div className="text-lg font-black">{formatPct(result.metrics.vol)}</div>
-                <div className="text-xs text-muted mt-0.5">Std dev × √252</div>
+              <Card className="p-2 text-center">
+                <div className="text-[10px] font-bold text-muted">Sharpe</div>
+                <div className="text-sm font-black">{Number.isFinite(result.metrics.sharpe) ? result.metrics.sharpe.toFixed(2) : '—'}</div>
               </Card>
-              <Card>
-                <div className="text-xs font-bold text-muted mb-1">Win rate</div>
-                <div className="text-lg font-black">{formatPct(result.metrics.winRate)}</div>
-                <div className="text-xs text-muted mt-0.5">Daily</div>
+              <Card className="p-2 text-center">
+                <div className="text-[10px] font-bold text-muted">Sortino</div>
+                <div className="text-sm font-black">{Number.isFinite(result.metrics.sortino) ? result.metrics.sortino.toFixed(2) : '—'}</div>
               </Card>
-              <Card>
-                <div className="text-xs font-bold text-muted mb-1">Avg turnover</div>
-                <div className="text-lg font-black">{formatPct(result.metrics.avgTurnover)}</div>
-                <div className="text-xs text-muted mt-0.5">Per day</div>
+              <Card className="p-2 text-center">
+                <div className="text-[10px] font-bold text-muted">Vol</div>
+                <div className="text-sm font-black">{formatPct(result.metrics.vol)}</div>
               </Card>
-              <Card>
-                <div className="text-xs font-bold text-muted mb-1">Avg holdings</div>
-                <div className="text-lg font-black">{result.metrics.avgHoldings.toFixed(2)}</div>
-                <div className="text-xs text-muted mt-0.5">Tickers/day</div>
+              <Card className="p-2 text-center">
+                <div className="text-[10px] font-bold text-muted">Win rate</div>
+                <div className="text-sm font-black">{formatPct(result.metrics.winRate)}</div>
+              </Card>
+              <Card className="p-2 text-center">
+                <div className="text-[10px] font-bold text-muted">Turnover</div>
+                <div className="text-sm font-black">{formatPct(result.metrics.avgTurnover)}</div>
+              </Card>
+              <Card className="p-2 text-center">
+                <div className="text-[10px] font-bold text-muted">Holdings</div>
+                <div className="text-sm font-black">{result.metrics.avgHoldings.toFixed(2)}</div>
               </Card>
             </div>
 
@@ -7784,13 +7660,14 @@ function App() {
 
                   {/* Right Side - Content Area (dynamic based on expanded state) */}
                   <div
-                    className="flex-1 grid overflow-hidden border border-l-0 border-border rounded-r-lg bg-card"
+                    className="flex-1 grid overflow-hidden border border-l-0 border-border rounded-r-lg bg-card sticky top-4 z-10"
                     style={{
                       gridTemplateRows:
                         callbackNodesCollapsed && customIndicatorsCollapsed ? '0fr 0fr' :
                         callbackNodesCollapsed && !customIndicatorsCollapsed ? '0fr 1fr' :
                         !callbackNodesCollapsed && customIndicatorsCollapsed ? '1fr 0fr' :
-                        '1fr 1fr'
+                        '1fr 1fr',
+                      height: 'calc(100vh - 240px)'
                     }}
                   >
                     {/* Callback Nodes Content */}
