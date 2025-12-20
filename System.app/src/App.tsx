@@ -61,7 +61,7 @@ type ComparatorChoice = 'lt' | 'gt'
 
 type WeightMode = 'equal' | 'defined' | 'inverse' | 'pro' | 'capped'
 
-type UserId = '1' | '3' | '5' | '7' | '9'
+type UserId = '1' | '3' | '5' | '7' | '9' | 'admin'
 type ThemeMode = 'light' | 'dark'
 type ColorTheme = 'slate' | 'ocean' | 'emerald' | 'violet' | 'rose' | 'amber' | 'cyan' | 'indigo' | 'lime' | 'fuchsia'
 
@@ -217,6 +217,7 @@ const SEED_TICKERS: Record<UserId, string[]> = {
   '5': ['SDY', 'DVY', 'IUSG', 'VBK', 'IUSV', 'IYW', 'EFV', 'XLU', 'EEM', 'IWP', 'VGK', 'VHT', 'XLP', 'IWV', 'EFG', 'OEF', 'IWS', 'SOXX', 'EWJ', 'IWN'],
   '7': ['IWO', 'SPMD', 'SPHQ', 'VFH', 'FVD', 'IJK', 'SPTM', 'IGV', 'VDE', 'IJJ', 'FXI', 'PRF', 'IJS', 'XLG', 'ONEQ', 'VDC', 'VPL', 'VPU', 'EZU', 'IBB'],
   '9': ['IJT', 'VCR', 'IOO', 'XLB', 'VIS', 'IGM', 'EWT', 'IXN', 'IYR', 'PPA', 'VOX', 'SLYV', 'EWY', 'IXJ', 'IYF', 'MDYV', 'EWZ', 'FEZ', 'IYH', 'XMMO'],
+  'admin': [], // Admin account has no seed data
 }
 
 const generateSeedData = (userId: UserId): UserData => {
@@ -400,7 +401,7 @@ function LoginScreen({ onLogin }: { onLogin: (userId: UserId) => void }) {
   const submit = () => {
     const u = String(username || '').trim()
     const p = String(password || '')
-    const ok = (u === '1' && p === '1') || (u === '3' && p === '3') || (u === '5' && p === '5') || (u === '7' && p === '7') || (u === '9' && p === '9')
+    const ok = (u === '1' && p === '1') || (u === '3' && p === '3') || (u === '5' && p === '5') || (u === '7' && p === '7') || (u === '9' && p === '9') || (u === 'admin' && p === 'admin')
     if (!ok) {
       setError('Invalid username/password.')
       return
@@ -496,6 +497,32 @@ type DashboardInvestment = {
 type DashboardPortfolio = {
   cash: number // remaining uninvested cash (starts at $100,000)
   investments: DashboardInvestment[]
+}
+
+// Admin types for Atlas Overview
+type AdminConfig = {
+  atlasFeePercent: number
+  partnerProgramSharePercent: number
+}
+
+type TreasuryEntry = {
+  id: string
+  date: number
+  type: 'fee_deposit' | 'withdrawal' | 'interest'
+  amount: number
+  description: string
+}
+
+type TreasuryState = {
+  balance: number
+  entries: TreasuryEntry[]
+}
+
+type AdminAggregatedStats = {
+  totalDollarsInAccounts: number
+  totalDollarsInvested: number
+  userCount: number
+  lastUpdated: number
 }
 
 const STARTING_CAPITAL = 100000
@@ -2009,14 +2036,20 @@ function AdminDataPanel({
   )
 }
 
+type AdminSubtab = 'Atlas Overview' | 'Nexus Maintenance' | 'Ticker Data'
+
 function AdminPanel({
   adminTab,
-  setAdminTab: _setAdminTab,
+  setAdminTab,
   onTickersUpdated,
+  userId,
+  onClearData,
 }: {
-  adminTab: 'Ticker List' | 'Data'
-  setAdminTab: (t: 'Ticker List' | 'Data') => void
+  adminTab: AdminSubtab
+  setAdminTab: (t: AdminSubtab) => void
   onTickersUpdated?: (tickers: string[]) => void
+  userId: string
+  onClearData: () => void
 }) {
   const [status, setStatus] = useState<AdminStatus | null>(null)
   const [tickers, setTickers] = useState<string[]>([])
@@ -2036,6 +2069,13 @@ function AdminPanel({
   const [downloadJob, setDownloadJob] = useState<AdminDownloadJob | null>(null)
   const [downloadMsg, setDownloadMsg] = useState<string | null>(null)
   const [editMode, setEditMode] = useState(false)
+
+  // Atlas Overview state
+  const [adminStats, setAdminStats] = useState<AdminAggregatedStats | null>(null)
+  const [adminConfig, setAdminConfig] = useState<AdminConfig>({ atlasFeePercent: 0, partnerProgramSharePercent: 0 })
+  const [treasury, setTreasury] = useState<TreasuryState>({ balance: 100000, entries: [] })
+  const [configSaving, setConfigSaving] = useState(false)
+  const [treasuryPeriod, setTreasuryPeriod] = useState<'1D' | '1M' | '3M' | '6M' | 'YTD' | '1Y' | 'ALL'>('ALL')
 
   useEffect(() => {
     let cancelled = false
@@ -2127,7 +2167,7 @@ function AdminPanel({
   }, [tickersText, onTickersUpdated])
 
   useEffect(() => {
-    if (adminTab !== 'Data') return
+    if (adminTab !== 'Ticker Data') return
     let cancelled = false
     const run = async () => {
       try {
@@ -2146,6 +2186,61 @@ function AdminPanel({
       cancelled = true
     }
   }, [adminTab])
+
+  // Fetch admin data for Atlas Overview
+  useEffect(() => {
+    if (adminTab !== 'Atlas Overview') return
+    let cancelled = false
+
+    const fetchAdminData = async () => {
+      try {
+        const [statsRes, treasuryRes] = await Promise.all([
+          fetch('/api/admin/aggregated-stats'),
+          fetch('/api/admin/treasury')
+        ])
+
+        if (cancelled) return
+
+        const statsData = (await statsRes.json()) as { stats: AdminAggregatedStats; config: AdminConfig } | { error: string }
+        const treasuryData = (await treasuryRes.json()) as { treasury: TreasuryState } | { error: string }
+
+        if (statsRes.ok && 'stats' in statsData) {
+          setAdminStats(statsData.stats)
+          setAdminConfig(statsData.config || { atlasFeePercent: 0, partnerProgramSharePercent: 0 })
+        }
+        if (treasuryRes.ok && 'treasury' in treasuryData) {
+          setTreasury(treasuryData.treasury)
+        }
+      } catch (e) {
+        console.error('Failed to fetch admin data:', e)
+      }
+    }
+
+    fetchAdminData()
+    // Poll every 30 seconds
+    const interval = setInterval(fetchAdminData, 30000)
+
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [adminTab])
+
+  const handleSaveConfig = useCallback(async () => {
+    setConfigSaving(true)
+    try {
+      const res = await fetch('/api/admin/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(adminConfig)
+      })
+      if (!res.ok) throw new Error('Failed to save config')
+    } catch (e) {
+      console.error('Failed to save config:', e)
+    } finally {
+      setConfigSaving(false)
+    }
+  }, [adminConfig])
 
   useEffect(() => {
     if (!downloadJob?.id) return
@@ -2210,9 +2305,258 @@ function AdminPanel({
 
   return (
     <>
+      {/* Subtab Navigation */}
+      <div className="flex gap-2 mb-6">
+        {(['Atlas Overview', 'Nexus Maintenance', 'Ticker Data'] as const).map((t) => (
+          <button
+            key={t}
+            className={`tab-btn ${adminTab === t ? 'active' : ''}`}
+            onClick={() => setAdminTab(t)}
+          >
+            {t}
+          </button>
+        ))}
+      </div>
+
+      {adminTab === 'Atlas Overview' && (
+        <div className="space-y-6">
+          <div className="font-black text-lg">Atlas Overview</div>
+
+          {/* Stats Section */}
+          <Card className="p-6">
+            <div className="font-bold mb-4">System Statistics</div>
+            <div className="grid grid-cols-2 gap-6">
+              <div>
+                <div className="text-sm text-muted mb-1">Total Dollars In Accounts</div>
+                <div className="text-2xl font-black">
+                  {adminStats ? `$${adminStats.totalDollarsInAccounts.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '$0.00'}
+                </div>
+              </div>
+              <div>
+                <div className="text-sm text-muted mb-1">Total Dollars Invested in Systems</div>
+                <div className="text-2xl font-black">
+                  {adminStats ? `$${adminStats.totalDollarsInvested.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '$0.00'}
+                </div>
+              </div>
+              <div>
+                <div className="text-sm text-muted mb-1">Atlas Fee %</div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="0.1"
+                    value={adminConfig.atlasFeePercent}
+                    onChange={(e) => setAdminConfig(prev => ({
+                      ...prev,
+                      atlasFeePercent: parseFloat(e.target.value) || 0
+                    }))}
+                    className="w-20 px-2 py-1 rounded border border-border bg-background text-sm"
+                  />
+                  <span>%</span>
+                  <Button
+                    size="sm"
+                    onClick={() => void handleSaveConfig()}
+                    disabled={configSaving}
+                  >
+                    {configSaving ? 'Saving...' : 'Save'}
+                  </Button>
+                </div>
+              </div>
+              <div>
+                <div className="text-sm text-muted mb-1">Partner Program Share %</div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="0.1"
+                    value={adminConfig.partnerProgramSharePercent}
+                    onChange={(e) => setAdminConfig(prev => ({
+                      ...prev,
+                      partnerProgramSharePercent: parseFloat(e.target.value) || 0
+                    }))}
+                    className="w-20 px-2 py-1 rounded border border-border bg-background text-sm"
+                  />
+                  <span>%</span>
+                </div>
+              </div>
+            </div>
+            {adminStats && (
+              <div className="text-xs text-muted mt-4">
+                Last updated: {new Date(adminStats.lastUpdated).toLocaleString()} | Active users: {adminStats.userCount}
+              </div>
+            )}
+          </Card>
+
+          {/* Treasury Bill Holdings Section */}
+          <Card className="p-6">
+            <div className="font-bold mb-4">Treasury Bill Holdings</div>
+            <div className="mb-4">
+              <div className="text-sm text-muted mb-1">Current Balance</div>
+              <div className="text-2xl font-black text-emerald-500">
+                ${treasury.balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </div>
+            </div>
+
+            {/* Time Period Buttons */}
+            <div className="flex gap-1 mb-4">
+              {(['1D', '1M', '3M', '6M', 'YTD', '1Y', 'ALL'] as const).map((period) => (
+                <Button
+                  key={period}
+                  size="sm"
+                  variant={treasuryPeriod === period ? 'accent' : 'ghost'}
+                  className="h-6 px-2 text-xs"
+                  onClick={() => setTreasuryPeriod(period)}
+                >
+                  {period}
+                </Button>
+              ))}
+            </div>
+
+            {/* Treasury Equity Chart placeholder */}
+            <div className="h-[200px] border border-border rounded-lg bg-muted/30 flex items-center justify-center text-muted text-sm mb-4">
+              Treasury Equity Chart - Balance: ${treasury.balance.toLocaleString()}
+              {treasury.entries.length > 0 && ` (${treasury.entries.length} entries)`}
+            </div>
+
+            {/* Recent Fee Deposits */}
+            <div>
+              <div className="font-bold mb-2">Recent Transactions</div>
+              <div className="max-h-[200px] overflow-auto border border-border rounded-lg">
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/50 sticky top-0">
+                    <tr>
+                      <th className="text-left px-3 py-2 font-medium">Date</th>
+                      <th className="text-left px-3 py-2 font-medium">Type</th>
+                      <th className="text-right px-3 py-2 font-medium">Amount</th>
+                      <th className="text-left px-3 py-2 font-medium">Description</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {treasury.entries.length === 0 ? (
+                      <tr>
+                        <td colSpan={4} className="px-3 py-4 text-center text-muted">
+                          No transactions yet
+                        </td>
+                      </tr>
+                    ) : (
+                      treasury.entries.slice(-10).reverse().map((entry) => (
+                        <tr key={entry.id} className="border-t border-border">
+                          <td className="px-3 py-2">{new Date(entry.date).toLocaleDateString()}</td>
+                          <td className="px-3 py-2 capitalize">{entry.type.replace('_', ' ')}</td>
+                          <td className={`px-3 py-2 text-right ${entry.amount >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                            {entry.amount >= 0 ? '+' : ''}${entry.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </td>
+                          <td className="px-3 py-2 text-muted">{entry.description || '-'}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {adminTab === 'Nexus Maintenance' && (
+        <div>
+          <div className="font-black text-lg mb-4">Nexus Maintenance</div>
+          <div className="grid grid-cols-3 gap-4">
+            {/* Top 500 Nexus Systems */}
+            <Card className="p-4 flex flex-col">
+              <div className="font-bold text-center mb-3">Top 500 Nexus Systems by [metric]</div>
+              <div className="flex-1 overflow-auto border border-border rounded-lg">
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/50 sticky top-0">
+                    <tr>
+                      <th className="text-left px-2 py-1.5 font-medium">Name</th>
+                      <th className="text-right px-2 py-1.5 font-medium">CAGR</th>
+                      <th className="text-right px-2 py-1.5 font-medium">MaxDD</th>
+                      <th className="text-right px-2 py-1.5 font-medium">Sharpe</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td colSpan={4} className="px-2 py-8 text-center text-muted">
+                        No Nexus systems yet
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+
+            {/* Top 500 Private Systems */}
+            <Card className="p-4 flex flex-col">
+              <div className="font-bold text-center mb-3">Top 500 Private Systems by [metric]</div>
+              <div className="flex-1 overflow-auto border border-border rounded-lg">
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/50 sticky top-0">
+                    <tr>
+                      <th className="text-left px-2 py-1.5 font-medium">Name</th>
+                      <th className="text-right px-2 py-1.5 font-medium">CAGR</th>
+                      <th className="text-right px-2 py-1.5 font-medium">MaxDD</th>
+                      <th className="text-right px-2 py-1.5 font-medium">Sharpe</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td colSpan={4} className="px-2 py-8 text-center text-muted">
+                        No Private systems yet
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+
+            {/* Top 500 All Systems */}
+            <Card className="p-4 flex flex-col">
+              <div className="font-bold text-center mb-3">Top 500 All Systems by [metric]</div>
+              <div className="flex-1 overflow-auto border border-border rounded-lg">
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/50 sticky top-0">
+                    <tr>
+                      <th className="text-left px-2 py-1.5 font-medium">Name</th>
+                      <th className="text-right px-2 py-1.5 font-medium">CAGR</th>
+                      <th className="text-right px-2 py-1.5 font-medium">MaxDD</th>
+                      <th className="text-right px-2 py-1.5 font-medium">Sharpe</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td colSpan={4} className="px-2 py-8 text-center text-muted">
+                        No systems yet
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          </div>
+        </div>
+      )}
+
+      {adminTab === 'Ticker Data' && (
+        <>
         {/* Section 1: Ticker Management */}
         <div className="mb-6">
-          <div className="font-black text-lg mb-4">Ticker Management</div>
+          <div className="flex items-center justify-between mb-4">
+            <div className="font-black text-lg">Ticker Management</div>
+            <Button
+              variant="default"
+              size="sm"
+              onClick={() => {
+                if (!confirm(`Clear saved data for user ${userId}? This will remove saved bots, watchlists, and UI state.`)) return
+                onClearData()
+              }}
+              title="Clear all locally saved data for this user"
+            >
+              Clear Data
+            </Button>
+          </div>
 
           {/* Status info */}
           <div className="mb-4 p-3 bg-muted rounded-lg text-sm space-y-1">
@@ -2456,6 +2800,8 @@ function AdminPanel({
             <AdminDataPanel tickers={parquetTickers} error={error} />
           </div>
         )}
+        </>
+      )}
     </>
   )
 }
@@ -6609,7 +6955,7 @@ function App() {
   const initialUserId: UserId | null = (() => {
     try {
       const v = localStorage.getItem(CURRENT_USER_KEY)
-      return v === '1' || v === '9' ? (v as UserId) : null
+      return v === '1' || v === '9' || v === 'admin' ? (v as UserId) : null
     } catch {
       return null
     }
@@ -6746,7 +7092,7 @@ function App() {
   const [tab, setTab] = useState<'Dashboard' | 'Community Nexus' | 'Analyze' | 'Build' | 'Help/Support' | 'Admin'>('Build')
   const [dashboardSubtab, setDashboardSubtab] = useState<'Portfolio' | 'Partner Program'>('Portfolio')
   const [analyzeSubtab, setAnalyzeSubtab] = useState<'Bots' | 'Correlation Tool'>('Bots')
-  const [adminTab, setAdminTab] = useState<'Ticker List' | 'Data'>('Ticker List')
+  const [adminTab, setAdminTab] = useState<'Atlas Overview' | 'Nexus Maintenance' | 'Ticker Data'>('Atlas Overview')
   const [saveMenuOpen, setSaveMenuOpen] = useState(false)
   const [saveNewWatchlistName, setSaveNewWatchlistName] = useState('')
   const [addToWatchlistBotId, setAddToWatchlistBotId] = useState<string | null>(null)
@@ -6863,6 +7209,35 @@ function App() {
   const dashboardTotalValue = dashboardCash + dashboardInvestmentsWithPnl.reduce((sum, inv) => sum + inv.currentValue, 0)
   const dashboardTotalPnl = dashboardInvestmentsWithPnl.reduce((sum, inv) => sum + inv.pnl, 0)
   const dashboardTotalPnlPct = STARTING_CAPITAL > 0 ? (dashboardTotalPnl / STARTING_CAPITAL) * 100 : 0
+
+  // Sync portfolio summary to server for admin aggregation
+  useEffect(() => {
+    if (!userId || userId === 'admin') return
+
+    const syncPortfolioSummary = async () => {
+      try {
+        await fetch(`/api/user/${userId}/portfolio-summary`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            totalValue: dashboardTotalValue,
+            totalInvested: dashboardTotalValue - dashboardCash,
+            investmentCount: dashboardInvestmentsWithPnl.length
+          })
+        })
+      } catch (e) {
+        // Silent fail - admin aggregation is non-critical
+        console.warn('Failed to sync portfolio summary:', e)
+      }
+    }
+
+    // Sync on mount and when portfolio changes
+    syncPortfolioSummary()
+
+    // Also sync periodically (every 5 minutes)
+    const interval = setInterval(syncPortfolioSummary, 300000)
+    return () => clearInterval(interval)
+  }, [userId, dashboardTotalValue, dashboardCash, dashboardInvestmentsWithPnl.length])
 
   const handleDashboardBuy = () => {
     if (!dashboardBuyBotId) return
@@ -8132,7 +8507,7 @@ function App() {
             </div>
           </div>
           <div className="flex gap-2 mt-3">
-            {(['Dashboard', 'Community Nexus', 'Analyze', 'Build', 'Help/Support', 'Admin'] as const).map((t) => (
+            {(['Dashboard', 'Community Nexus', 'Analyze', 'Build', 'Help/Support', ...(userId === 'admin' ? ['Admin'] : [])] as ('Dashboard' | 'Community Nexus' | 'Analyze' | 'Build' | 'Help/Support' | 'Admin')[]).map((t) => (
               <Button
                 key={t}
                 variant={tab === t ? 'accent' : 'secondary'}
@@ -8141,35 +8516,6 @@ function App() {
                 {t}
               </Button>
             ))}
-          </div>
-          <div className="flex items-center gap-2.5 mt-2">
-            <div className="text-xs text-muted">
-              Logged in as <span className="font-extrabold">{userId}</span>
-            </div>
-            <Button
-              variant="default"
-              size="sm"
-              onClick={() => {
-                if (!confirm(`Clear saved data for user ${userId}? This will remove saved bots, watchlists, and UI state.`)) return
-                try {
-                  localStorage.removeItem(userDataKey(userId))
-                } catch {
-                  // ignore
-                }
-                const data = loadUserData(userId)
-                setSavedBots(data.savedBots)
-                setWatchlists(data.watchlists)
-                setCallChains(data.callChains)
-                setUiState(data.ui)
-                setAnalyzeBacktests({})
-              }}
-              title="Clear all locally saved data for this user"
-            >
-              Clear Data
-            </Button>
-            <Button variant="default" size="sm" onClick={handleLogout}>
-              Logout
-            </Button>
           </div>
           {tab === 'Build' && (
             <div className="flex gap-2 mt-3">
@@ -8267,16 +8613,26 @@ function App() {
             </div>
           )}
         </div>
-        <div className="flex gap-2">
-          <Button onClick={undo} disabled={!activeBot || activeBot.historyIndex === 0}>
-            Undo
-          </Button>
-          <Button
-            onClick={redo}
-            disabled={!activeBot || activeBot.historyIndex === activeBot.history.length - 1}
-          >
-            Redo
-          </Button>
+        <div className="flex items-center gap-4">
+          <div className="flex gap-2">
+            <Button onClick={undo} disabled={!activeBot || activeBot.historyIndex === 0}>
+              Undo
+            </Button>
+            <Button
+              onClick={redo}
+              disabled={!activeBot || activeBot.historyIndex === activeBot.history.length - 1}
+            >
+              Redo
+            </Button>
+          </div>
+          <div className="flex items-center gap-2.5">
+            <div className="text-xs text-muted">
+              Logged in as <span className="font-extrabold">{userId}</span>
+            </div>
+            <Button variant="default" size="sm" onClick={handleLogout}>
+              Logout
+            </Button>
+          </div>
         </div>
       </header>
       {tickerApiError && (
@@ -8608,6 +8964,20 @@ function App() {
                 setAdminTab={setAdminTab}
                 onTickersUpdated={(next) => {
                   setAvailableTickers(next)
+                }}
+                userId={userId}
+                onClearData={() => {
+                  try {
+                    localStorage.removeItem(userDataKey(userId))
+                  } catch {
+                    // ignore
+                  }
+                  const data = loadUserData(userId)
+                  setSavedBots(data.savedBots)
+                  setWatchlists(data.watchlists)
+                  setCallChains(data.callChains)
+                  setUiState(data.ui)
+                  setAnalyzeBacktests({})
                 }}
               />
             </CardContent>

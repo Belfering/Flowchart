@@ -1,14 +1,22 @@
 # FRD Status Report
-Generated: 2025-12-19
+Generated: 2025-12-20
 
 ## Executive Summary
 
 **Total FRDs**: 10 active documents
-**Completed**: 1 (FRD-006: Tailwind/shadcn refactor)
-**In Progress**: 9 (all draft status)
-**Completion Rate**: 10%
+**Completed**: 2 (FRD-006: Tailwind/shadcn refactor, Admin Account & Dashboard)
+**In Progress**: 8 (all draft status)
+**Completion Rate**: 20%
 
-### New FRDs Added (2025-12-19)
+### Recent Updates (2025-12-20)
+- **NEW**: Admin account system implemented (admin/admin login)
+- **NEW**: Admin tab restricted to admin users only
+- **NEW**: Atlas Overview tab with cross-account aggregation
+- **NEW**: Nexus Maintenance tab with placeholder watchlists
+- **NEW**: Backend API for admin data persistence
+- **NEW**: Portfolio sync for cross-account stats
+
+### Previous Updates (2025-12-19)
 - FRD-007: Database Architecture & Migration
 - FRD-008: User Data Security Best Practices
 - FRD-009: Technology Stack Selection

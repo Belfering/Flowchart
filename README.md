@@ -18,6 +18,11 @@ System Block Chain enables users to visually design trading strategies by connec
 - **Undo/Redo**: Full history-based state management
 - **Copy/Paste**: Clone node subtrees with a single click
 - **Live Data Visualization**: View candlestick charts for tickers using DuckDB-powered queries
+- **Dashboard**: Investment portfolio with live P&L tracking, equity charts, and pie chart allocation
+- **Admin Panel** (admin-only):
+  - **Atlas Overview**: Cross-account aggregation (Total Dollars in Accounts, Total Invested), configurable fee percentages, treasury bill holdings tracking
+  - **Nexus Maintenance**: System watchlist placeholders for top 500 systems by various metrics
+  - **Ticker Data**: Manage ticker lists and download market data
 
 ## Tech Stack
 
@@ -106,6 +111,7 @@ POST http://localhost:8787/api/download
 
 The backend provides the following REST API endpoints:
 
+### Ticker Data
 - `GET /api/status` - Check ticker data paths and existence
 - `GET /api/tickers` - Get parsed list of tickers
 - `GET /api/tickers/raw` - Get raw tickers.txt content
@@ -113,6 +119,14 @@ The backend provides the following REST API endpoints:
 - `GET /api/parquet-tickers` - List available parquet files
 - `GET /api/candles/:ticker?limit=N` - Fetch OHLC candlestick data
 - `POST /api/download` - Start Python download job for ticker data
+
+### Admin (for cross-account aggregation)
+- `GET /api/admin/config` - Get fee configuration (Atlas Fee %, Partner Program Share %)
+- `PUT /api/admin/config` - Update fee configuration
+- `GET /api/admin/aggregated-stats` - Get totals across all user accounts
+- `GET /api/admin/treasury` - Get treasury balance and transaction history
+- `POST /api/admin/treasury/entry` - Add treasury transaction (fee deposit, withdrawal, etc.)
+- `POST /api/user/:userId/portfolio-summary` - Sync user portfolio data for aggregation
 
 ## Building for Production
 
@@ -127,9 +141,12 @@ Preview the production build:
 npm run preview
 ```
 
-### Authentication (simulated)
-- On launch, an admin login prompt is shown. Valid accounts: user `1` with password `1`, and user `9` with password `9` (per-user data is isolated).
-- Show the current user in the UI (e.g., header badge) and provide a `Logout` button to return to the login prompt.
+### Authentication
+- On launch, a login prompt is shown
+- **Regular Users**: `1/1`, `3/3`, `5/5`, `7/7`, `9/9` (per-user data is isolated)
+- **Admin User**: `admin/admin` (has access to the Admin tab with Atlas Overview, Nexus Maintenance, and Ticker Data)
+- Current user displayed in header with Logout button
+- Admin tab is only visible when logged in as admin
 
 ## Data Flow
 

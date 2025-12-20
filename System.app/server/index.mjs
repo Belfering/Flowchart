@@ -404,6 +404,134 @@ app.get('/api/candles/:ticker', async (req, res) => {
   })
 })
 
+// ============================================================================
+// Admin Data Storage
+// ============================================================================
+const ADMIN_DATA_PATH = path.join(TICKER_DATA_ROOT, 'admin-data.json')
+
+async function readAdminData() {
+  try {
+    const raw = await fs.readFile(ADMIN_DATA_PATH, 'utf-8')
+    return JSON.parse(raw)
+  } catch (e) {
+    if (e.code === 'ENOENT') {
+      return {
+        config: { atlasFeePercent: 0, partnerProgramSharePercent: 0 },
+        treasury: { balance: 100000, entries: [] },
+        userSummaries: {}
+      }
+    }
+    throw e
+  }
+}
+
+async function writeAdminData(data) {
+  await fs.writeFile(ADMIN_DATA_PATH, JSON.stringify(data, null, 2), 'utf-8')
+}
+
+// GET /api/admin/config - Get admin configuration
+app.get('/api/admin/config', async (req, res) => {
+  try {
+    const data = await readAdminData()
+    res.json({ config: data.config })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// PUT /api/admin/config - Update admin configuration
+app.put('/api/admin/config', async (req, res) => {
+  try {
+    const data = await readAdminData()
+    const { atlasFeePercent, partnerProgramSharePercent } = req.body
+    if (typeof atlasFeePercent === 'number') {
+      data.config.atlasFeePercent = Math.max(0, Math.min(100, atlasFeePercent))
+    }
+    if (typeof partnerProgramSharePercent === 'number') {
+      data.config.partnerProgramSharePercent = Math.max(0, Math.min(100, partnerProgramSharePercent))
+    }
+    await writeAdminData(data)
+    res.json({ config: data.config })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// POST /api/user/:userId/portfolio-summary - Update user's portfolio summary
+app.post('/api/user/:userId/portfolio-summary', async (req, res) => {
+  try {
+    const userId = req.params.userId
+    const { totalValue, totalInvested, investmentCount } = req.body
+
+    const data = await readAdminData()
+    data.userSummaries = data.userSummaries || {}
+    data.userSummaries[userId] = {
+      userId,
+      totalValue: Number(totalValue) || 0,
+      totalInvested: Number(totalInvested) || 0,
+      investmentCount: Number(investmentCount) || 0,
+      lastUpdated: Date.now()
+    }
+    await writeAdminData(data)
+    res.json({ success: true })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// GET /api/admin/aggregated-stats - Get aggregated stats across all users
+app.get('/api/admin/aggregated-stats', async (req, res) => {
+  try {
+    const data = await readAdminData()
+    const summaries = Object.values(data.userSummaries || {})
+
+    const stats = {
+      totalDollarsInAccounts: summaries.reduce((sum, s) => sum + (s.totalValue || 0), 0),
+      totalDollarsInvested: summaries.reduce((sum, s) => sum + (s.totalInvested || 0), 0),
+      userCount: summaries.length,
+      lastUpdated: Date.now()
+    }
+
+    res.json({ stats, config: data.config })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// GET /api/admin/treasury - Get treasury state
+app.get('/api/admin/treasury', async (req, res) => {
+  try {
+    const data = await readAdminData()
+    res.json({ treasury: data.treasury })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// POST /api/admin/treasury/entry - Add treasury entry
+app.post('/api/admin/treasury/entry', async (req, res) => {
+  try {
+    const data = await readAdminData()
+    const { type, amount, description } = req.body
+
+    const entry = {
+      id: `treasury-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      date: Date.now(),
+      type: type || 'fee_deposit',
+      amount: Number(amount) || 0,
+      description: description || ''
+    }
+
+    data.treasury.entries.push(entry)
+    data.treasury.balance += entry.amount
+
+    await writeAdminData(data)
+    res.json({ treasury: data.treasury })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
 const PORT = Number(process.env.PORT || 8787)
 app.listen(PORT, async () => {
   console.log(`[api] listening on http://localhost:${PORT}`)
