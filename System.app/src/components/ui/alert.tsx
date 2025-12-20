@@ -9,9 +9,9 @@ const alertVariants = cva(
       variant: {
         default: "bg-surface border-border text-text",
         destructive:
-          "border-red-200 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-200",
+          "border-danger bg-surface text-danger",
         warning:
-          "border-yellow-300 bg-yellow-50 text-yellow-900 dark:border-yellow-800 dark:bg-yellow-950 dark:text-yellow-200",
+          "border-accent-border bg-accent-bg text-accent-text",
         info:
           "border-accent-border bg-accent-bg text-accent-text",
       },

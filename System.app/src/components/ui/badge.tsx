@@ -14,7 +14,7 @@ const badgeVariants = cva(
         accent:
           "border-accent-border bg-accent-bg text-accent-text",
         destructive:
-          "border-red-300 bg-red-50 text-danger dark:border-red-800 dark:bg-red-950",
+          "border-danger bg-surface text-danger",
         outline:
           "border-border text-text",
         muted:

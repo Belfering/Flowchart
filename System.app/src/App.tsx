@@ -1897,12 +1897,12 @@ function AdminDataPanel({
 
       <div className="mt-3">
         <div className="font-extrabold mb-1.5">Ticker data preview (last 50 rows)</div>
-        <div className="max-h-[320px] overflow-auto border border-border rounded-xl bg-white">
+        <div className="max-h-[320px] overflow-auto border border-border rounded-xl bg-surface">
           <Table>
             <TableHeader>
               <TableRow>
                 {['Date', 'Open', 'High', 'Low', 'Close'].map((h) => (
-                  <TableHead key={h} className="sticky top-0 bg-white">
+                  <TableHead key={h} className="sticky top-0 bg-surface">
                     {h}
                   </TableHead>
                 ))}
