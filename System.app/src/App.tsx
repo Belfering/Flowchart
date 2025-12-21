@@ -7675,24 +7675,39 @@ function App() {
   useEffect(() => {
     if (!userId) return
     setBotsLoadedFromApi(false)
-    loadBotsFromApi(userId).then((apiBots) => {
-      if (apiBots.length > 0) {
-        setSavedBots(apiBots)
+    loadBotsFromApi(userId).then(async (apiBots) => {
+      // Check localStorage AND seed data for any bots that aren't in the API yet (migration)
+      const localData = loadUserData(userId)
+      const seedData = generateSeedData(userId)
+      // Combine localStorage and seed data, preferring localStorage versions
+      const localBotIds = new Set(localData.savedBots.map(b => b.id))
+      const allLocalBots = [
+        ...localData.savedBots,
+        ...seedData.savedBots.filter(b => !localBotIds.has(b.id))
+      ]
+
+      const apiBotIds = new Set(apiBots.map(b => b.id))
+      const localBotsNotInApi = allLocalBots.filter(b => !apiBotIds.has(b.id))
+
+      if (localBotsNotInApi.length > 0) {
+        // Migrate localStorage/seed bots that don't exist in API
+        console.log('[Migration] Migrating', localBotsNotInApi.length, 'bots to API...')
+        await Promise.all(localBotsNotInApi.map(bot => createBotInApi(userId, bot)))
+        console.log('[Migration] Bots migrated successfully')
+        // Merge: API bots + migrated local bots
+        setSavedBots([...apiBots, ...localBotsNotInApi])
       } else {
-        // If no bots in API, check localStorage for migration
-        const localData = loadUserData(userId)
-        if (localData.savedBots.length > 0) {
-          // Migrate localStorage bots to API
-          console.log('[Migration] Migrating', localData.savedBots.length, 'bots to API...')
-          Promise.all(localData.savedBots.map(bot => createBotInApi(userId, bot))).then(() => {
-            console.log('[Migration] Bots migrated successfully')
-            setSavedBots(localData.savedBots)
-          })
-        }
+        // No migration needed, just use API bots
+        setSavedBots(apiBots)
       }
       setBotsLoadedFromApi(true)
     }).catch((err) => {
       console.warn('[API] Failed to load bots, using localStorage fallback:', err)
+      // Fallback to localStorage if API fails
+      const localData = loadUserData(userId)
+      if (localData.savedBots.length > 0) {
+        setSavedBots(localData.savedBots)
+      }
       setBotsLoadedFromApi(true)
     })
   }, [userId])
