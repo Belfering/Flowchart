@@ -481,6 +481,7 @@ type SavedBot = {
   visibility: BotVisibility
   createdAt: number
   tags?: string[] // e.g., ['Atlas', 'Nexus']
+  fundSlot?: 1 | 2 | 3 | 4 | 5 | null // Which fund slot this bot is in (for Nexus bots)
 }
 
 type Watchlist = {
@@ -10040,6 +10041,15 @@ function App() {
                 return out
               }
 
+              // Helper to find fund slot from uiState.fundZones
+              const getFundSlotForBot = (botId: string): number | null => {
+                for (let i = 1; i <= 5; i++) {
+                  const key = `fund${i}` as keyof FundZones
+                  if (uiState.fundZones[key] === botId) return i
+                }
+                return null
+              }
+
               // Generate rows for Nexus bots (bots with 'Nexus' tag from any account)
               const communityBotRows: CommunityBotRow[] = savedBots
                 .filter((bot) => bot.tags?.includes('Nexus'))
@@ -10048,9 +10058,15 @@ function App() {
                   // Since this is specifically for Nexus bots, primary tag is always Nexus
                   const tags = ['Nexus', `Builder: ${bot.builderId}`, ...tagNames]
                   const metrics = analyzeBacktests[bot.id]?.result?.metrics
+                  // Display anonymized name: "X's Fund #Y" instead of actual bot name
+                  // Use fundSlot from bot, or look up from fundZones as fallback
+                  const fundSlot = bot.fundSlot ?? getFundSlotForBot(bot.id)
+                  const displayName = fundSlot
+                    ? `${bot.builderId}'s Fund #${fundSlot}`
+                    : `${bot.builderId}'s Fund`
                   return {
                     id: bot.id,
-                    name: bot.name,
+                    name: displayName,
                     tags,
                     oosCagr: metrics?.cagr ?? 0,
                     oosMaxdd: metrics?.maxDrawdown ?? 0,
@@ -10125,13 +10141,22 @@ function App() {
 
                       if (!b) return null
 
+                      // Use anonymized display name for Nexus bots in Community tab
+                      // Use fundSlot from bot, or look up from fundZones as fallback
+                      const fundSlot = b.fundSlot ?? getFundSlotForBot(b.id)
+                      const displayName = b.tags?.includes('Nexus') && fundSlot
+                        ? `${b.builderId}'s Fund #${fundSlot}`
+                        : b.tags?.includes('Nexus')
+                          ? `${b.builderId}'s Fund`
+                          : b.name
+
                       return (
                         <Card key={r.id} className="grid gap-2.5">
                           <div className="flex items-center gap-2.5 flex-wrap">
                             <Button variant="ghost" size="sm" onClick={toggleCollapse}>
                               {collapsed ? 'Expand' : 'Collapse'}
                             </Button>
-                            <div className="font-black">{b.name}</div>
+                            <div className="font-black">{displayName}</div>
                             <Badge variant={b.tags?.includes('Nexus') ? 'default' : b.tags?.includes('Atlas') ? 'default' : 'accent'}>
                               {b.tags?.includes('Nexus') ? 'Nexus' : b.tags?.includes('Atlas') ? 'Atlas' : 'Private'}
                             </Badge>
@@ -11120,12 +11145,12 @@ function App() {
                                   ...prev,
                                   fundZones: { ...prev.fundZones, [fundKey]: null }
                                 }))
-                                // Change tag from Nexus back to Private + Nexus Eligible
+                                // Change tag from Nexus back to Private + Nexus Eligible, clear fundSlot
                                 setSavedBots(prev => prev.map(b => {
                                   if (b.id !== botId) return b
                                   // Remove Nexus, add Private + Nexus Eligible (bot was eligible to be in fund)
                                   const baseTags = (b.tags || []).filter(t => t !== 'Nexus' && t !== 'Private' && t !== 'Nexus Eligible')
-                                  return { ...b, tags: ['Private', 'Nexus Eligible', ...baseTags] }
+                                  return { ...b, tags: ['Private', 'Nexus Eligible', ...baseTags], fundSlot: null }
                                 }))
                               }}
                             >
@@ -11216,17 +11241,19 @@ function App() {
                                       className="text-xs px-2 py-1 rounded border border-border bg-background"
                                       value=""
                                       onChange={(e) => {
-                                        const fundSlot = e.target.value as keyof FundZones
-                                        if (!fundSlot) return
+                                        const fundKey = e.target.value as keyof FundZones
+                                        if (!fundKey) return
+                                        // Extract fund number from key (e.g., 'fund1' -> 1)
+                                        const fundNum = parseInt(fundKey.replace('fund', '')) as 1 | 2 | 3 | 4 | 5
                                         setUiState(prev => ({
                                           ...prev,
-                                          fundZones: { ...prev.fundZones, [fundSlot]: b.id }
+                                          fundZones: { ...prev.fundZones, [fundKey]: b.id }
                                         }))
                                         setSavedBots(prev => prev.map(bot => {
                                           if (bot.id !== b.id) return bot
                                           // Remove Private, Nexus Eligible; add Nexus (keep other tags like Atlas if any)
                                           const baseTags = (bot.tags || []).filter(t => t !== 'Private' && t !== 'Nexus Eligible' && t !== 'Nexus')
-                                          return { ...bot, tags: ['Nexus', ...baseTags] }
+                                          return { ...bot, tags: ['Nexus', ...baseTags], fundSlot: fundNum }
                                         }))
                                       }}
                                     >
