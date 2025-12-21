@@ -232,7 +232,7 @@ npm run preview
 | **UI State** | localStorage | Theme, expanded panels, etc. |
 | **Call Chains** | localStorage | User-defined function chains |
 
-On first login, any bots stored in localStorage are automatically migrated to the database.
+On first login, any bots stored in localStorage plus seed bots for new users are automatically migrated to the database.
 
 ## Development
 
