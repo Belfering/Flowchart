@@ -182,6 +182,129 @@ const loadDeviceThemeMode = (): ThemeMode => {
   }
 }
 
+// ============================================================================
+// Database API Helpers (for cross-user Nexus bots and scalable persistence)
+// ============================================================================
+const API_BASE = '/api'
+
+// API type for Nexus bots (no payload for IP protection)
+type NexusBotFromApi = {
+  id: string
+  ownerId: string
+  name: string
+  visibility: string
+  tags: string | null
+  fundSlot: number | null
+  createdAt: string
+  owner?: { id: string; displayName: string } | null
+  metrics?: {
+    cagr?: number
+    maxDrawdown?: number
+    calmarRatio?: number
+    sharpeRatio?: number
+    sortinoRatio?: number
+  } | null
+}
+
+// Fetch all Nexus bots from the database (cross-user, no payload)
+const fetchNexusBotsFromApi = async (): Promise<SavedBot[]> => {
+  try {
+    const res = await fetch(`${API_BASE}/nexus/bots`)
+    if (!res.ok) return []
+    const { bots } = await res.json() as { bots: NexusBotFromApi[] }
+    return bots.map((bot) => ({
+      id: bot.id,
+      name: bot.name,
+      builderId: bot.ownerId as UserId,
+      payload: null as unknown as FlowNode, // IP protection: no payload
+      visibility: 'community' as BotVisibility,
+      tags: bot.tags ? JSON.parse(bot.tags) : undefined,
+      createdAt: new Date(bot.createdAt).getTime(),
+      fundSlot: bot.fundSlot,
+      backtestResult: bot.metrics ? {
+        cagr: bot.metrics.cagr ?? 0,
+        maxDrawdown: bot.metrics.maxDrawdown ?? 0,
+        calmar: bot.metrics.calmarRatio ?? 0,
+        sharpe: bot.metrics.sharpeRatio ?? 0,
+        sortino: bot.metrics.sortinoRatio ?? 0,
+      } : undefined,
+    })) as SavedBot[]
+  } catch (err) {
+    console.warn('[API] Failed to fetch Nexus bots:', err)
+    return []
+  }
+}
+
+// Sync a bot to the database (for saving new bots or updates)
+const syncBotToApi = async (userId: UserId, bot: SavedBot): Promise<boolean> => {
+  try {
+    const payload = JSON.stringify(bot.payload)
+    const tags = bot.tags || []
+    const visibility = bot.tags?.includes('Nexus') ? 'nexus' : bot.tags?.includes('Nexus Eligible') ? 'nexus_eligible' : 'private'
+
+    // Check if bot exists in DB
+    const checkRes = await fetch(`${API_BASE}/bots/${bot.id}?userId=${userId}`)
+    const exists = checkRes.ok
+
+    if (exists) {
+      // Update
+      await fetch(`${API_BASE}/bots/${bot.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ownerId: userId, name: bot.name, payload, visibility, tags, fundSlot: bot.fundSlot }),
+      })
+    } else {
+      // Create - include bot.id to preserve ID
+      await fetch(`${API_BASE}/bots`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: bot.id,  // Preserve the localStorage ID
+          ownerId: userId,
+          name: bot.name,
+          payload,
+          visibility,
+          tags,
+          fundSlot: bot.fundSlot,
+        }),
+      })
+    }
+    return true
+  } catch (err) {
+    console.warn('[API] Failed to sync bot:', err)
+    return false
+  }
+}
+
+// Update bot metrics in the database after backtest
+const syncBotMetricsToApi = async (botId: string, metrics: {
+  cagr?: number
+  maxDrawdown?: number
+  calmarRatio?: number
+  sharpeRatio?: number
+  sortinoRatio?: number
+  treynorRatio?: number
+  volatility?: number
+  winRate?: number
+  avgTurnover?: number
+  avgHoldings?: number
+  tradingDays?: number
+}): Promise<boolean> => {
+  try {
+    await fetch(`${API_BASE}/bots/${botId}/metrics`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(metrics),
+    })
+    return true
+  } catch (err) {
+    console.warn('[API] Failed to sync metrics:', err)
+    return false
+  }
+}
+
+// ============================================================================
+
 const loadInitialThemeMode = (): ThemeMode => {
   try {
     const raw = localStorage.getItem(LEGACY_THEME_KEY)
@@ -341,6 +464,37 @@ const saveUserData = (userId: UserId, data: UserData) => {
   localStorage.setItem(userDataKey(userId), JSON.stringify(data))
 }
 
+// Load all Nexus-tagged bots from all users (for Community Nexus)
+const ALL_USER_IDS: UserId[] = ['1', '3', '5', '7', '9']
+
+const loadAllNexusBots = (currentUserId: UserId): SavedBot[] => {
+  const allNexusBots: SavedBot[] = []
+  const seen = new Set<string>()
+  for (const uid of ALL_USER_IDS) {
+    try {
+      const userData = loadUserData(uid)
+      const nexusBots = userData.savedBots.filter((bot) => bot.tags?.includes('Nexus'))
+      // For non-owners, strip the payload for IP protection
+      const sanitizedBots = nexusBots.map((bot) => {
+        if (bot.builderId !== currentUserId) {
+          return { ...bot, payload: null as unknown as FlowNode }
+        }
+        return bot
+      })
+      // Deduplicate by ID
+      for (const bot of sanitizedBots) {
+        if (!seen.has(bot.id)) {
+          seen.add(bot.id)
+          allNexusBots.push(bot)
+        }
+      }
+    } catch {
+      // Skip users with invalid/missing data
+    }
+  }
+  return allNexusBots
+}
+
 // Dashboard investment helpers
 const getEligibleBots = (allBots: SavedBot[], userId: UserId): SavedBot[] => {
   return allBots.filter(
@@ -482,6 +636,13 @@ type SavedBot = {
   createdAt: number
   tags?: string[] // e.g., ['Atlas', 'Nexus']
   fundSlot?: 1 | 2 | 3 | 4 | 5 | null // Which fund slot this bot is in (for Nexus bots)
+  backtestResult?: { // Cached metrics from API for cross-user Nexus bots
+    cagr: number
+    maxDrawdown: number
+    calmar: number
+    sharpe: number
+    sortino: number
+  }
 }
 
 type Watchlist = {
@@ -7351,6 +7512,11 @@ function App() {
   )
   const [analyzeBacktests, setAnalyzeBacktests] = useState<Record<string, AnalyzeBacktestState>>({})
   const [analyzeTickerContrib, setAnalyzeTickerContrib] = useState<Record<string, TickerContributionState>>({})
+
+  // Cross-user Nexus bots for Community Nexus tab
+  const [allNexusBots, setAllNexusBots] = useState<SavedBot[]>(() =>
+    userId ? loadAllNexusBots(userId) : []
+  )
   const [analyzeTickerSort, setAnalyzeTickerSort] = useState<{ column: string; dir: 'asc' | 'desc' }>({
     column: 'ticker',
     dir: 'asc',
@@ -7374,6 +7540,39 @@ function App() {
     saveUserData(userId, { savedBots, watchlists, callChains, ui: uiState, dashboardPortfolio })
   }, [userId, savedBots, watchlists, callChains, uiState, dashboardPortfolio])
 
+  // Refresh cross-user Nexus bots when user changes or their own savedBots change
+  // (their saved bots may now have Nexus tag)
+  // Uses API for scalable cross-user visibility, falls back to localStorage
+  useEffect(() => {
+    if (!userId) return
+
+    // Try API first for scalable cross-user data
+    fetchNexusBotsFromApi().then((apiBots) => {
+      if (apiBots.length > 0) {
+        // For current user's bots, prefer localStorage (has payload for editing)
+        // For other users' bots, use API data
+        const localNexusBots = savedBots.filter((bot) => bot.tags?.includes('Nexus'))
+        const localBotIds = new Set(localNexusBots.map((b) => b.id))
+        // Get API bots that aren't already in local (other users' bots, or user's bots not yet in local)
+        const apiBotsMerged = apiBots.filter((ab) => !localBotIds.has(ab.id))
+        // Merge: local first (freshest), then API bots not in local
+        const merged = [...localNexusBots, ...apiBotsMerged]
+        const seen = new Set<string>()
+        const deduplicated = merged.filter((bot) => {
+          if (seen.has(bot.id)) return false
+          seen.add(bot.id)
+          return true
+        })
+        setAllNexusBots(deduplicated)
+      } else {
+        // Fallback to localStorage-based loading
+        setAllNexusBots(loadAllNexusBots(userId))
+      }
+    }).catch(() => {
+      // Fallback to localStorage
+      setAllNexusBots(loadAllNexusBots(userId))
+    })
+  }, [userId, savedBots])
 
   const loadAvailableTickers = useCallback(async () => {
     const tryLoad = async (url: string) => {
@@ -8497,6 +8696,156 @@ function App() {
 
   const runAnalyzeBacktest = useCallback(
     async (bot: SavedBot) => {
+      // For bots without payload (cross-user Nexus bots), run backtest on server
+      if (!bot.payload) {
+        setAnalyzeBacktests((prev) => {
+          if (prev[bot.id]?.status === 'loading') return prev
+          return { ...prev, [bot.id]: { status: 'loading' } }
+        })
+
+        try {
+          // Try server-side backtest first
+          const res = await fetch(`${API_BASE}/bots/${bot.id}/run-backtest`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode: backtestMode, costBps: backtestCostBps }),
+          })
+
+          if (res.ok) {
+            const { metrics, equityCurve, allocations: serverAllocations } = await res.json() as {
+              metrics: {
+                cagr: number
+                maxDrawdown: number
+                calmarRatio: number
+                sharpeRatio: number
+                sortinoRatio: number
+                treynorRatio?: number
+                volatility: number
+                winRate?: number
+                avgTurnover?: number
+                avgHoldings?: number
+                bestDay?: number
+                worstDay?: number
+                tradingDays: number
+              }
+              equityCurve?: { date: string; equity: number }[]
+              allocations?: { date: string; alloc: Record<string, number> }[]
+            }
+            // Convert equity curve from server format to frontend format
+            // Convert date strings to Unix timestamps (seconds) for Lightweight Charts
+            const points: EquityPoint[] = (equityCurve || []).map((p) => ({
+              time: (new Date(p.date).getTime() / 1000) as UTCTimestamp,
+              value: p.equity,
+            }))
+            // Compute drawdown points from equity curve
+            let peak = 1
+            const drawdownPoints: EquityPoint[] = points.map((p) => {
+              if (p.value > peak) peak = p.value
+              const dd = (p.value - peak) / peak
+              return { time: p.time, value: dd }
+            })
+            const startDate = equityCurve?.[0]?.date || ''
+            const endDate = equityCurve?.[equityCurve.length - 1]?.date || ''
+            const totalReturn = points.length > 0 ? points[points.length - 1].value - 1 : 0
+            const years = metrics.tradingDays / 252
+
+            // Convert server allocations to frontend format
+            const allocations: BacktestAllocationRow[] = (serverAllocations || []).map((a) => ({
+              date: a.date,
+              entries: Object.entries(a.alloc)
+                .filter(([, w]) => w > 0)
+                .map(([ticker, weight]) => ({ ticker, weight })),
+            }))
+
+            setAnalyzeBacktests((prev) => ({
+              ...prev,
+              [bot.id]: {
+                status: 'done',
+                result: {
+                  points,
+                  drawdownPoints,
+                  markers: [],
+                  metrics: {
+                    startDate,
+                    endDate,
+                    days: metrics.tradingDays,
+                    years,
+                    totalReturn,
+                    cagr: metrics.cagr,
+                    maxDrawdown: metrics.maxDrawdown,
+                    calmar: metrics.calmarRatio,
+                    sharpe: metrics.sharpeRatio,
+                    sortino: metrics.sortinoRatio,
+                    vol: metrics.volatility,
+                    treynor: metrics.treynorRatio ?? 0,
+                    winRate: metrics.winRate ?? 0,
+                    bestDay: metrics.bestDay ?? 0,
+                    worstDay: metrics.worstDay ?? 0,
+                    avgTurnover: metrics.avgTurnover ?? 0,
+                    avgHoldings: metrics.avgHoldings ?? 0,
+                  },
+                  days: [],
+                  allocations,
+                  warnings: [],
+                  monthly: [],
+                },
+              },
+            }))
+            return
+          }
+
+          // If server backtest fails, use cached result or show error
+          if (bot.backtestResult) {
+            const cached = bot.backtestResult
+            setAnalyzeBacktests((prev) => ({
+              ...prev,
+              [bot.id]: {
+                status: 'done',
+                result: {
+                  points: [],
+                  drawdownPoints: [],
+                  markers: [],
+                  metrics: {
+                    startDate: '',
+                    endDate: '',
+                    days: 0,
+                    years: 0,
+                    totalReturn: 0,
+                    cagr: cached.cagr,
+                    maxDrawdown: cached.maxDrawdown,
+                    calmar: cached.calmar,
+                    sharpe: cached.sharpe,
+                    sortino: cached.sortino,
+                    vol: 0,
+                    treynor: 0,
+                    winRate: 0,
+                    bestDay: 0,
+                    worstDay: 0,
+                    avgTurnover: 0,
+                    avgHoldings: 0,
+                  },
+                  days: [],
+                  allocations: [],
+                  warnings: [],
+                  monthly: [],
+                },
+              },
+            }))
+          } else {
+            const errorData = await res.json().catch(() => ({ error: 'Server backtest failed' }))
+            setAnalyzeBacktests((prev) => ({
+              ...prev,
+              [bot.id]: { status: 'error', error: errorData.error || 'Failed to run server-side backtest' },
+            }))
+          }
+        } catch (err) {
+          setAnalyzeBacktests((prev) => ({
+            ...prev,
+            [bot.id]: { status: 'error', error: `Network error: ${String(err)}` },
+          }))
+        }
+        return
+      }
       setAnalyzeBacktests((prev) => {
         if (prev[bot.id]?.status === 'loading') return prev
         return { ...prev, [bot.id]: { status: 'loading' } }
@@ -8600,6 +8949,23 @@ function App() {
             console.warn('Failed to check eligibility:', eligErr)
           }
         }
+
+        // Sync metrics to database for Nexus bots (scalable cross-user visibility)
+        if (result?.metrics && bot.tags?.includes('Nexus')) {
+          syncBotMetricsToApi(bot.id, {
+            cagr: result.metrics.cagr,
+            maxDrawdown: result.metrics.maxDrawdown,
+            calmarRatio: result.metrics.calmar,
+            sharpeRatio: result.metrics.sharpe,
+            sortinoRatio: result.metrics.sortino,
+            treynorRatio: result.metrics.treynor,
+            volatility: result.metrics.vol,
+            winRate: result.metrics.winRate,
+            avgTurnover: result.metrics.avgTurnover,
+            avgHoldings: result.metrics.avgHoldings,
+            tradingDays: result.metrics.days,
+          }).catch((err) => console.warn('[API] Failed to sync metrics:', err))
+        }
       } catch (err) {
         let message = String((err as Error)?.message || err)
         if (isValidationError(err)) {
@@ -8608,7 +8974,7 @@ function App() {
         setAnalyzeBacktests((prev) => ({ ...prev, [bot.id]: { status: 'error', error: message } }))
       }
     },
-    [runBacktestForNode, userId, uiState.fundZones],
+    [runBacktestForNode, userId, uiState.fundZones, backtestMode, backtestCostBps],
   )
 
   const runAnalyzeTickerContribution = useCallback(
@@ -10128,10 +10494,8 @@ function App() {
                 return null
               }
 
-              // Generate rows for Nexus bots (bots with 'Nexus' tag from any account)
-              const communityBotRows: CommunityBotRow[] = savedBots
-                .filter((bot) => bot.tags?.includes('Nexus'))
-                .map((bot) => {
+              // Generate rows for Nexus bots from ALL users (cross-account)
+              const communityBotRows: CommunityBotRow[] = allNexusBots.map((bot) => {
                   const tagNames = (watchlistsByBotId.get(bot.id) ?? []).map((w) => w.name)
                   // Since this is specifically for Nexus bots, primary tag is always Nexus
                   const tags = ['Nexus', `Builder: ${bot.builderId}`, ...tagNames]
@@ -10200,7 +10564,8 @@ function App() {
                   <div className="flex flex-col gap-2.5">
                     {sorted.map((r) => {
                       const collapsed = uiState.communityCollapsedByBotId[r.id] ?? true
-                      const b = savedBots.find((bot) => bot.id === r.id)
+                      // Look up from allNexusBots first (for cross-user bots), then fall back to savedBots
+                      const b = allNexusBots.find((bot) => bot.id === r.id) ?? savedBots.find((bot) => bot.id === r.id)
                       const analyzeState = analyzeBacktests[r.id]
                       const wlTags = watchlistsByBotId.get(r.id) ?? []
 
@@ -10283,8 +10648,9 @@ function App() {
                                   <div className="text-muted">Running backtest…</div>
                                 ) : analyzeState?.status === 'error' ? (
                                   <div className="grid gap-2">
-                                    <div className="text-danger font-extrabold">{analyzeState.error ?? 'Failed to run backtest.'}</div>
-                                    <Button onClick={() => runAnalyzeBacktest(b)}>Retry</Button>
+                                    <div className="text-muted">{analyzeState.error ?? 'Failed to run backtest.'}</div>
+                                    {/* Only show Retry for own bots (those with payload) */}
+                                    {b?.payload && <Button onClick={() => runAnalyzeBacktest(b)}>Retry</Button>}
                                   </div>
                                 ) : analyzeState?.status === 'done' ? (
                                   <div className="grid grid-cols-1 gap-2.5 min-w-0 w-full">
@@ -11137,19 +11503,18 @@ function App() {
                               size="sm"
                               variant="outline"
                               className="w-full h-6 text-xs text-red-500 hover:text-red-600"
-                              onClick={() => {
+                              onClick={async () => {
                                 // Remove from fund, re-evaluate eligibility
                                 setUiState(prev => ({
                                   ...prev,
                                   fundZones: { ...prev.fundZones, [fundKey]: null }
                                 }))
                                 // Change tag from Nexus back to Private + Nexus Eligible, clear fundSlot
-                                setSavedBots(prev => prev.map(b => {
-                                  if (b.id !== botId) return b
-                                  // Remove Nexus, add Private + Nexus Eligible (bot was eligible to be in fund)
-                                  const baseTags = (b.tags || []).filter(t => t !== 'Nexus' && t !== 'Private' && t !== 'Nexus Eligible')
-                                  return { ...b, tags: ['Private', 'Nexus Eligible', ...baseTags], fundSlot: null }
-                                }))
+                                const baseTags = (bot.tags || []).filter(t => t !== 'Nexus' && t !== 'Private' && t !== 'Nexus Eligible')
+                                const updatedBot: SavedBot = { ...bot, tags: ['Private', 'Nexus Eligible', ...baseTags], fundSlot: null }
+                                setSavedBots(prev => prev.map(b => b.id !== botId ? b : updatedBot))
+                                // Sync to database - this will set visibility to 'nexus_eligible' (not 'nexus')
+                                await syncBotToApi(userId, updatedBot)
                               }}
                             >
                               Remove
@@ -11251,7 +11616,10 @@ function App() {
                                           if (bot.id !== b.id) return bot
                                           // Remove Private, Nexus Eligible; add Nexus (keep other tags like Atlas if any)
                                           const baseTags = (bot.tags || []).filter(t => t !== 'Private' && t !== 'Nexus Eligible' && t !== 'Nexus')
-                                          return { ...bot, tags: ['Nexus', ...baseTags], fundSlot: fundNum }
+                                          const updatedBot = { ...bot, tags: ['Nexus', ...baseTags], fundSlot: fundNum }
+                                          // Sync to database for cross-user visibility
+                                          if (userId) syncBotToApi(userId, updatedBot).catch(() => {})
+                                          return updatedBot
                                         }))
                                       }}
                                     >

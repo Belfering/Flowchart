@@ -588,6 +588,519 @@ app.put('/api/admin/eligibility', async (req, res) => {
   }
 })
 
+// ============================================================================
+// Database-Backed API (Scalable Architecture)
+// ============================================================================
+import * as database from './db/index.mjs'
+import { runBacktest } from './backtest.mjs'
+
+// Initialize database on startup
+let dbInitialized = false
+
+async function ensureDbInitialized() {
+  if (!dbInitialized) {
+    database.initializeDatabase()
+    dbInitialized = true
+  }
+}
+
+// ============================================================================
+// Authentication Endpoints
+// ============================================================================
+
+// POST /api/auth/login - Validate credentials and return user
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const { username, password } = req.body
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Username and password required' })
+    }
+    const user = await database.validateUser(username, password)
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid credentials' })
+    }
+    // Return user without password
+    const { passwordHash, ...safeUser } = user
+    res.json({ user: safeUser })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// GET /api/auth/user/:userId - Get user by ID
+app.get('/api/auth/user/:userId', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const user = await database.getUserById(req.params.userId)
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' })
+    }
+    const { passwordHash, ...safeUser } = user
+    res.json({ user: safeUser })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// ============================================================================
+// Bot Endpoints
+// ============================================================================
+
+// GET /api/bots - List user's bots
+app.get('/api/bots', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const userId = req.query.userId
+    if (!userId) {
+      return res.status(400).json({ error: 'userId query parameter required' })
+    }
+    const bots = await database.getBotsByOwner(userId)
+    res.json({ bots })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// GET /api/bots/:id - Get a single bot
+app.get('/api/bots/:id', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const userId = req.query.userId
+    const bot = await database.getBotById(req.params.id, true) // include payload
+    if (!bot) {
+      return res.status(404).json({ error: 'Bot not found' })
+    }
+    // Only return payload if user owns the bot
+    if (bot.ownerId !== userId && bot.visibility === 'nexus') {
+      const { payload, ...publicBot } = bot
+      return res.json({ bot: publicBot })
+    }
+    res.json({ bot })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// POST /api/bots - Create a new bot
+app.post('/api/bots', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const { ownerId, name, payload, visibility, tags, fundSlot, id: clientId } = req.body
+    if (!ownerId || !name || !payload) {
+      return res.status(400).json({ error: 'ownerId, name, and payload are required' })
+    }
+    const id = await database.createBot({
+      id: clientId,  // Use client-provided ID if present
+      ownerId,
+      name,
+      payload: typeof payload === 'string' ? payload : JSON.stringify(payload),
+      visibility,
+      tags,
+      fundSlot,
+    })
+    res.json({ id })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// PUT /api/bots/:id - Update a bot
+app.put('/api/bots/:id', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const { ownerId, name, payload, visibility, tags, fundSlot } = req.body
+    if (!ownerId) {
+      return res.status(400).json({ error: 'ownerId is required' })
+    }
+    const result = await database.updateBot(req.params.id, ownerId, {
+      name,
+      payload: payload ? (typeof payload === 'string' ? payload : JSON.stringify(payload)) : undefined,
+      visibility,
+      tags,
+      fundSlot,
+    })
+    if (!result) {
+      return res.status(404).json({ error: 'Bot not found or not owned by user' })
+    }
+    res.json({ success: true })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// DELETE /api/bots/:id - Delete a bot (soft delete)
+app.delete('/api/bots/:id', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const ownerId = req.query.ownerId
+    if (!ownerId) {
+      return res.status(400).json({ error: 'ownerId query parameter required' })
+    }
+    const result = await database.deleteBot(req.params.id, ownerId)
+    if (!result) {
+      return res.status(404).json({ error: 'Bot not found or not owned by user' })
+    }
+    res.json({ success: true })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// PUT /api/bots/:id/metrics - Update bot metrics after backtest
+app.put('/api/bots/:id/metrics', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const metrics = req.body
+    await database.updateBotMetrics(req.params.id, metrics)
+    res.json({ success: true })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// ============================================================================
+// Nexus (Community) Bot Endpoints - PUBLIC, NO PAYLOAD
+// ============================================================================
+
+// GET /api/nexus/bots - List all Nexus bots (NO payload)
+app.get('/api/nexus/bots', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const bots = await database.getNexusBots()
+    res.json({ bots })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// GET /api/nexus/top/cagr - Top 10 Nexus bots by CAGR
+app.get('/api/nexus/top/cagr', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const limit = parseInt(req.query.limit) || 10
+    const bots = await database.getTopNexusBotsByCagr(limit)
+    res.json({ bots })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// GET /api/nexus/top/calmar - Top 10 Nexus bots by Calmar
+app.get('/api/nexus/top/calmar', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const limit = parseInt(req.query.limit) || 10
+    const bots = await database.getTopNexusBotsByCalmar(limit)
+    res.json({ bots })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// GET /api/nexus/top/sharpe - Top 10 Nexus bots by Sharpe
+app.get('/api/nexus/top/sharpe', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const limit = parseInt(req.query.limit) || 10
+    const bots = await database.getTopNexusBotsBySharpe(limit)
+    res.json({ bots })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// ============================================================================
+// Watchlist Endpoints
+// ============================================================================
+
+// GET /api/watchlists - Get user's watchlists
+app.get('/api/watchlists', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const userId = req.query.userId
+    if (!userId) {
+      return res.status(400).json({ error: 'userId query parameter required' })
+    }
+    const watchlists = await database.getWatchlistsByOwner(userId)
+    res.json({ watchlists })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// POST /api/watchlists/:id/bots - Add bot to watchlist
+app.post('/api/watchlists/:id/bots', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const { botId } = req.body
+    if (!botId) {
+      return res.status(400).json({ error: 'botId is required' })
+    }
+    const success = await database.addBotToWatchlist(req.params.id, botId)
+    res.json({ success })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// DELETE /api/watchlists/:id/bots/:botId - Remove bot from watchlist
+app.delete('/api/watchlists/:id/bots/:botId', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const success = await database.removeBotFromWatchlist(req.params.id, req.params.botId)
+    res.json({ success })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// ============================================================================
+// Portfolio Endpoints
+// ============================================================================
+
+// GET /api/portfolio - Get user's portfolio
+app.get('/api/portfolio', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const userId = req.query.userId
+    if (!userId) {
+      return res.status(400).json({ error: 'userId query parameter required' })
+    }
+    const portfolio = await database.getPortfolio(userId)
+    res.json({ portfolio })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// POST /api/portfolio/buy - Buy shares of a bot
+app.post('/api/portfolio/buy', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const { userId, botId, amount } = req.body
+    if (!userId || !botId || !amount) {
+      return res.status(400).json({ error: 'userId, botId, and amount are required' })
+    }
+    await database.buyBot(userId, botId, amount)
+    res.json({ success: true })
+  } catch (e) {
+    res.status(400).json({ error: String(e?.message || e) })
+  }
+})
+
+// POST /api/portfolio/sell - Sell shares of a bot
+app.post('/api/portfolio/sell', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const { userId, botId, amount } = req.body
+    if (!userId || !botId || !amount) {
+      return res.status(400).json({ error: 'userId, botId, and amount are required' })
+    }
+    await database.sellBot(userId, botId, amount)
+    res.json({ success: true })
+  } catch (e) {
+    res.status(400).json({ error: String(e?.message || e) })
+  }
+})
+
+// ============================================================================
+// User Preferences Endpoints
+// ============================================================================
+
+// GET /api/preferences - Get user preferences
+app.get('/api/preferences', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const userId = req.query.userId
+    if (!userId) {
+      return res.status(400).json({ error: 'userId query parameter required' })
+    }
+    const preferences = await database.getUserPreferences(userId)
+    res.json({ preferences })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// PUT /api/preferences - Update user preferences
+app.put('/api/preferences', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const { userId, theme, colorScheme, uiState } = req.body
+    if (!userId) {
+      return res.status(400).json({ error: 'userId is required' })
+    }
+    await database.updateUserPreferences(userId, {
+      theme,
+      colorScheme,
+      uiState: uiState ? JSON.stringify(uiState) : undefined,
+    })
+    res.json({ success: true })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// ============================================================================
+// Database Admin Stats (uses new DB instead of file-based aggregation)
+// ============================================================================
+
+// GET /api/db/admin/stats - Get aggregated stats from database
+app.get('/api/db/admin/stats', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const stats = await database.getAggregatedStats()
+    res.json({ stats })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// ============================================================================
+// Data Migration Endpoint (import localStorage data to database)
+// ============================================================================
+
+// POST /api/migrate/user-data - Import user data from localStorage format
+app.post('/api/migrate/user-data', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const { userId, savedBots, watchlists, dashboardPortfolio, uiState } = req.body
+
+    if (!userId) {
+      return res.status(400).json({ error: 'userId is required' })
+    }
+
+    let botsImported = 0
+    let watchlistsImported = 0
+
+    // Import bots
+    if (Array.isArray(savedBots)) {
+      for (const bot of savedBots) {
+        try {
+          // Check if bot already exists
+          const existing = await database.getBotById(bot.id, false)
+          if (!existing) {
+            await database.createBot({
+              ownerId: bot.builderId || userId,
+              name: bot.name || 'Untitled',
+              payload: typeof bot.payload === 'string' ? bot.payload : JSON.stringify(bot.payload),
+              visibility: bot.visibility || 'private',
+              tags: bot.tags,
+              fundSlot: bot.fundSlot,
+            })
+            botsImported++
+          }
+        } catch (err) {
+          console.warn(`Failed to import bot ${bot.id}:`, err.message)
+        }
+      }
+    }
+
+    // Import watchlists
+    if (Array.isArray(watchlists)) {
+      for (const wl of watchlists) {
+        // Watchlists are created by default, just add bots
+        for (const botId of (wl.botIds || [])) {
+          try {
+            await database.addBotToWatchlist(wl.id, botId)
+            watchlistsImported++
+          } catch (err) {
+            // Ignore - bot may not exist or already in watchlist
+          }
+        }
+      }
+    }
+
+    // Import UI preferences
+    if (uiState) {
+      await database.updateUserPreferences(userId, {
+        theme: uiState.themeMode,
+        colorScheme: uiState.colorTheme,
+        uiState: JSON.stringify(uiState),
+      })
+    }
+
+    res.json({
+      success: true,
+      imported: {
+        bots: botsImported,
+        watchlistBots: watchlistsImported,
+      },
+    })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// ============================================================================
+// Server-Side Backtest (IP Protection - payload never sent to non-owners)
+// ============================================================================
+
+// POST /api/bots/:id/run-backtest - Run backtest on server and save metrics
+app.post('/api/bots/:id/run-backtest', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const botId = req.params.id
+
+    // Get bot with payload (only works for bots in database)
+    const bot = await database.getBotById(botId, true) // includePayload = true
+    if (!bot) {
+      return res.status(404).json({ error: 'Bot not found' })
+    }
+
+    if (!bot.payload) {
+      return res.status(400).json({ error: 'Bot has no payload' })
+    }
+
+    console.log(`[Backtest] Running backtest for bot ${botId} (${bot.name})...`)
+    const startTime = Date.now()
+
+    // Run backtest on server
+    const result = await runBacktest(bot.payload, {
+      mode: req.body.mode || 'OC',
+      costBps: req.body.costBps ?? 0,
+    })
+
+    const elapsed = Date.now() - startTime
+    console.log(`[Backtest] Completed in ${elapsed}ms - CAGR: ${(result.metrics.cagr * 100).toFixed(2)}%`)
+
+    // Save metrics to database
+    await database.updateBotMetrics(botId, result.metrics)
+
+    // Return metrics (never the payload)
+    res.json({
+      success: true,
+      metrics: result.metrics,
+      equityCurve: result.equityCurve,
+      allocations: result.allocations,
+    })
+  } catch (e) {
+    console.error('[Backtest] Error:', e)
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// GET /api/bots/:id/metrics - Get cached metrics for a bot
+app.get('/api/bots/:id/metrics', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const botId = req.params.id
+
+    const bot = await database.getBotById(botId, false)
+    if (!bot) {
+      return res.status(404).json({ error: 'Bot not found' })
+    }
+
+    res.json({
+      botId,
+      metrics: bot.metrics || null,
+    })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
 const PORT = Number(process.env.PORT || 8787)
 app.listen(PORT, async () => {
   console.log(`[api] listening on http://localhost:${PORT}`)
