@@ -235,7 +235,142 @@ const fetchNexusBotsFromApi = async (): Promise<SavedBot[]> => {
   }
 }
 
-// Sync a bot to the database (for saving new bots or updates)
+// Load all bots for a user from the database
+const loadBotsFromApi = async (userId: UserId): Promise<SavedBot[]> => {
+  try {
+    const res = await fetch(`${API_BASE}/bots?userId=${userId}`)
+    if (!res.ok) return []
+    const { bots } = await res.json() as { bots: Array<{
+      id: string
+      ownerId: string
+      name: string
+      payload: string
+      visibility: string
+      tags: string | null
+      fundSlot: number | null
+      createdAt: string
+      metrics?: {
+        cagr?: number
+        maxDrawdown?: number
+        calmarRatio?: number
+        sharpeRatio?: number
+        sortinoRatio?: number
+        treynorRatio?: number
+        volatility?: number
+        winRate?: number
+        avgTurnover?: number
+        avgHoldings?: number
+      } | null
+    }> }
+    return bots.map((bot) => {
+      const rawPayload = bot.payload ? JSON.parse(bot.payload) as FlowNode : {
+        id: `node-${Date.now()}`,
+        kind: 'basic' as const,
+        title: 'Basic',
+        children: { next: [null] },
+        weighting: 'equal' as const,
+        collapsed: false,
+      }
+      const ensured = ensureSlots(rawPayload)
+      const payload = hasLegacyIdsOrDuplicates(ensured) ? ensureSlots(regenerateIds(ensured)) : ensured
+      return {
+        id: bot.id,
+        name: bot.name,
+        builderId: bot.ownerId as UserId,
+        payload,
+        visibility: (bot.visibility === 'nexus' || bot.visibility === 'nexus_eligible' ? 'community' : 'private') as BotVisibility,
+        tags: bot.tags ? JSON.parse(bot.tags) : undefined,
+        createdAt: new Date(bot.createdAt).getTime(),
+        fundSlot: bot.fundSlot ?? undefined,
+        backtestResult: bot.metrics ? {
+          cagr: bot.metrics.cagr ?? 0,
+          maxDrawdown: bot.metrics.maxDrawdown ?? 0,
+          calmar: bot.metrics.calmarRatio ?? 0,
+          sharpe: bot.metrics.sharpeRatio ?? 0,
+          sortino: bot.metrics.sortinoRatio ?? 0,
+          treynor: bot.metrics.treynorRatio ?? 0,
+          volatility: bot.metrics.volatility ?? 0,
+          winRate: bot.metrics.winRate ?? 0,
+          avgTurnover: bot.metrics.avgTurnover ?? 0,
+          avgHoldings: bot.metrics.avgHoldings ?? 0,
+        } : undefined,
+      } as SavedBot
+    })
+  } catch (err) {
+    console.warn('[API] Failed to load bots from API:', err)
+    return []
+  }
+}
+
+// Save a new bot to the database
+const createBotInApi = async (userId: UserId, bot: SavedBot): Promise<string | null> => {
+  try {
+    const payload = JSON.stringify(bot.payload)
+    const tags = bot.tags || []
+    const visibility = bot.tags?.includes('Nexus') ? 'nexus' : bot.tags?.includes('Nexus Eligible') ? 'nexus_eligible' : 'private'
+
+    const res = await fetch(`${API_BASE}/bots`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: bot.id,
+        ownerId: userId,
+        name: bot.name,
+        payload,
+        visibility,
+        tags,
+        fundSlot: bot.fundSlot,
+      }),
+    })
+    if (!res.ok) return null
+    const { id } = await res.json() as { id: string }
+    return id
+  } catch (err) {
+    console.warn('[API] Failed to create bot:', err)
+    return null
+  }
+}
+
+// Update an existing bot in the database
+const updateBotInApi = async (userId: UserId, bot: SavedBot): Promise<boolean> => {
+  try {
+    const payload = JSON.stringify(bot.payload)
+    const tags = bot.tags || []
+    const visibility = bot.tags?.includes('Nexus') ? 'nexus' : bot.tags?.includes('Nexus Eligible') ? 'nexus_eligible' : 'private'
+
+    const res = await fetch(`${API_BASE}/bots/${bot.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ownerId: userId,
+        name: bot.name,
+        payload,
+        visibility,
+        tags,
+        fundSlot: bot.fundSlot,
+      }),
+    })
+    return res.ok
+  } catch (err) {
+    console.warn('[API] Failed to update bot:', err)
+    return false
+  }
+}
+
+// Delete a bot from the database
+const deleteBotFromApi = async (userId: UserId, botId: string): Promise<boolean> => {
+  try {
+    const res = await fetch(`${API_BASE}/bots/${botId}?ownerId=${userId}`, {
+      method: 'DELETE',
+    })
+    return res.ok
+  } catch (err) {
+    console.warn('[API] Failed to delete bot:', err)
+    return false
+  }
+}
+
+// Sync a bot to the database (for saving new bots or updates) - LEGACY, use createBotInApi/updateBotInApi
 const syncBotToApi = async (userId: UserId, bot: SavedBot): Promise<boolean> => {
   try {
     const payload = JSON.stringify(bot.payload)
@@ -7535,10 +7670,41 @@ function App() {
   const [backtestResult, setBacktestResult] = useState<BacktestResult | null>(null)
   const [backtestFocusNodeId, setBacktestFocusNodeId] = useState<string | null>(null)
 
+  // Load bots from API on mount/user change (database is source of truth)
+  const [botsLoadedFromApi, setBotsLoadedFromApi] = useState(false)
   useEffect(() => {
     if (!userId) return
-    saveUserData(userId, { savedBots, watchlists, callChains, ui: uiState, dashboardPortfolio })
-  }, [userId, savedBots, watchlists, callChains, uiState, dashboardPortfolio])
+    setBotsLoadedFromApi(false)
+    loadBotsFromApi(userId).then((apiBots) => {
+      if (apiBots.length > 0) {
+        setSavedBots(apiBots)
+      } else {
+        // If no bots in API, check localStorage for migration
+        const localData = loadUserData(userId)
+        if (localData.savedBots.length > 0) {
+          // Migrate localStorage bots to API
+          console.log('[Migration] Migrating', localData.savedBots.length, 'bots to API...')
+          Promise.all(localData.savedBots.map(bot => createBotInApi(userId, bot))).then(() => {
+            console.log('[Migration] Bots migrated successfully')
+            setSavedBots(localData.savedBots)
+          })
+        }
+      }
+      setBotsLoadedFromApi(true)
+    }).catch((err) => {
+      console.warn('[API] Failed to load bots, using localStorage fallback:', err)
+      setBotsLoadedFromApi(true)
+    })
+  }, [userId])
+
+  // Save non-bot user data to localStorage (UI state, watchlists, etc.)
+  // Bots are now saved directly to API, not localStorage
+  useEffect(() => {
+    if (!userId) return
+    // Save everything except savedBots - bots go to database only
+    const dataWithoutBots = { savedBots: [], watchlists, callChains, ui: uiState, dashboardPortfolio }
+    saveUserData(userId, dataWithoutBots)
+  }, [userId, watchlists, callChains, uiState, dashboardPortfolio])
 
   // Refresh cross-user Nexus bots when user changes or their own savedBots change
   // (their saved bots may now have Nexus tag)
@@ -7669,6 +7835,10 @@ function App() {
   const [callbackNodesCollapsed, setCallbackNodesCollapsed] = useState(true)
   const [customIndicatorsCollapsed, setCustomIndicatorsCollapsed] = useState(true)
   const [communityTopSort, setCommunityTopSort] = useState<CommunitySort>({ key: 'oosCagr', dir: 'desc' })
+  const [communitySearchFilters, setCommunitySearchFilters] = useState<Array<{ id: string; mode: 'builder' | 'cagr' | 'sharpe' | 'calmar' | 'maxdd'; comparison: 'greater' | 'less'; value: string }>>([
+    { id: 'filter-0', mode: 'builder', comparison: 'greater', value: '' }
+  ])
+  const [communitySearchSort, setCommunitySearchSort] = useState<CommunitySort>({ key: 'oosCagr', dir: 'desc' })
 
   // Dashboard state
   const [dashboardTimePeriod, setDashboardTimePeriod] = useState<DashboardTimePeriod>('1Y')
@@ -8643,7 +8813,7 @@ function App() {
   const activeSavedBotId = activeBot?.savedBotId
 
   const handleSaveToWatchlist = useCallback(
-    (watchlistNameOrId: string) => {
+    async (watchlistNameOrId: string) => {
       if (!current) return
       if (!userId) return
       const watchlistId = resolveWatchlistId(watchlistNameOrId)
@@ -8653,6 +8823,7 @@ function App() {
       let savedBotId = activeSavedBotId
 
       if (!savedBotId) {
+        // Create new bot - save to API first
         savedBotId = `saved-${newId()}`
         const entry: SavedBot = {
           id: savedBotId,
@@ -8662,13 +8833,29 @@ function App() {
           visibility: 'private',
           createdAt: now,
         }
+        // Save to API first (database is source of truth)
+        const createdId = await createBotInApi(userId, entry)
+        if (createdId) {
+          savedBotId = createdId // Use server-assigned ID if different
+          entry.id = createdId
+        }
         setSavedBots((prev) => [entry, ...prev])
         setBots((prev) => prev.map((b) => (b.id === activeBotId ? { ...b, savedBotId } : b)))
       } else {
+        // Update existing bot - save to API first
+        const existingBot = savedBots.find((b) => b.id === savedBotId)
+        const updatedBot: SavedBot = {
+          ...(existingBot || { id: savedBotId, createdAt: now, visibility: 'private' as const }),
+          payload,
+          name: current.title || existingBot?.name || 'Algo',
+          builderId: existingBot?.builderId ?? userId,
+        }
+        // Save to API first
+        await updateBotInApi(userId, updatedBot)
         setSavedBots((prev) =>
           prev.map((b) =>
             b.id === savedBotId
-              ? { ...b, payload, name: current.title || b.name || 'Algo', builderId: b.builderId ?? userId }
+              ? updatedBot
               : b,
           ),
         )
@@ -8681,7 +8868,7 @@ function App() {
         setAnalyzeBacktests((prev) => ({ ...prev, [savedBotId]: { status: 'idle' } }))
       }
     },
-    [current, activeBotId, activeSavedBotId, resolveWatchlistId, addBotToWatchlist, userId],
+    [current, activeBotId, activeSavedBotId, resolveWatchlistId, addBotToWatchlist, userId, savedBots],
   )
 
   const handleConfirmAddToWatchlist = useCallback(
@@ -8712,7 +8899,7 @@ function App() {
           })
 
           if (res.ok) {
-            const { metrics, equityCurve, allocations: serverAllocations } = await res.json() as {
+            const { metrics, equityCurve, benchmarkCurve, allocations: serverAllocations } = await res.json() as {
               metrics: {
                 cagr: number
                 maxDrawdown: number
@@ -8729,11 +8916,17 @@ function App() {
                 tradingDays: number
               }
               equityCurve?: { date: string; equity: number }[]
+              benchmarkCurve?: { date: string; equity: number }[]
               allocations?: { date: string; alloc: Record<string, number> }[]
             }
             // Convert equity curve from server format to frontend format
             // Convert date strings to Unix timestamps (seconds) for Lightweight Charts
             const points: EquityPoint[] = (equityCurve || []).map((p) => ({
+              time: (new Date(p.date).getTime() / 1000) as UTCTimestamp,
+              value: p.equity,
+            }))
+            // Convert benchmark curve (SPY) to frontend format
+            const benchmarkPoints: EquityPoint[] = (benchmarkCurve || []).map((p) => ({
               time: (new Date(p.date).getTime() / 1000) as UTCTimestamp,
               value: p.equity,
             }))
@@ -8763,6 +8956,7 @@ function App() {
                 status: 'done',
                 result: {
                   points,
+                  benchmarkPoints,
                   drawdownPoints,
                   markers: [],
                   metrics: {
@@ -8913,6 +9107,7 @@ function App() {
               }
 
               console.log('[Eligibility] About to update tags, passesAll:', passesAll, 'isInFundZone:', isInFundZone, 'isStaleRef:', isStaleRef)
+              let updatedBotForSync: SavedBot | null = null
               setSavedBots(prev => prev.map(b => {
                 if (b.id !== bot.id) return b
                 const currentTags = b.tags || []
@@ -8929,7 +9124,8 @@ function App() {
                     // Ensure Private tag exists, add Nexus Eligible
                     const baseTags = currentTags.filter(t => t !== 'Nexus' && t !== 'Atlas')
                     const newTags = hasPrivate ? [...baseTags, 'Nexus Eligible'] : ['Private', ...baseTags, 'Nexus Eligible']
-                    return { ...b, tags: newTags }
+                    updatedBotForSync = { ...b, tags: newTags }
+                    return updatedBotForSync
                   }
                   console.log('[Eligibility] Condition not met')
                 } else {
@@ -8939,11 +9135,16 @@ function App() {
                     const baseTags = currentTags.filter(t => t !== 'Nexus' && t !== 'Nexus Eligible' && t !== 'Private' && t !== 'Atlas')
                     const newTags = ['Private', ...baseTags]
                     console.log('[Eligibility] Removing Nexus tags, new tags:', newTags)
-                    return { ...b, tags: newTags }
+                    updatedBotForSync = { ...b, tags: newTags }
+                    return updatedBotForSync
                   }
                 }
                 return b
               }))
+              // Sync tag changes to API
+              if (updatedBotForSync && userId) {
+                updateBotInApi(userId, updatedBotForSync).catch(err => console.warn('[API] Failed to sync bot tags:', err))
+              }
             }
           } catch (eligErr) {
             console.warn('Failed to check eligibility:', eligErr)
@@ -9150,10 +9351,14 @@ function App() {
     [setClipboard],
   )
 
-  const handleDeleteSaved = useCallback((id: string) => {
+  const handleDeleteSaved = useCallback(async (id: string) => {
+    // Delete from API first (database is source of truth)
+    if (userId) {
+      await deleteBotFromApi(userId, id)
+    }
     setSavedBots((prev) => prev.filter((b) => b.id !== id))
     setWatchlists((prev) => prev.map((w) => ({ ...w, botIds: w.botIds.filter((x) => x !== id) })))
-  }, [])
+  }, [userId])
 
   const handleOpenSaved = useCallback(
     (bot: SavedBot) => {
@@ -10516,24 +10721,78 @@ function App() {
                   }
                 })
 
-              // Top 10 by CAGR (descending)
+              // Top 100 by CAGR (descending)
               const topByCagr = [...communityBotRows]
                 .sort((a, b) => b.oosCagr - a.oosCagr)
-                .slice(0, 10)
+                .slice(0, 100)
 
-              // Top 10 by Calmar (CAGR / MaxDD) - we'll compute Calmar from existing metrics
+              // Top 100 by Calmar (CAGR / MaxDD) - we'll compute Calmar from existing metrics
               const topByCalmar = [...communityBotRows]
                 .map((r) => ({
                   ...r,
                   calmar: r.oosMaxdd !== 0 ? Math.abs(r.oosCagr / r.oosMaxdd) : 0,
                 }))
                 .sort((a, b) => b.calmar - a.calmar)
-                .slice(0, 10)
+                .slice(0, 100)
 
-              // Top 10 by Sharpe (descending)
+              // Top 100 by Sharpe (descending)
               const topBySharpe = [...communityBotRows]
                 .sort((a, b) => b.oosSharpe - a.oosSharpe)
-                .slice(0, 10)
+                .slice(0, 100)
+
+              // Get unique builder IDs for autocomplete
+              const allBuilderIds = [...new Set(communityBotRows.map((r) => {
+                const builderTag = r.tags.find((t) => t.startsWith('Builder: '))
+                return builderTag?.replace('Builder: ', '') ?? ''
+              }).filter(Boolean))]
+
+              // Search results - filter by multiple criteria (AND logic)
+              const searchedBots = (() => {
+                // Check if any filter has a value
+                const activeFilters = communitySearchFilters.filter(f => f.value.trim())
+                if (activeFilters.length === 0) return []
+
+                // Start with all bots, add calmar
+                let result = communityBotRows.map((r) => ({
+                  ...r,
+                  calmar: r.oosMaxdd !== 0 ? Math.abs(r.oosCagr / r.oosMaxdd) : 0,
+                }))
+
+                // Apply each filter (AND logic)
+                for (const filter of activeFilters) {
+                  const searchVal = filter.value.trim().toLowerCase()
+                  const isGreater = filter.comparison === 'greater'
+
+                  if (filter.mode === 'builder') {
+                    result = result.filter((r) => {
+                      const builderTag = r.tags.find((t) => t.startsWith('Builder: '))
+                      const builderId = builderTag?.replace('Builder: ', '').toLowerCase() ?? ''
+                      return builderId.includes(searchVal) || r.name.toLowerCase().includes(searchVal)
+                    })
+                  } else {
+                    const threshold = parseFloat(filter.value)
+                    if (isNaN(threshold)) continue
+
+                    switch (filter.mode) {
+                      case 'cagr':
+                        result = result.filter((r) => isGreater ? r.oosCagr * 100 >= threshold : r.oosCagr * 100 <= threshold)
+                        break
+                      case 'sharpe':
+                        result = result.filter((r) => isGreater ? r.oosSharpe >= threshold : r.oosSharpe <= threshold)
+                        break
+                      case 'calmar':
+                        result = result.filter((r) => isGreater ? r.calmar >= threshold : r.calmar <= threshold)
+                        break
+                      case 'maxdd':
+                        // MaxDD is typically negative, so we compare absolute values
+                        result = result.filter((r) => isGreater ? Math.abs(r.oosMaxdd * 100) >= threshold : Math.abs(r.oosMaxdd * 100) <= threshold)
+                        break
+                    }
+                  }
+                }
+
+                return result
+              })()
 
               const sortRows = (rows: CommunityBotRow[], sort: CommunitySort): CommunityBotRow[] => {
                 const dir = sort.dir === 'asc' ? 1 : -1
@@ -10871,36 +11130,155 @@ function App() {
                     <Card className="flex-[2] flex items-center justify-center p-4 border-2">
                       <div className="font-black text-center">News and Select Bots</div>
                     </Card>
-                    <Card className="flex-1 flex items-center justify-center p-4 border-2">
-                      <div className="font-bold text-center text-muted">Search for other community bots by metrics or by Builder's names.</div>
+                    <Card className="flex-1 flex flex-col p-3 border-2">
+                      <div className="font-bold text-center mb-2">Search Nexus Strategies</div>
+                      <div className="flex flex-col gap-2 mb-2">
+                        {communitySearchFilters.map((filter, idx) => (
+                          <div key={filter.id} className="flex gap-2 items-center">
+                            <select
+                              className="h-8 px-2 rounded border border-border bg-background text-sm"
+                              value={filter.mode}
+                              onChange={(e) => {
+                                setCommunitySearchFilters(prev => prev.map((f, i) =>
+                                  i === idx ? { ...f, mode: e.target.value as typeof filter.mode, value: '' } : f
+                                ))
+                              }}
+                            >
+                              <option value="builder">Builder Name</option>
+                              <option value="cagr">CAGR</option>
+                              <option value="sharpe">Sharpe</option>
+                              <option value="calmar">Calmar</option>
+                              <option value="maxdd">Max Drawdown</option>
+                            </select>
+                            {filter.mode !== 'builder' && (
+                              <select
+                                className="h-8 px-2 rounded border border-border bg-background text-sm"
+                                value={filter.comparison}
+                                onChange={(e) => {
+                                  setCommunitySearchFilters(prev => prev.map((f, i) =>
+                                    i === idx ? { ...f, comparison: e.target.value as 'greater' | 'less' } : f
+                                  ))
+                                }}
+                              >
+                                <option value="greater">Greater Than</option>
+                                <option value="less">Less Than</option>
+                              </select>
+                            )}
+                            {filter.mode === 'builder' ? (
+                              <div className="flex-1 relative">
+                                <Input
+                                  type="text"
+                                  list={`builder-list-${filter.id}`}
+                                  placeholder="Search builder..."
+                                  value={filter.value}
+                                  onChange={(e) => {
+                                    setCommunitySearchFilters(prev => prev.map((f, i) =>
+                                      i === idx ? { ...f, value: e.target.value } : f
+                                    ))
+                                  }}
+                                  className="h-8 w-full"
+                                />
+                                <datalist id={`builder-list-${filter.id}`}>
+                                  {allBuilderIds.map((id) => (
+                                    <option key={id} value={id} />
+                                  ))}
+                                </datalist>
+                              </div>
+                            ) : (
+                              <Input
+                                type="number"
+                                placeholder={
+                                  filter.mode === 'cagr'
+                                    ? 'CAGR %'
+                                    : filter.mode === 'sharpe'
+                                      ? 'Sharpe'
+                                      : filter.mode === 'calmar'
+                                        ? 'Calmar'
+                                        : 'Max DD %'
+                                }
+                                value={filter.value}
+                                onChange={(e) => {
+                                  setCommunitySearchFilters(prev => prev.map((f, i) =>
+                                    i === idx ? { ...f, value: e.target.value } : f
+                                  ))
+                                }}
+                                className="flex-1 h-8"
+                              />
+                            )}
+                            {communitySearchFilters.length > 1 && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-8 w-8 p-0 text-muted hover:text-danger"
+                                onClick={() => {
+                                  setCommunitySearchFilters(prev => prev.filter((_, i) => i !== idx))
+                                }}
+                                title="Remove filter"
+                              >
+                                ✕
+                              </Button>
+                            )}
+                          </div>
+                        ))}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 text-xs self-start"
+                          onClick={() => {
+                            setCommunitySearchFilters(prev => [
+                              ...prev,
+                              { id: `filter-${Date.now()}`, mode: 'cagr', comparison: 'greater', value: '' }
+                            ])
+                          }}
+                        >
+                          + Add Filter
+                        </Button>
+                      </div>
+                      <div className="flex-1 overflow-auto">
+                        {communitySearchFilters.some(f => f.value.trim()) ? (
+                          searchedBots.length > 0 ? (
+                            renderBotCards(searchedBots.slice(0, 20), communitySearchSort, setCommunitySearchSort, {
+                              emptyMessage: 'No matching bots found.',
+                            })
+                          ) : (
+                            <div className="text-muted text-center p-3">
+                              No bots match these criteria.
+                            </div>
+                          )
+                        ) : (
+                          <div className="text-muted text-center p-3">
+                            Enter filter values to search.
+                          </div>
+                        )}
+                      </div>
                     </Card>
                   </Card>
 
-                  {/* Right Column - Top Community Bots */}
+                  {/* Right Column - Top Nexus Strategies */}
                   <Card className="flex flex-col p-4">
-                    <div className="font-black text-center mb-4">Top Community Bots</div>
+                    <div className="font-black text-center mb-4">Top Nexus Strategies</div>
                     <div className="flex flex-col gap-4 flex-1">
                       <Card className="flex-1 flex flex-col p-3 border-2">
-                        <div className="font-bold text-center mb-2">Top community bots by CAGR</div>
-                        <div className="flex-1 overflow-auto">
+                        <div className="font-bold text-center mb-2">Top Nexus Strategies by CAGR</div>
+                        <div className="flex-1 overflow-auto max-h-[400px]">
                           {renderBotCards(topByCagr, communityTopSort, setCommunityTopSort, {
-                            emptyMessage: 'No community bots with backtest data.',
+                            emptyMessage: 'No Nexus strategies with backtest data.',
                           })}
                         </div>
                       </Card>
                       <Card className="flex-1 flex flex-col p-3 border-2">
-                        <div className="font-bold text-center mb-2">Top community bots by Calmar Ratio</div>
-                        <div className="flex-1 overflow-auto">
+                        <div className="font-bold text-center mb-2">Top Nexus Strategies by Calmar Ratio</div>
+                        <div className="flex-1 overflow-auto max-h-[400px]">
                           {renderBotCards(topByCalmar, communityTopSort, setCommunityTopSort, {
-                            emptyMessage: 'No community bots with backtest data.',
+                            emptyMessage: 'No Nexus strategies with backtest data.',
                           })}
                         </div>
                       </Card>
                       <Card className="flex-1 flex flex-col p-3 border-2">
-                        <div className="font-bold text-center mb-2">Top community bots by Sharpe Ratio</div>
-                        <div className="flex-1 overflow-auto">
+                        <div className="font-bold text-center mb-2">Top Nexus Strategies by Sharpe Ratio</div>
+                        <div className="flex-1 overflow-auto max-h-[400px]">
                           {renderBotCards(topBySharpe, communityTopSort, setCommunityTopSort, {
-                            emptyMessage: 'No community bots with backtest data.',
+                            emptyMessage: 'No Nexus strategies with backtest data.',
                           })}
                         </div>
                       </Card>

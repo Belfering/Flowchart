@@ -1073,6 +1073,7 @@ app.post('/api/bots/:id/run-backtest', async (req, res) => {
       success: true,
       metrics: result.metrics,
       equityCurve: result.equityCurve,
+      benchmarkCurve: result.benchmarkCurve,
       allocations: result.allocations,
     })
   } catch (e) {
