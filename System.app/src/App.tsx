@@ -198,6 +198,8 @@ const defaultUiState = (): UserUiState => ({
   theme: loadInitialThemeMode(),
   colorTheme: 'slate',
   analyzeCollapsedByBotId: {},
+  communityCollapsedByBotId: {},
+  analyzeBotCardTab: {},
   analyzeFilterWatchlistId: null,
   communitySelectedWatchlistId: null,
   communityWatchlistSlot1Id: null,
@@ -567,6 +569,8 @@ type UserUiState = {
   theme: ThemeMode
   colorTheme: ColorTheme
   analyzeCollapsedByBotId: Record<string, boolean>
+  communityCollapsedByBotId: Record<string, boolean>
+  analyzeBotCardTab: Record<string, 'overview' | 'advanced'>
   analyzeFilterWatchlistId: string | null
   communitySelectedWatchlistId: string | null
   communityWatchlistSlot1Id: string | null
@@ -803,15 +807,16 @@ function CandlesChart({ candles }: { candles: CandlestickData[] }) {
     seriesRef.current = series
 
     const ro = new ResizeObserver(() => {
+      if (!chartRef.current) return // Guard against disposed chart
       chart.applyOptions({ width: Math.floor(innerWidth()) })
     })
     ro.observe(el)
 
     return () => {
       ro.disconnect()
-      chart.remove()
-      chartRef.current = null
+      chartRef.current = null // Set to null BEFORE removing to prevent race
       seriesRef.current = null
+      chart.remove()
     }
   }, [])
 
@@ -1095,12 +1100,6 @@ type CommunityBotRow = {
   oosSharpe: number
 }
 
-const nextCommunitySort = (prev: CommunitySort, key: CommunitySortKey): CommunitySort => {
-  if (prev.key === key) return { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
-  const dir: SortDir = key === 'name' || key === 'tags' ? 'asc' : 'desc'
-  return { key, dir }
-}
-
 const toUtcSeconds = (t: Time | null | undefined): UTCTimestamp | null => {
   if (t == null) return null
   if (typeof t === 'number' && Number.isFinite(t)) return t as UTCTimestamp
@@ -1359,21 +1358,26 @@ function EquityChart({
     cursorSegRef.current = cursorSeg
     markersRef.current = createSeriesMarkers(series, [])
 
-    const overlay = document.createElement('div')
-    overlay.className = 'chart-hover-overlay'
-    el.appendChild(overlay)
-    overlayRef.current = overlay
+    // Only create overlay if showCursorStats is true
+    if (showCursorStats) {
+      const overlay = document.createElement('div')
+      overlay.className = 'chart-hover-overlay'
+      el.appendChild(overlay)
+      overlayRef.current = overlay
 
-    // Always show overlay in center with stats
-    overlay.style.display = 'block'
-    overlay.innerHTML = `<div class="chart-hover-date">Hover to see stats</div>
+      // Always show overlay in center with stats
+      overlay.style.display = 'block'
+      overlay.innerHTML = `<div class="chart-hover-date">Hover to see stats</div>
 <div class="chart-hover-stats">
   <div class="chart-hover-stat"><span class="chart-hover-label">CAGR</span> <span class="chart-hover-value">—</span></div>
   <div class="chart-hover-stat"><span class="chart-hover-label">Max DD</span> <span class="chart-hover-value">—</span></div>
 </div>`
+    }
 
     chart.subscribeCrosshairMove((param: MouseEventParams<Time>) => {
       if (!showCursorStats) return
+      const overlay = overlayRef.current
+      if (!overlay) return
       const time = toUtcSeconds(param.time)
       if (!time) {
         // Keep overlay visible but show placeholder when not hovering
@@ -1407,6 +1411,7 @@ function EquityChart({
     chart.timeScale().subscribeVisibleTimeRangeChange(handleVisibleRangeChange)
 
     const ro = new ResizeObserver(() => {
+      if (!chartRef.current) return // Guard against disposed chart
       chart.applyOptions({ width: Math.floor(innerWidth()) })
       const vr = visibleRangeRef.current
       if (vr) {
@@ -1422,7 +1427,7 @@ function EquityChart({
     return () => {
       ro.disconnect()
       try {
-        overlay.remove()
+        overlayRef.current?.remove()
       } catch {
         // ignore
       }
@@ -1613,6 +1618,7 @@ function DrawdownChart({
     chart.timeScale().subscribeVisibleTimeRangeChange(handleVisibleRangeChange)
 
     const ro = new ResizeObserver(() => {
+      if (!chartRef.current) return // Guard against disposed chart
       chart.applyOptions({ width: Math.floor(innerWidth()) })
       const vr = visibleRangeRef.current
       if (vr) {
@@ -8442,47 +8448,89 @@ function App() {
 
         // Auto eligibility tagging (only for regular users, not admin)
         if (userId && userId !== 'admin' && result?.metrics) {
+          console.log('[Eligibility] Checking bot:', bot.name, 'userId:', userId)
           try {
             // Fetch eligibility requirements
             const eligRes = await fetch('/api/admin/eligibility')
+            console.log('[Eligibility] Fetch status:', eligRes.status)
             if (eligRes.ok) {
               const { eligibilityRequirements } = await eligRes.json() as { eligibilityRequirements: EligibilityRequirement[] }
+              console.log('[Eligibility] Requirements:', eligibilityRequirements)
 
               // Check if bot is already in a Fund zone
               const isInFundZone = Object.values(uiState.fundZones).includes(bot.id)
+              console.log('[Eligibility] isInFundZone:', isInFundZone)
 
               // Check live months requirement
               const liveMonthsReq = eligibilityRequirements.find(r => r.type === 'live_months')
               const botAgeMonths = (Date.now() - bot.createdAt) / (1000 * 60 * 60 * 24 * 30)
               const passesLiveMonths = !liveMonthsReq || botAgeMonths >= liveMonthsReq.value
+              console.log('[Eligibility] passesLiveMonths:', passesLiveMonths)
 
               // Check metric requirements
+              // Metrics stored as decimals but entered/displayed as percentages
+              const percentMetrics = ['cagr', 'maxDrawdown', 'vol', 'winRate', 'avgTurnover']
               const metricReqs = eligibilityRequirements.filter(r => r.type === 'metric')
               const passesMetrics = metricReqs.every(req => {
                 const metricValue = result.metrics[req.metric as keyof typeof result.metrics]
+                console.log('[Eligibility] Checking metric:', req.metric, 'value:', metricValue, 'reqValue:', req.value, 'compareValue:', percentMetrics.includes(req.metric || '') ? req.value / 100 : req.value)
                 if (typeof metricValue !== 'number' || !Number.isFinite(metricValue)) return false
-                if (req.comparison === 'at_least') return metricValue >= req.value
-                if (req.comparison === 'at_most') return metricValue <= req.value
+                // Convert requirement value to decimal for percent-based metrics
+                const compareValue = percentMetrics.includes(req.metric || '') ? req.value / 100 : req.value
+                const passes = req.comparison === 'at_least' ? metricValue >= compareValue : req.comparison === 'at_most' ? metricValue <= compareValue : true
+                console.log('[Eligibility] Metric passes:', passes)
+                if (req.comparison === 'at_least') return metricValue >= compareValue
+                if (req.comparison === 'at_most') return metricValue <= compareValue
                 return true
               })
 
               const passesAll = passesLiveMonths && passesMetrics
+              console.log('[Eligibility] passesAll:', passesAll)
 
+              // Detect stale fund zone reference (bot in zone but missing Nexus tag)
+              const botTags = savedBots.find(b => b.id === bot.id)?.tags || []
+              const hasNexusTag = botTags.includes('Nexus')
+              const isStaleRef = isInFundZone && !hasNexusTag
+              if (isStaleRef) {
+                // Clear the stale fund zone reference
+                setUiState(prev => {
+                  const newFundZones = { ...prev.fundZones }
+                  for (const key of Object.keys(newFundZones) as (keyof FundZones)[]) {
+                    if (newFundZones[key] === bot.id) {
+                      newFundZones[key] = null
+                    }
+                  }
+                  return { ...prev, fundZones: newFundZones }
+                })
+              }
+
+              console.log('[Eligibility] About to update tags, passesAll:', passesAll, 'isInFundZone:', isInFundZone, 'isStaleRef:', isStaleRef)
               setSavedBots(prev => prev.map(b => {
                 if (b.id !== bot.id) return b
                 const currentTags = b.tags || []
                 const hasNexus = currentTags.includes('Nexus')
                 const hasNexusEligible = currentTags.includes('Nexus Eligible')
+                const hasPrivate = currentTags.includes('Private')
+                console.log('[Eligibility] Bot found, currentTags:', currentTags, 'hasNexus:', hasNexus, 'hasNexusEligible:', hasNexusEligible)
 
                 if (passesAll) {
-                  // If passes and not in fund zone, add Nexus Eligible (if not already Nexus)
-                  if (!isInFundZone && !hasNexus && !hasNexusEligible) {
-                    return { ...b, tags: [...currentTags, 'Nexus Eligible'] }
+                  console.log('[Eligibility] passesAll=true, checking add condition...')
+                  // If passes and not in fund zone (or stale ref), add Nexus Eligible alongside Private
+                  if ((!isInFundZone || isStaleRef) && !hasNexus && !hasNexusEligible) {
+                    console.log('[Eligibility] ADDING Nexus Eligible tag!')
+                    // Ensure Private tag exists, add Nexus Eligible
+                    const baseTags = currentTags.filter(t => t !== 'Nexus' && t !== 'Atlas')
+                    const newTags = hasPrivate ? [...baseTags, 'Nexus Eligible'] : ['Private', ...baseTags, 'Nexus Eligible']
+                    return { ...b, tags: newTags }
                   }
+                  console.log('[Eligibility] Condition not met')
                 } else {
-                  // If fails, remove both Nexus and Nexus Eligible tags
+                  // If fails, remove Nexus Eligible; if was Nexus, demote to Private
                   if (hasNexus || hasNexusEligible) {
-                    const newTags = currentTags.filter(t => t !== 'Nexus' && t !== 'Nexus Eligible')
+                    // Remove Nexus and Nexus Eligible, ensure Private exists
+                    const baseTags = currentTags.filter(t => t !== 'Nexus' && t !== 'Nexus Eligible' && t !== 'Private' && t !== 'Atlas')
+                    const newTags = ['Private', ...baseTags]
+                    console.log('[Eligibility] Removing Nexus tags, new tags:', newTags)
                     return { ...b, tags: newTags }
                   }
                 }
@@ -9462,9 +9510,12 @@ function App() {
                             {collapsed ? 'Expand' : 'Collapse'}
                           </Button>
                           <div className="font-black">{b.name}</div>
-                          <Badge variant={b.visibility === 'community' ? 'default' : 'accent'}>
-                            {b.visibility === 'community' ? 'Community' : 'Private'}
+                          <Badge variant={b.tags?.includes('Nexus') ? 'default' : b.tags?.includes('Atlas') ? 'default' : 'accent'}>
+                            {b.tags?.includes('Nexus') ? 'Nexus' : b.tags?.includes('Atlas') ? 'Atlas' : 'Private'}
                           </Badge>
+                          {b.tags?.includes('Nexus Eligible') && (
+                            <Badge variant="secondary">Nexus Eligible</Badge>
+                          )}
                           <Badge variant="default">Builder: {b.builderId}</Badge>
                           <div className="flex gap-1.5 flex-wrap">
                             {tags.map((w) => (
@@ -9503,408 +9554,440 @@ function App() {
                         </div>
 
                         {!collapsed ? (
-                          <div className="grid w-full max-w-full grid-cols-[minmax(0,1.35fr)_minmax(0,0.85fr)_minmax(0,1.15fr)] gap-2.5 items-stretch overflow-x-hidden">
-                            <div className="saved-item grid grid-cols-1 gap-3.5 h-full w-full min-w-0 overflow-hidden items-stretch justify-items-stretch">
-                              {analyzeState?.status === 'loading' ? (
-                              <div className="text-muted">Running backtest…</div>
-                            ) : analyzeState?.status === 'error' ? (
-                              <div className="grid gap-2">
-                                <div className="text-danger font-extrabold">{analyzeState.error ?? 'Failed to run backtest.'}</div>
-                                <Button onClick={() => runAnalyzeBacktest(b)}>Retry</Button>
-                              </div>
-                            ) : analyzeState?.status === 'done' ? (
-                              <div className="grid grid-cols-1 gap-2.5 min-w-0 w-full">
-                                <div className="font-black text-center w-full">Base Stats</div>
-                                <div className="base-stats-grid w-full self-stretch grid grid-cols-1 grid-rows-[auto_auto_auto] gap-3">
-                                  {(() => {
-                                    // Get investment data for this bot from dashboard portfolio
-                                    const investment = dashboardInvestmentsWithPnl.find((inv) => inv.botId === b.id)
-                                    const isInvested = !!investment
-                                    const amountInvested = investment?.costBasis ?? 0
-                                    const currentValue = investment?.currentValue ?? 0
-                                    const pnlPct = investment?.pnlPercent ?? 0
+                          <div className="flex flex-col gap-2.5 w-full">
+                            {/* Tab Navigation */}
+                            <div className="flex gap-2 border-b border-border pb-2">
+                              <Button
+                                size="sm"
+                                variant={(uiState.analyzeBotCardTab[b.id] ?? 'overview') === 'overview' ? 'default' : 'outline'}
+                                onClick={() => setUiState((prev) => ({
+                                  ...prev,
+                                  analyzeBotCardTab: { ...prev.analyzeBotCardTab, [b.id]: 'overview' },
+                                }))}
+                              >
+                                Overview
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant={(uiState.analyzeBotCardTab[b.id] ?? 'overview') === 'advanced' ? 'default' : 'outline'}
+                                onClick={() => setUiState((prev) => ({
+                                  ...prev,
+                                  analyzeBotCardTab: { ...prev.analyzeBotCardTab, [b.id]: 'advanced' },
+                                }))}
+                              >
+                                Advanced
+                              </Button>
+                            </div>
 
-                                    // Calculate CAGR since investment if invested
-                                    let liveCagr = 0
-                                    if (investment) {
-                                      const daysSinceInvestment = (Date.now() - investment.buyDate) / (1000 * 60 * 60 * 24)
-                                      const yearsSinceInvestment = daysSinceInvestment / 365
-                                      if (yearsSinceInvestment > 0 && amountInvested > 0) {
-                                        liveCagr = (Math.pow(currentValue / amountInvested, 1 / yearsSinceInvestment) - 1)
-                                      }
-                                    }
+                            {/* Overview Tab Content */}
+                            {(uiState.analyzeBotCardTab[b.id] ?? 'overview') === 'overview' && (
+                              <div className="grid w-full max-w-full grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)] gap-2.5 items-stretch overflow-x-hidden">
+                                <div className="saved-item grid grid-cols-1 gap-3.5 h-full w-full min-w-0 overflow-hidden items-stretch justify-items-stretch">
+                                  {analyzeState?.status === 'loading' ? (
+                                  <div className="text-muted">Running backtest…</div>
+                                ) : analyzeState?.status === 'error' ? (
+                                  <div className="grid gap-2">
+                                    <div className="text-danger font-extrabold">{analyzeState.error ?? 'Failed to run backtest.'}</div>
+                                    <Button onClick={() => runAnalyzeBacktest(b)}>Retry</Button>
+                                  </div>
+                                ) : analyzeState?.status === 'done' ? (
+                                  <div className="grid grid-cols-1 gap-2.5 min-w-0 w-full">
+                                    <div className="font-black text-center w-full">Base Stats</div>
+                                    <div className="base-stats-grid w-full self-stretch grid grid-cols-1 grid-rows-[auto_auto_auto] gap-3">
+                                      {(() => {
+                                        // Get investment data for this bot from dashboard portfolio
+                                        const investment = dashboardInvestmentsWithPnl.find((inv) => inv.botId === b.id)
+                                        const isInvested = !!investment
+                                        const amountInvested = investment?.costBasis ?? 0
+                                        const currentValue = investment?.currentValue ?? 0
+                                        const pnlPct = investment?.pnlPercent ?? 0
 
-                                    return (
-                                      <div className="base-stats-card w-full min-w-0 max-w-full flex flex-col items-stretch text-center">
-                                        <div className="font-black mb-2 text-center">Live Stats</div>
-                                        {isInvested ? (
-                                          <div className="grid grid-cols-4 gap-2.5 justify-items-center w-full">
-                                            <div>
-                                              <div className="stat-label">Invested</div>
-                                              <div className="stat-value">{formatUsd(amountInvested)}</div>
-                                            </div>
-                                            <div>
-                                              <div className="stat-label">Current Value</div>
-                                              <div className="stat-value">{formatUsd(currentValue)}</div>
-                                            </div>
-                                            <div>
-                                              <div className="stat-label">P&L</div>
-                                              <div className={cn("stat-value", pnlPct >= 0 ? 'text-success' : 'text-danger')}>
-                                                {pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(2)}%
+                                        // Calculate CAGR since investment if invested
+                                        let liveCagr = 0
+                                        if (investment) {
+                                          const daysSinceInvestment = (Date.now() - investment.buyDate) / (1000 * 60 * 60 * 24)
+                                          const yearsSinceInvestment = daysSinceInvestment / 365
+                                          if (yearsSinceInvestment > 0 && amountInvested > 0) {
+                                            liveCagr = (Math.pow(currentValue / amountInvested, 1 / yearsSinceInvestment) - 1)
+                                          }
+                                        }
+
+                                        return (
+                                          <div className="base-stats-card w-full min-w-0 max-w-full flex flex-col items-stretch text-center">
+                                            <div className="font-black mb-2 text-center">Live Stats</div>
+                                            {isInvested ? (
+                                              <div className="grid grid-cols-4 gap-2.5 justify-items-center w-full">
+                                                <div>
+                                                  <div className="stat-label">Invested</div>
+                                                  <div className="stat-value">{formatUsd(amountInvested)}</div>
+                                                </div>
+                                                <div>
+                                                  <div className="stat-label">Current Value</div>
+                                                  <div className="stat-value">{formatUsd(currentValue)}</div>
+                                                </div>
+                                                <div>
+                                                  <div className="stat-label">P&L</div>
+                                                  <div className={cn("stat-value", pnlPct >= 0 ? 'text-success' : 'text-danger')}>
+                                                    {pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(2)}%
+                                                  </div>
+                                                </div>
+                                                <div>
+                                                  <div className="stat-label">CAGR</div>
+                                                  <div className={cn("stat-value", liveCagr >= 0 ? 'text-success' : 'text-danger')}>
+                                                    {formatPct(liveCagr)}
+                                                  </div>
+                                                </div>
                                               </div>
-                                            </div>
+                                            ) : (
+                                              <div className="text-muted text-sm">Not invested in this bot. Buy from Dashboard to track live stats.</div>
+                                            )}
+                                          </div>
+                                        )
+                                      })()}
+
+                                      <div className="base-stats-card w-full min-w-0 text-center self-stretch">
+                                        <div className="w-full">
+                                      <div className="font-black mb-1.5">Backtest Snapshot</div>
+                                      <div className="text-xs text-muted mb-2.5">Benchmark: {backtestBenchmark}</div>
+                                      <div className="w-full max-w-full overflow-hidden">
+                                        <EquityChart
+                                          points={analyzeState.result?.points ?? []}
+                                          benchmarkPoints={analyzeState.result?.benchmarkPoints}
+                                          markers={analyzeState.result?.markers ?? []}
+                                          logScale
+                                          showCursorStats={false}
+                                          heightPx={390}
+                                        />
+                                      </div>
+                                          <div className="mt-2.5 w-full">
+                                            <DrawdownChart points={analyzeState.result?.drawdownPoints ?? []} />
+                                          </div>
+                                        </div>
+                                      </div>
+
+                                      <div className="base-stats-card w-full min-w-0 text-center self-stretch">
+                                        <div className="w-full">
+                                          <div className="font-black mb-2">Historical Stats</div>
+                                          <div className="grid grid-cols-[repeat(4,minmax(140px,1fr))] gap-2.5 justify-items-center overflow-x-auto max-w-full w-full">
                                             <div>
                                               <div className="stat-label">CAGR</div>
-                                              <div className={cn("stat-value", liveCagr >= 0 ? 'text-success' : 'text-danger')}>
-                                                {formatPct(liveCagr)}
+                                              <div className="stat-value">{formatPct(analyzeState.result?.metrics.cagr ?? NaN)}</div>
+                                            </div>
+                                            <div>
+                                              <div className="stat-label">Max DD</div>
+                                              <div className="stat-value">{formatPct(analyzeState.result?.metrics.maxDrawdown ?? NaN)}</div>
+                                            </div>
+                                            <div>
+                                              <div className="stat-label">Calmar Ratio</div>
+                                              <div className="stat-value">
+                                                {Number.isFinite(analyzeState.result?.metrics.calmar ?? NaN)
+                                                  ? (analyzeState.result?.metrics.calmar ?? 0).toFixed(2)
+                                                  : '--'}
                                               </div>
                                             </div>
+                                            <div>
+                                              <div className="stat-label">Sharpe Ratio</div>
+                                              <div className="stat-value">
+                                                {Number.isFinite(analyzeState.result?.metrics.sharpe ?? NaN)
+                                                  ? (analyzeState.result?.metrics.sharpe ?? 0).toFixed(2)
+                                                  : '--'}
+                                              </div>
+                                            </div>
+                                            <div>
+                                              <div className="stat-label">Sortino Ratio</div>
+                                              <div className="stat-value">
+                                                {Number.isFinite(analyzeState.result?.metrics.sortino ?? NaN)
+                                                  ? (analyzeState.result?.metrics.sortino ?? 0).toFixed(2)
+                                                  : '--'}
+                                              </div>
+                                            </div>
+                                            <div>
+                                              <div className="stat-label">Treynor Ratio</div>
+                                              <div className="stat-value">
+                                                {Number.isFinite(analyzeState.result?.metrics.treynor ?? NaN)
+                                                  ? (analyzeState.result?.metrics.treynor ?? 0).toFixed(2)
+                                                  : '--'}
+                                              </div>
+                                            </div>
+                                            <div>
+                                              <div className="stat-label">Volatility</div>
+                                              <div className="stat-value">{formatPct(analyzeState.result?.metrics.vol ?? NaN)}</div>
+                                            </div>
+                                            <div>
+                                              <div className="stat-label">Win Rate</div>
+                                              <div className="stat-value">{formatPct(analyzeState.result?.metrics.winRate ?? NaN)}</div>
+                                            </div>
+                                            <div>
+                                              <div className="stat-label">Turnover</div>
+                                              <div className="stat-value">{formatPct(analyzeState.result?.metrics.avgTurnover ?? NaN)}</div>
+                                            </div>
+                                            <div>
+                                              <div className="stat-label">Avg Holdings</div>
+                                              <div className="stat-value">
+                                                {Number.isFinite(analyzeState.result?.metrics.avgHoldings ?? NaN)
+                                                  ? (analyzeState.result?.metrics.avgHoldings ?? 0).toFixed(1)
+                                                  : '--'}
+                                              </div>
+                                            </div>
+                                            <div>
+                                              <div className="stat-label">Trading Days</div>
+                                              <div className="stat-value">{analyzeState.result?.metrics.days ?? '--'}</div>
+                                            </div>
                                           </div>
-                                        ) : (
-                                          <div className="text-muted text-sm">Not invested in this bot. Buy from Dashboard to track live stats.</div>
-                                        )}
-                                      </div>
-                                    )
-                                  })()}
-
-                                  <div className="base-stats-card w-full min-w-0 text-center self-stretch">
-                                    <div className="w-full">
-                                  <div className="font-black mb-1.5">Backtest Snapshot</div>
-                                  <div className="text-xs text-muted mb-2.5">Benchmark: {backtestBenchmark}</div>
-                                  <div className="w-full max-w-full overflow-hidden">
-                                    <EquityChart
-                                      points={analyzeState.result?.points ?? []}
-                                      benchmarkPoints={analyzeState.result?.benchmarkPoints}
-                                      markers={analyzeState.result?.markers ?? []}
-                                      logScale
-                                      showCursorStats={false}
-                                      heightPx={390}
-                                    />
-                                  </div>
-                                      <div className="mt-2.5 w-full">
-                                        <DrawdownChart points={analyzeState.result?.drawdownPoints ?? []} />
-                                      </div>
-                                    </div>
-                                  </div>
-
-                                  <div className="base-stats-card w-full min-w-0 text-center self-stretch">
-                                    <div className="w-full">
-                                      <div className="font-black mb-2">Historical Stats</div>
-                                      <div className="grid grid-cols-[repeat(4,minmax(140px,1fr))] gap-2.5 justify-items-center overflow-x-auto max-w-full w-full">
-                                        <div>
-                                          <div className="stat-label">CAGR</div>
-                                          <div className="stat-value">{formatPct(analyzeState.result?.metrics.cagr ?? NaN)}</div>
-                                        </div>
-                                        <div>
-                                          <div className="stat-label">Max DD</div>
-                                          <div className="stat-value">{formatPct(analyzeState.result?.metrics.maxDrawdown ?? NaN)}</div>
-                                        </div>
-                                        <div>
-                                          <div className="stat-label">Calmar Ratio</div>
-                                          <div className="stat-value">
-                                            {Number.isFinite(analyzeState.result?.metrics.calmar ?? NaN)
-                                              ? (analyzeState.result?.metrics.calmar ?? 0).toFixed(2)
-                                              : '--'}
-                                          </div>
-                                        </div>
-                                        <div>
-                                          <div className="stat-label">Sharpe Ratio</div>
-                                          <div className="stat-value">
-                                            {Number.isFinite(analyzeState.result?.metrics.sharpe ?? NaN)
-                                              ? (analyzeState.result?.metrics.sharpe ?? 0).toFixed(2)
-                                              : '--'}
+                                          <div className="mt-2 text-xs text-muted">
+                                            Period: {analyzeState.result?.metrics.startDate ?? '--'} to {analyzeState.result?.metrics.endDate ?? '--'}
                                           </div>
                                         </div>
-                                        <div>
-                                          <div className="stat-label">Sortino Ratio</div>
-                                          <div className="stat-value">
-                                            {Number.isFinite(analyzeState.result?.metrics.sortino ?? NaN)
-                                              ? (analyzeState.result?.metrics.sortino ?? 0).toFixed(2)
-                                              : '--'}
-                                          </div>
-                                        </div>
-                                        <div>
-                                          <div className="stat-label">Treynor Ratio</div>
-                                          <div className="stat-value">
-                                            {Number.isFinite(analyzeState.result?.metrics.treynor ?? NaN)
-                                              ? (analyzeState.result?.metrics.treynor ?? 0).toFixed(2)
-                                              : '--'}
-                                          </div>
-                                        </div>
-                                        <div>
-                                          <div className="stat-label">Volatility</div>
-                                          <div className="stat-value">{formatPct(analyzeState.result?.metrics.vol ?? NaN)}</div>
-                                        </div>
-                                        <div>
-                                          <div className="stat-label">Win Rate</div>
-                                          <div className="stat-value">{formatPct(analyzeState.result?.metrics.winRate ?? NaN)}</div>
-                                        </div>
-                                        <div>
-                                          <div className="stat-label">Turnover</div>
-                                          <div className="stat-value">{formatPct(analyzeState.result?.metrics.avgTurnover ?? NaN)}</div>
-                                        </div>
-                                        <div>
-                                          <div className="stat-label">Avg Holdings</div>
-                                          <div className="stat-value">
-                                            {Number.isFinite(analyzeState.result?.metrics.avgHoldings ?? NaN)
-                                              ? (analyzeState.result?.metrics.avgHoldings ?? 0).toFixed(1)
-                                              : '--'}
-                                          </div>
-                                        </div>
-                                        <div>
-                                          <div className="stat-label">Trading Days</div>
-                                          <div className="stat-value">{analyzeState.result?.metrics.days ?? '--'}</div>
-                                        </div>
-                                      </div>
-                                      <div className="mt-2 text-xs text-muted">
-                                        Period: {analyzeState.result?.metrics.startDate ?? '--'} to {analyzeState.result?.metrics.endDate ?? '--'}
                                       </div>
                                     </div>
+                                  </div>
+                                ) : (
+                                  <button onClick={() => runAnalyzeBacktest(b)}>Run backtest</button>
+                                )}
+                                </div>
+
+                                <div className="saved-item flex flex-col gap-2.5 h-full min-w-0">
+                                  <div className="font-black">Information</div>
+                                  <div className="text-xs text-muted font-extrabold">Placeholder text: Information, tickers, etc</div>
+                                  <div className="font-black mt-1.5">Tickers</div>
+                                  <div className="flex-1 overflow-auto border border-border rounded-xl max-w-full">
+                                    {(() => {
+                                      try {
+                                        if (analyzeState?.status !== 'done' || !analyzeState.result) {
+                                          return <div className="p-2.5 text-muted">Run a backtest to populate historical stats.</div>
+                                        }
+                                        const botRes = analyzeState.result
+                                        const prepared = normalizeNodeForBacktest(ensureSlots(cloneNode(b.payload)))
+                                        const positionTickers = collectPositionTickers(prepared, callChainsById).filter(
+                                          (t) => t && t !== 'Empty' && t !== 'CASH',
+                                        )
+                                        positionTickers.sort()
+                                        const tickers = [...positionTickers, 'CASH']
+
+                                        const days = botRes.days || []
+                                        const denom = days.length || 1
+                                        const allocSum = new Map<string, number>()
+                                        for (const d of days) {
+                                          let dayTotal = 0
+                                          let sawCash = false
+                                          for (const h of d.holdings || []) {
+                                            const key = normalizeChoice(h.ticker)
+                                            if (key === 'Empty') continue
+                                            const w = Number(h.weight || 0)
+                                            allocSum.set(key, (allocSum.get(key) || 0) + w)
+                                            dayTotal += w
+                                            if (key === 'CASH') sawCash = true
+                                          }
+                                          if (!sawCash) {
+                                            const impliedCash = Math.max(0, 1 - dayTotal)
+                                            allocSum.set('CASH', (allocSum.get('CASH') || 0) + impliedCash)
+                                          }
+                                        }
+                                        const histAlloc = (ticker: string) => (allocSum.get(ticker) || 0) / denom
+
+                                        const toggleSort = (column: string) => {
+                                          setAnalyzeTickerSort((prev) => {
+                                            if (prev.column === column) return { column, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+                                            return { column, dir: column === 'ticker' ? 'asc' : 'desc' }
+                                          })
+                                        }
+
+                                        const sortGlyph = (column: string) =>
+                                          analyzeTickerSort.column === column ? (analyzeTickerSort.dir === 'asc' ? ' ▲' : ' ▼') : ''
+
+                                        const rows = tickers.map((t) => {
+                                          const display = t === 'CASH' ? 'Cash' : t
+                                          const key = `${b.id}:${t}:${backtestMode}:${botRes.metrics.startDate}:${botRes.metrics.endDate}`
+                                          const st = t === 'CASH' ? null : analyzeTickerContrib[key]
+                                          return { t, display, key, st, histAllocation: histAlloc(t) }
+                                        })
+
+                                        const sortedRows = [...rows].sort((a, b) => {
+                                          if (a.t === 'CASH' && b.t !== 'CASH') return 1
+                                          if (b.t === 'CASH' && a.t !== 'CASH') return -1
+
+                                          const col = analyzeTickerSort.column
+                                          const mult = analyzeTickerSort.dir === 'asc' ? 1 : -1
+
+                                          if (col === 'ticker') return mult * a.display.localeCompare(b.display)
+
+                                          const aVal =
+                                            col === 'histAllocation'
+                                              ? a.histAllocation
+                                              : col === 'histReturnPct'
+                                                ? a.st?.status === 'done'
+                                                  ? a.st.returnPct ?? NaN
+                                                  : NaN
+                                                : col === 'histExpectancy'
+                                                  ? a.st?.status === 'done'
+                                                    ? a.st.expectancy ?? NaN
+                                                    : NaN
+                                                  : 0
+                                          const bVal =
+                                            col === 'histAllocation'
+                                              ? b.histAllocation
+                                              : col === 'histReturnPct'
+                                                ? b.st?.status === 'done'
+                                                  ? b.st.returnPct ?? NaN
+                                                  : NaN
+                                                : col === 'histExpectancy'
+                                                  ? b.st?.status === 'done'
+                                                    ? b.st.expectancy ?? NaN
+                                                    : NaN
+                                                  : 0
+
+                                          const aOk = Number.isFinite(aVal)
+                                          const bOk = Number.isFinite(bVal)
+                                          if (!aOk && !bOk) return a.display.localeCompare(b.display)
+                                          if (!aOk) return 1
+                                          if (!bOk) return -1
+                                          return mult * ((aVal as number) - (bVal as number))
+                                        })
+
+                                        return (
+                                          <table className="analyze-ticker-table">
+                                            <thead>
+                                              <tr>
+                                                <th />
+                                                <th colSpan={3} className="text-center">
+                                                  Live
+                                                </th>
+                                                <th colSpan={3} className="text-center">
+                                                  Historical
+                                                </th>
+                                              </tr>
+                                              <tr>
+                                                <th onClick={() => toggleSort('ticker')} className="cursor-pointer">
+                                                  Tickers{sortGlyph('ticker')}
+                                                </th>
+                                                <th onClick={() => toggleSort('liveAllocation')} className="cursor-pointer">
+                                                  Allocation{sortGlyph('liveAllocation')}
+                                                </th>
+                                                <th onClick={() => toggleSort('liveCagr')} className="cursor-pointer">
+                                                  CAGR{sortGlyph('liveCagr')}
+                                                </th>
+                                                <th onClick={() => toggleSort('liveExpectancy')} className="cursor-pointer">
+                                                  Expectancy{sortGlyph('liveExpectancy')}
+                                                </th>
+                                                <th onClick={() => toggleSort('histAllocation')} className="cursor-pointer">
+                                                  Allocation{sortGlyph('histAllocation')}
+                                                </th>
+                                                <th onClick={() => toggleSort('histReturnPct')} className="cursor-pointer">
+                                                  Return %{sortGlyph('histReturnPct')}
+                                                </th>
+                                                <th onClick={() => toggleSort('histExpectancy')} className="cursor-pointer">
+                                                  Expectancy{sortGlyph('histExpectancy')}
+                                                </th>
+                                              </tr>
+                                            </thead>
+                                            <tbody>
+                                              {sortedRows.map((row) => {
+                                                const t = row.t
+                                                const st =
+                                                  t === 'CASH' ? ({ status: 'done', returnPct: 0, expectancy: 0 } as TickerContributionState) : row.st
+                                                const histReturn =
+                                                  !st
+                                                    ? '...'
+                                                    : st.status === 'done'
+                                                      ? formatPct(st.returnPct ?? NaN)
+                                                      : st.status === 'loading'
+                                                        ? '...'
+                                                        : '—'
+                                                const histExpectancy =
+                                                  !st
+                                                    ? '...'
+                                                    : st.status === 'done'
+                                                      ? formatPct(st.expectancy ?? NaN)
+                                                      : st.status === 'loading'
+                                                        ? '...'
+                                                        : '—'
+                                                return (
+                                                  <tr key={t}>
+                                                    <td className="font-black">{row.display}</td>
+                                                    <td>{formatPct(0)}</td>
+                                                    <td>{formatPct(0)}</td>
+                                                    <td>{formatPct(0)}</td>
+                                                    <td>{formatPct(row.histAllocation)}</td>
+                                                    <td>{histReturn}</td>
+                                                    <td>{histExpectancy}</td>
+                                                  </tr>
+                                                )
+                                              })}
+                                            </tbody>
+                                          </table>
+                                        )
+                                      } catch {
+                                        return <div className="p-2.5 text-muted">Unable to read tickers.</div>
+                                      }
+                                    })()}
                                   </div>
                                 </div>
                               </div>
-                            ) : (
-                              <button onClick={() => runAnalyzeBacktest(b)}>Run backtest</button>
                             )}
-                            </div>
 
-                            <div className="saved-item flex flex-col gap-2.5 h-full min-w-0">
-                              <div className="font-black">Information</div>
-                              <div className="text-xs text-muted font-extrabold">Placeholder text: Information, tickers, etc</div>
-                              <div className="font-black mt-1.5">Tickers</div>
-                              <div className="flex-1 overflow-auto border border-border rounded-xl max-w-full">
-                                {(() => {
-                                  try {
-                                    if (analyzeState?.status !== 'done' || !analyzeState.result) {
-                                      return <div className="p-2.5 text-muted">Run a backtest to populate historical stats.</div>
-                                    }
-                                    const botRes = analyzeState.result
-                                    const prepared = normalizeNodeForBacktest(ensureSlots(cloneNode(b.payload)))
-                                    const positionTickers = collectPositionTickers(prepared, callChainsById).filter(
-                                      (t) => t && t !== 'Empty' && t !== 'CASH',
-                                    )
-                                    positionTickers.sort()
-                                    const tickers = [...positionTickers, 'CASH']
-
-                                    const days = botRes.days || []
-                                    const denom = days.length || 1
-                                    const allocSum = new Map<string, number>()
-                                    for (const d of days) {
-                                      let dayTotal = 0
-                                      let sawCash = false
-                                      for (const h of d.holdings || []) {
-                                        const key = normalizeChoice(h.ticker)
-                                        if (key === 'Empty') continue
-                                        const w = Number(h.weight || 0)
-                                        allocSum.set(key, (allocSum.get(key) || 0) + w)
-                                        dayTotal += w
-                                        if (key === 'CASH') sawCash = true
-                                      }
-                                      if (!sawCash) {
-                                        const impliedCash = Math.max(0, 1 - dayTotal)
-                                        allocSum.set('CASH', (allocSum.get('CASH') || 0) + impliedCash)
-                                      }
-                                    }
-                                    const histAlloc = (ticker: string) => (allocSum.get(ticker) || 0) / denom
-
-                                    const toggleSort = (column: string) => {
-                                      setAnalyzeTickerSort((prev) => {
-                                        if (prev.column === column) return { column, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
-                                        return { column, dir: column === 'ticker' ? 'asc' : 'desc' }
-                                      })
-                                    }
-
-                                    const sortGlyph = (column: string) =>
-                                      analyzeTickerSort.column === column ? (analyzeTickerSort.dir === 'asc' ? ' ▲' : ' ▼') : ''
-
-                                    const rows = tickers.map((t) => {
-                                      const display = t === 'CASH' ? 'Cash' : t
-                                      const key = `${b.id}:${t}:${backtestMode}:${botRes.metrics.startDate}:${botRes.metrics.endDate}`
-                                      const st = t === 'CASH' ? null : analyzeTickerContrib[key]
-                                      return { t, display, key, st, histAllocation: histAlloc(t) }
-                                    })
-
-                                    const sortedRows = [...rows].sort((a, b) => {
-                                      if (a.t === 'CASH' && b.t !== 'CASH') return 1
-                                      if (b.t === 'CASH' && a.t !== 'CASH') return -1
-
-                                      const col = analyzeTickerSort.column
-                                      const mult = analyzeTickerSort.dir === 'asc' ? 1 : -1
-
-                                      if (col === 'ticker') return mult * a.display.localeCompare(b.display)
-
-                                      const aVal =
-                                        col === 'histAllocation'
-                                          ? a.histAllocation
-                                          : col === 'histReturnPct'
-                                            ? a.st?.status === 'done'
-                                              ? a.st.returnPct ?? NaN
-                                              : NaN
-                                            : col === 'histExpectancy'
-                                              ? a.st?.status === 'done'
-                                                ? a.st.expectancy ?? NaN
-                                                : NaN
-                                              : 0
-                                      const bVal =
-                                        col === 'histAllocation'
-                                          ? b.histAllocation
-                                          : col === 'histReturnPct'
-                                            ? b.st?.status === 'done'
-                                              ? b.st.returnPct ?? NaN
-                                              : NaN
-                                            : col === 'histExpectancy'
-                                              ? b.st?.status === 'done'
-                                                ? b.st.expectancy ?? NaN
-                                                : NaN
-                                              : 0
-
-                                      const aOk = Number.isFinite(aVal)
-                                      const bOk = Number.isFinite(bVal)
-                                      if (!aOk && !bOk) return a.display.localeCompare(b.display)
-                                      if (!aOk) return 1
-                                      if (!bOk) return -1
-                                      return mult * ((aVal as number) - (bVal as number))
-                                    })
-
+                            {/* Advanced Tab Content */}
+                            {(uiState.analyzeBotCardTab[b.id] ?? 'overview') === 'advanced' && (
+                              <div className="saved-item flex flex-col gap-2.5 h-full min-w-0">
+                                <div className="flex items-center justify-between gap-2.5">
+                                  <div className="font-black">Advanced Stats</div>
+                                  <Button size="sm">Run</Button>
+                                </div>
+                                <div className="font-black">Comparison Table</div>
+                                <div className="flex-1 overflow-auto border border-border rounded-xl max-w-full">
+                                  {(() => {
+                                    const rows = [
+                                      'Monte Carlo Comparison',
+                                      'K-Fold Comparison',
+                                      'Null Set Comparison',
+                                      'Benchmark VTI',
+                                      'Benchmark SPY',
+                                      'Benchmark QQQ',
+                                      'Benchmark DIA',
+                                      'Benchmark DBC',
+                                      'Benchmark DBO',
+                                      'Benchmark GLD',
+                                      'Benchmark BND',
+                                      'Benchmark TLT',
+                                      'Benchmark GBTC',
+                                    ] as const
+                                    const cols = [
+                                      'CAGR-50',
+                                      'MaxDD-DD50',
+                                      'Tail Risk-DD95',
+                                      'Calmar Ratio-50',
+                                      'Calmar Ratio-95',
+                                      'Sharpe Ratio',
+                                      'Sortino Ratio',
+                                      'Treynor Ratio',
+                                      'Volatility',
+                                      'Win Rate',
+                                    ] as const
                                     return (
-                                      <table className="analyze-ticker-table">
+                                      <table className="analyze-compare-table">
                                         <thead>
                                           <tr>
-                                            <th />
-                                            <th colSpan={3} className="text-center">
-                                              Live
-                                            </th>
-                                            <th colSpan={3} className="text-center">
-                                              Historical
-                                            </th>
-                                          </tr>
-                                          <tr>
-                                            <th onClick={() => toggleSort('ticker')} className="cursor-pointer">
-                                              Tickers{sortGlyph('ticker')}
-                                            </th>
-                                            <th onClick={() => toggleSort('liveAllocation')} className="cursor-pointer">
-                                              Allocation{sortGlyph('liveAllocation')}
-                                            </th>
-                                            <th onClick={() => toggleSort('liveCagr')} className="cursor-pointer">
-                                              CAGR{sortGlyph('liveCagr')}
-                                            </th>
-                                            <th onClick={() => toggleSort('liveExpectancy')} className="cursor-pointer">
-                                              Expectancy{sortGlyph('liveExpectancy')}
-                                            </th>
-                                            <th onClick={() => toggleSort('histAllocation')} className="cursor-pointer">
-                                              Allocation{sortGlyph('histAllocation')}
-                                            </th>
-                                            <th onClick={() => toggleSort('histReturnPct')} className="cursor-pointer">
-                                              Return %{sortGlyph('histReturnPct')}
-                                            </th>
-                                            <th onClick={() => toggleSort('histExpectancy')} className="cursor-pointer">
-                                              Expectancy{sortGlyph('histExpectancy')}
-                                            </th>
+                                            <th>Comparison</th>
+                                            {cols.map((c) => (
+                                              <th key={c}>{c}</th>
+                                            ))}
                                           </tr>
                                         </thead>
                                         <tbody>
-                                          {sortedRows.map((row) => {
-                                            const t = row.t
-                                            const st =
-                                              t === 'CASH' ? ({ status: 'done', returnPct: 0, expectancy: 0 } as TickerContributionState) : row.st
-                                            const histReturn =
-                                              !st
-                                                ? '...'
-                                                : st.status === 'done'
-                                                  ? formatPct(st.returnPct ?? NaN)
-                                                  : st.status === 'loading'
-                                                    ? '...'
-                                                    : '—'
-                                            const histExpectancy =
-                                              !st
-                                                ? '...'
-                                                : st.status === 'done'
-                                                  ? formatPct(st.expectancy ?? NaN)
-                                                  : st.status === 'loading'
-                                                    ? '...'
-                                                    : '—'
-                                            return (
-                                              <tr key={t}>
-                                                <td className="font-black">{row.display}</td>
-                                                <td>{formatPct(0)}</td>
-                                                <td>{formatPct(0)}</td>
-                                                <td>{formatPct(0)}</td>
-                                                <td>{formatPct(row.histAllocation)}</td>
-                                                <td>{histReturn}</td>
-                                                <td>{histExpectancy}</td>
-                                              </tr>
-                                            )
-                                          })}
+                                          {rows.map((r) => (
+                                            <tr key={r}>
+                                              <td>{r}</td>
+                                              {cols.map((c) => (
+                                                <td key={c}>0</td>
+                                              ))}
+                                            </tr>
+                                          ))}
                                         </tbody>
                                       </table>
                                     )
-                                  } catch {
-                                    return <div className="p-2.5 text-muted">Unable to read tickers.</div>
-                                  }
-                                })()}
+                                  })()}
+                                </div>
                               </div>
-                            </div>
-
-                            <div className="saved-item flex flex-col gap-2.5 h-full min-w-0">
-                              <div className="flex items-center justify-between gap-2.5">
-                                <div className="font-black">Advanced Stats</div>
-                                <Button size="sm">Run</Button>
-                              </div>
-                              <div className="font-black">Comparison Table</div>
-                              <div className="flex-1 overflow-auto border border-border rounded-xl max-w-full">
-                                {(() => {
-                                  const rows = [
-                                    'Monte Carlo Comparison',
-                                    'K-Fold Comparison',
-                                    'Null Set Comparison',
-                                    'Benchmark VTI',
-                                    'Benchmark SPY',
-                                    'Benchmark QQQ',
-                                    'Benchmark DIA',
-                                    'Benchmark DBC',
-                                    'Benchmark DBO',
-                                    'Benchmark GLD',
-                                    'Benchmark BND',
-                                    'Benchmark TLT',
-                                    'Benchmark GBTC',
-                                  ] as const
-                                  const cols = [
-                                    'CAGR-50',
-                                    'MaxDD-DD50',
-                                    'Tail Risk-DD95',
-                                    'Calmar Ratio-50',
-                                    'Calmar Ratio-95',
-                                    'Sharpe Ratio',
-                                    'Sortino Ratio',
-                                    'Treynor Ratio',
-                                    'Volatility',
-                                    'Win Rate',
-                                  ] as const
-                                  return (
-                                    <table className="analyze-compare-table">
-                                      <thead>
-                                        <tr>
-                                          <th>Comparison</th>
-                                          {cols.map((c) => (
-                                            <th key={c}>{c}</th>
-                                          ))}
-                                        </tr>
-                                      </thead>
-                                      <tbody>
-                                        {rows.map((r) => (
-                                          <tr key={r}>
-                                            <td>{r}</td>
-                                            {cols.map((c) => (
-                                              <td key={c}>0</td>
-                                            ))}
-                                          </tr>
-                                        ))}
-                                      </tbody>
-                                    </table>
-                                  )
-                                })()}
-                              </div>
-                            </div>
+                            )}
                           </div>
                         ) : null}
                       </Card>
@@ -9941,7 +10024,9 @@ function App() {
                   const bot = savedBots.find((b) => b.id === botId)
                   if (!bot) continue
                   const tagNames = (watchlistsByBotId.get(bot.id) ?? []).map((w) => w.name)
-                  const tags = [bot.visibility === 'community' ? 'Community' : 'Private', `Builder: ${bot.builderId}`, ...tagNames]
+                  // Build tags array: primary tag (Nexus/Atlas/Private), optional Nexus Eligible, Builder, watchlists
+                  const primaryTag = bot.tags?.includes('Nexus') ? 'Nexus' : bot.tags?.includes('Atlas') ? 'Atlas' : 'Private'
+                  const tags = [primaryTag, ...(bot.tags?.includes('Nexus Eligible') ? ['Nexus Eligible'] : []), `Builder: ${bot.builderId}`, ...tagNames]
                   const metrics = analyzeBacktests[bot.id]?.result?.metrics
                   out.push({
                     id: bot.id,
@@ -9960,6 +10045,7 @@ function App() {
                 .filter((bot) => bot.tags?.includes('Nexus'))
                 .map((bot) => {
                   const tagNames = (watchlistsByBotId.get(bot.id) ?? []).map((w) => w.name)
+                  // Since this is specifically for Nexus bots, primary tag is always Nexus
                   const tags = ['Nexus', `Builder: ${bot.builderId}`, ...tagNames]
                   const metrics = analyzeBacktests[bot.id]?.result?.metrics
                   return {
@@ -10006,74 +10092,348 @@ function App() {
                 return arr
               }
 
-              const renderTable = (
+              const renderBotCards = (
                 rows: CommunityBotRow[],
                 sort: CommunitySort,
-                setSort: Dispatch<SetStateAction<CommunitySort>>,
-                opts?: { emptyMessage?: string; headerOnly?: boolean },
+                _setSort: Dispatch<SetStateAction<CommunitySort>>,
+                opts?: { emptyMessage?: string },
               ) => {
-                const arrow = (k: CommunitySortKey) => (sort.key === k ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : '')
                 const sorted = sortRows(rows, sort)
+                if (sorted.length === 0) {
+                  return <div className="text-muted p-3">{opts?.emptyMessage ?? 'No bots yet.'}</div>
+                }
                 return (
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className="cursor-pointer select-none" onClick={() => setSort((p) => nextCommunitySort(p, 'name'))}>
-                          Name{arrow('name')}
-                        </TableHead>
-                        <TableHead className="cursor-pointer select-none" onClick={() => setSort((p) => nextCommunitySort(p, 'tags'))}>
-                          Tags{arrow('tags')}
-                        </TableHead>
-                        <TableHead
-                          className="cursor-pointer select-none text-right"
-                          onClick={() => setSort((p) => nextCommunitySort(p, 'oosCagr'))}
-                        >
-                          OOS CAGR{arrow('oosCagr')}
-                        </TableHead>
-                        <TableHead
-                          className="cursor-pointer select-none text-right"
-                          onClick={() => setSort((p) => nextCommunitySort(p, 'oosMaxdd'))}
-                        >
-                          OOS MaxDD{arrow('oosMaxdd')}
-                        </TableHead>
-                        <TableHead
-                          className="cursor-pointer select-none text-right"
-                          onClick={() => setSort((p) => nextCommunitySort(p, 'oosSharpe'))}
-                        >
-                          OOS Sharpe{arrow('oosSharpe')}
-                        </TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {opts?.headerOnly
-                        ? null
-                        : sorted.length === 0
-                          ? (
-                              <TableRow>
-                                <TableCell colSpan={5} className="text-muted">
-                                  {opts?.emptyMessage ?? 'No bots yet.'}
-                                </TableCell>
-                              </TableRow>
-                            )
-                          : sorted.map((r) => (
-                              <TableRow key={r.id}>
-                                <TableCell>{r.name}</TableCell>
-                                <TableCell>
-                                  <div className="flex gap-1.5 flex-wrap">
-                                    {r.tags.map((t) => (
-                                      <Badge key={`${r.id}-${t}`} variant={t === 'Community' ? 'muted' : 'default'}>
-                                        {t}
-                                      </Badge>
-                                    ))}
+                  <div className="flex flex-col gap-2.5">
+                    {sorted.map((r) => {
+                      const collapsed = uiState.communityCollapsedByBotId[r.id] ?? true
+                      const b = savedBots.find((bot) => bot.id === r.id)
+                      const analyzeState = analyzeBacktests[r.id]
+                      const wlTags = watchlistsByBotId.get(r.id) ?? []
+
+                      const toggleCollapse = () => {
+                        const next = !collapsed
+                        setUiState((prev) => ({
+                          ...prev,
+                          communityCollapsedByBotId: { ...prev.communityCollapsedByBotId, [r.id]: next },
+                        }))
+                        if (!next && b) {
+                          if (!analyzeState || analyzeState.status === 'idle' || analyzeState.status === 'error') {
+                            runAnalyzeBacktest(b)
+                          }
+                        }
+                      }
+
+                      if (!b) return null
+
+                      return (
+                        <Card key={r.id} className="grid gap-2.5">
+                          <div className="flex items-center gap-2.5 flex-wrap">
+                            <Button variant="ghost" size="sm" onClick={toggleCollapse}>
+                              {collapsed ? 'Expand' : 'Collapse'}
+                            </Button>
+                            <div className="font-black">{b.name}</div>
+                            <Badge variant={b.tags?.includes('Nexus') ? 'default' : b.tags?.includes('Atlas') ? 'default' : 'accent'}>
+                              {b.tags?.includes('Nexus') ? 'Nexus' : b.tags?.includes('Atlas') ? 'Atlas' : 'Private'}
+                            </Badge>
+                            {b.tags?.includes('Nexus Eligible') && (
+                              <Badge variant="secondary">Nexus Eligible</Badge>
+                            )}
+                            <Badge variant="default">Builder: {b.builderId}</Badge>
+                            <div className="flex gap-1.5 flex-wrap">
+                              {wlTags.map((w) => (
+                                <Badge key={w.id} variant="accent" className="gap-1.5">
+                                  {w.name}
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-4 w-4 p-0 hover:bg-transparent"
+                                    onClick={() => removeBotFromWatchlist(b.id, w.id)}
+                                    title={`Remove from ${w.name}`}
+                                  >
+                                    X
+                                  </Button>
+                                </Badge>
+                              ))}
+                            </div>
+                            <div className="ml-auto flex gap-2 flex-wrap">
+                              <Button size="sm" onClick={() => handleOpenSaved(b)}>Open in Build</Button>
+                              <Button
+                                size="sm"
+                                onClick={() => {
+                                  setAddToWatchlistBotId(b.id)
+                                  setAddToWatchlistNewName('')
+                                }}
+                              >
+                                Add to Watchlist
+                              </Button>
+                            </div>
+                          </div>
+
+                          {!collapsed && (
+                            <div className="flex flex-col gap-2.5 w-full">
+                              {/* Tab Navigation */}
+                              <div className="flex gap-2 border-b border-border pb-2">
+                                <Button
+                                  size="sm"
+                                  variant={(uiState.analyzeBotCardTab[r.id] ?? 'overview') === 'overview' ? 'default' : 'outline'}
+                                  onClick={() => setUiState((prev) => ({
+                                    ...prev,
+                                    analyzeBotCardTab: { ...prev.analyzeBotCardTab, [r.id]: 'overview' },
+                                  }))}
+                                >
+                                  Overview
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant={(uiState.analyzeBotCardTab[r.id] ?? 'overview') === 'advanced' ? 'default' : 'outline'}
+                                  onClick={() => setUiState((prev) => ({
+                                    ...prev,
+                                    analyzeBotCardTab: { ...prev.analyzeBotCardTab, [r.id]: 'advanced' },
+                                  }))}
+                                >
+                                  Advanced
+                                </Button>
+                              </div>
+
+                              {/* Overview Tab Content */}
+                              {(uiState.analyzeBotCardTab[r.id] ?? 'overview') === 'overview' && (
+                                <div className="grid w-full max-w-full grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)] gap-2.5 items-stretch overflow-x-hidden">
+                                  <div className="saved-item grid grid-cols-1 gap-3.5 h-full w-full min-w-0 overflow-hidden items-stretch justify-items-stretch">
+                                    {analyzeState?.status === 'loading' ? (
+                                      <div className="text-muted">Running backtest…</div>
+                                    ) : analyzeState?.status === 'error' ? (
+                                      <div className="grid gap-2">
+                                        <div className="text-danger font-extrabold">{analyzeState.error ?? 'Failed to run backtest.'}</div>
+                                        <Button onClick={() => runAnalyzeBacktest(b)}>Retry</Button>
+                                      </div>
+                                    ) : analyzeState?.status === 'done' ? (
+                                      <div className="grid grid-cols-1 gap-2.5 min-w-0 w-full">
+                                        <div className="font-black text-center w-full">Base Stats</div>
+                                        <div className="base-stats-grid w-full self-stretch grid grid-cols-1 grid-rows-[auto_auto_auto] gap-3">
+                                          {(() => {
+                                            const investment = dashboardInvestmentsWithPnl.find((inv) => inv.botId === b.id)
+                                            const isInvested = !!investment
+                                            const amountInvested = investment?.costBasis ?? 0
+                                            const currentValue = investment?.currentValue ?? 0
+                                            const pnlPct = investment?.pnlPercent ?? 0
+                                            let liveCagr = 0
+                                            if (investment) {
+                                              const daysSinceInvestment = (Date.now() - investment.buyDate) / (1000 * 60 * 60 * 24)
+                                              const yearsSinceInvestment = daysSinceInvestment / 365
+                                              if (yearsSinceInvestment > 0 && amountInvested > 0) {
+                                                liveCagr = (Math.pow(currentValue / amountInvested, 1 / yearsSinceInvestment) - 1)
+                                              }
+                                            }
+                                            return (
+                                              <div className="base-stats-card w-full min-w-0 max-w-full flex flex-col items-stretch text-center">
+                                                <div className="font-black mb-2 text-center">Live Stats</div>
+                                                {isInvested ? (
+                                                  <div className="grid grid-cols-4 gap-2.5 justify-items-center w-full">
+                                                    <div>
+                                                      <div className="stat-label">Invested</div>
+                                                      <div className="stat-value">{formatUsd(amountInvested)}</div>
+                                                    </div>
+                                                    <div>
+                                                      <div className="stat-label">Current Value</div>
+                                                      <div className="stat-value">{formatUsd(currentValue)}</div>
+                                                    </div>
+                                                    <div>
+                                                      <div className="stat-label">P&L</div>
+                                                      <div className={cn("stat-value", pnlPct >= 0 ? 'text-success' : 'text-danger')}>
+                                                        {pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(2)}%
+                                                      </div>
+                                                    </div>
+                                                    <div>
+                                                      <div className="stat-label">CAGR</div>
+                                                      <div className={cn("stat-value", liveCagr >= 0 ? 'text-success' : 'text-danger')}>
+                                                        {formatPct(liveCagr)}
+                                                      </div>
+                                                    </div>
+                                                  </div>
+                                                ) : (
+                                                  <div className="text-muted text-sm">Not invested in this bot. Buy from Dashboard to track live stats.</div>
+                                                )}
+                                              </div>
+                                            )
+                                          })()}
+
+                                          <div className="base-stats-card w-full min-w-0 text-center self-stretch">
+                                            <div className="w-full">
+                                              <div className="font-black mb-1.5">Backtest Snapshot</div>
+                                              <div className="text-xs text-muted mb-2.5">Benchmark: {backtestBenchmark}</div>
+                                              <div className="w-full max-w-full overflow-hidden">
+                                                <EquityChart
+                                                  points={analyzeState.result?.points ?? []}
+                                                  benchmarkPoints={analyzeState.result?.benchmarkPoints}
+                                                  markers={analyzeState.result?.markers ?? []}
+                                                  logScale
+                                                  showCursorStats={false}
+                                                  heightPx={390}
+                                                />
+                                              </div>
+                                              <div className="mt-2.5 w-full">
+                                                <DrawdownChart points={analyzeState.result?.drawdownPoints ?? []} />
+                                              </div>
+                                            </div>
+                                          </div>
+
+                                          <div className="base-stats-card w-full min-w-0 text-center self-stretch">
+                                            <div className="w-full">
+                                              <div className="font-black mb-2">Historical Stats</div>
+                                              <div className="grid grid-cols-[repeat(4,minmax(140px,1fr))] gap-2.5 justify-items-center overflow-x-auto max-w-full w-full">
+                                                <div>
+                                                  <div className="stat-label">CAGR</div>
+                                                  <div className="stat-value">{formatPct(analyzeState.result?.metrics.cagr ?? NaN)}</div>
+                                                </div>
+                                                <div>
+                                                  <div className="stat-label">Max DD</div>
+                                                  <div className="stat-value">{formatPct(analyzeState.result?.metrics.maxDrawdown ?? NaN)}</div>
+                                                </div>
+                                                <div>
+                                                  <div className="stat-label">Calmar Ratio</div>
+                                                  <div className="stat-value">
+                                                    {Number.isFinite(analyzeState.result?.metrics.calmar ?? NaN)
+                                                      ? (analyzeState.result?.metrics.calmar ?? 0).toFixed(2)
+                                                      : '--'}
+                                                  </div>
+                                                </div>
+                                                <div>
+                                                  <div className="stat-label">Sharpe Ratio</div>
+                                                  <div className="stat-value">
+                                                    {Number.isFinite(analyzeState.result?.metrics.sharpe ?? NaN)
+                                                      ? (analyzeState.result?.metrics.sharpe ?? 0).toFixed(2)
+                                                      : '--'}
+                                                  </div>
+                                                </div>
+                                                <div>
+                                                  <div className="stat-label">Sortino Ratio</div>
+                                                  <div className="stat-value">
+                                                    {Number.isFinite(analyzeState.result?.metrics.sortino ?? NaN)
+                                                      ? (analyzeState.result?.metrics.sortino ?? 0).toFixed(2)
+                                                      : '--'}
+                                                  </div>
+                                                </div>
+                                                <div>
+                                                  <div className="stat-label">Treynor Ratio</div>
+                                                  <div className="stat-value">
+                                                    {Number.isFinite(analyzeState.result?.metrics.treynor ?? NaN)
+                                                      ? (analyzeState.result?.metrics.treynor ?? 0).toFixed(2)
+                                                      : '--'}
+                                                  </div>
+                                                </div>
+                                                <div>
+                                                  <div className="stat-label">Volatility</div>
+                                                  <div className="stat-value">{formatPct(analyzeState.result?.metrics.vol ?? NaN)}</div>
+                                                </div>
+                                                <div>
+                                                  <div className="stat-label">Win Rate</div>
+                                                  <div className="stat-value">{formatPct(analyzeState.result?.metrics.winRate ?? NaN)}</div>
+                                                </div>
+                                                <div>
+                                                  <div className="stat-label">Turnover</div>
+                                                  <div className="stat-value">{formatPct(analyzeState.result?.metrics.avgTurnover ?? NaN)}</div>
+                                                </div>
+                                                <div>
+                                                  <div className="stat-label">Avg Holdings</div>
+                                                  <div className="stat-value">
+                                                    {Number.isFinite(analyzeState.result?.metrics.avgHoldings ?? NaN)
+                                                      ? (analyzeState.result?.metrics.avgHoldings ?? 0).toFixed(1)
+                                                      : '--'}
+                                                  </div>
+                                                </div>
+                                                <div>
+                                                  <div className="stat-label">Trading Days</div>
+                                                  <div className="stat-value">{analyzeState.result?.metrics.days ?? '--'}</div>
+                                                </div>
+                                              </div>
+                                              <div className="mt-2 text-xs text-muted">
+                                                Period: {analyzeState.result?.metrics.startDate ?? '--'} to {analyzeState.result?.metrics.endDate ?? '--'}
+                                              </div>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <button onClick={() => runAnalyzeBacktest(b)}>Run backtest</button>
+                                    )}
                                   </div>
-                                </TableCell>
-                                <TableCell className="text-right">{formatPct(r.oosCagr)}</TableCell>
-                                <TableCell className="text-right">{formatPct(r.oosMaxdd)}</TableCell>
-                                <TableCell className="text-right">{Number.isFinite(r.oosSharpe) ? r.oosSharpe.toFixed(2) : '—'}</TableCell>
-                              </TableRow>
-                            ))}
-                    </TableBody>
-                  </Table>
+
+                                  <div className="saved-item flex flex-col gap-2.5 h-full min-w-0">
+                                    <div className="font-black">Information</div>
+                                    <div className="text-xs text-muted font-extrabold">Placeholder text: Information, tickers, etc</div>
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Advanced Tab Content */}
+                              {(uiState.analyzeBotCardTab[r.id] ?? 'overview') === 'advanced' && (
+                                <div className="saved-item flex flex-col gap-2.5 h-full min-w-0">
+                                  <div className="flex items-center justify-between gap-2.5">
+                                    <div className="font-black">Advanced Stats</div>
+                                    <Button size="sm">Run</Button>
+                                  </div>
+                                  <div className="font-black">Comparison Table</div>
+                                  <div className="flex-1 overflow-auto border border-border rounded-xl max-w-full">
+                                    {(() => {
+                                      const rows = [
+                                        'Monte Carlo Comparison',
+                                        'K-Fold Comparison',
+                                        'Null Set Comparison',
+                                        'Benchmark VTI',
+                                        'Benchmark SPY',
+                                        'Benchmark QQQ',
+                                        'Benchmark DIA',
+                                        'Benchmark DBC',
+                                        'Benchmark DBO',
+                                        'Benchmark GLD',
+                                        'Benchmark BND',
+                                        'Benchmark TLT',
+                                        'Benchmark GBTC',
+                                      ] as const
+                                      const cols = [
+                                        'CAGR-50',
+                                        'MaxDD-DD50',
+                                        'Tail Risk-DD95',
+                                        'Calmar Ratio-50',
+                                        'Calmar Ratio-95',
+                                        'Sharpe Ratio',
+                                        'Sortino Ratio',
+                                        'Treynor Ratio',
+                                        'Volatility',
+                                        'Win Rate',
+                                      ] as const
+                                      return (
+                                        <table className="analyze-compare-table">
+                                          <thead>
+                                            <tr>
+                                              <th>Comparison</th>
+                                              {cols.map((c) => (
+                                                <th key={c}>{c}</th>
+                                              ))}
+                                            </tr>
+                                          </thead>
+                                          <tbody>
+                                            {rows.map((rowName) => (
+                                              <tr key={rowName}>
+                                                <td>{rowName}</td>
+                                                {cols.map((c) => (
+                                                  <td key={c}>0</td>
+                                                ))}
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                        </table>
+                                      )
+                                    })()}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </Card>
+                      )
+                    })}
+                  </div>
                 )
               }
 
@@ -10099,7 +10459,7 @@ function App() {
                       <Card className="flex-1 flex flex-col p-3 border-2">
                         <div className="font-bold text-center mb-2">Top community bots by CAGR</div>
                         <div className="flex-1 overflow-auto">
-                          {renderTable(topByCagr, communityTopSort, setCommunityTopSort, {
+                          {renderBotCards(topByCagr, communityTopSort, setCommunityTopSort, {
                             emptyMessage: 'No community bots with backtest data.',
                           })}
                         </div>
@@ -10107,7 +10467,7 @@ function App() {
                       <Card className="flex-1 flex flex-col p-3 border-2">
                         <div className="font-bold text-center mb-2">Top community bots by Calmar Ratio</div>
                         <div className="flex-1 overflow-auto">
-                          {renderTable(topByCalmar, communityTopSort, setCommunityTopSort, {
+                          {renderBotCards(topByCalmar, communityTopSort, setCommunityTopSort, {
                             emptyMessage: 'No community bots with backtest data.',
                           })}
                         </div>
@@ -10115,7 +10475,7 @@ function App() {
                       <Card className="flex-1 flex flex-col p-3 border-2">
                         <div className="font-bold text-center mb-2">Top community bots by Sharpe Ratio</div>
                         <div className="flex-1 overflow-auto">
-                          {renderTable(topBySharpe, communityTopSort, setCommunityTopSort, {
+                          {renderBotCards(topBySharpe, communityTopSort, setCommunityTopSort, {
                             emptyMessage: 'No community bots with backtest data.',
                           })}
                         </div>
@@ -10142,7 +10502,7 @@ function App() {
                           <div className="font-bold">Watchlist Zone #1</div>
                           {watchlistSelect(slot1Id, (id) => setUiState((p) => ({ ...p, communityWatchlistSlot1Id: id })))}
                         </div>
-                        {renderTable(rowsForWatchlist(slot1Id), communityWatchlistSort1, setCommunityWatchlistSort1, {
+                        {renderBotCards(rowsForWatchlist(slot1Id), communityWatchlistSort1, setCommunityWatchlistSort1, {
                           emptyMessage: 'No bots in this watchlist.',
                         })}
                       </Card>
@@ -10151,7 +10511,7 @@ function App() {
                           <div className="font-bold">Watchlist Zone #2</div>
                           {watchlistSelect(slot2Id, (id) => setUiState((p) => ({ ...p, communityWatchlistSlot2Id: id })))}
                         </div>
-                        {renderTable(rowsForWatchlist(slot2Id), communityWatchlistSort2, setCommunityWatchlistSort2, {
+                        {renderBotCards(rowsForWatchlist(slot2Id), communityWatchlistSort2, setCommunityWatchlistSort2, {
                           emptyMessage: 'No bots in this watchlist.',
                         })}
                       </Card>
@@ -10760,12 +11120,13 @@ function App() {
                                   ...prev,
                                   fundZones: { ...prev.fundZones, [fundKey]: null }
                                 }))
-                                // Change tag from Nexus back to Nexus Eligible
-                                setSavedBots(prev => prev.map(b =>
-                                  b.id === botId
-                                    ? { ...b, tags: [...(b.tags || []).filter(t => t !== 'Nexus'), 'Nexus Eligible'] }
-                                    : b
-                                ))
+                                // Change tag from Nexus back to Private + Nexus Eligible
+                                setSavedBots(prev => prev.map(b => {
+                                  if (b.id !== botId) return b
+                                  // Remove Nexus, add Private + Nexus Eligible (bot was eligible to be in fund)
+                                  const baseTags = (b.tags || []).filter(t => t !== 'Nexus' && t !== 'Private' && t !== 'Nexus Eligible')
+                                  return { ...b, tags: ['Private', 'Nexus Eligible', ...baseTags] }
+                                }))
                               }}
                             >
                               Remove
@@ -10808,79 +11169,356 @@ function App() {
                     }
 
                     return (
-                      <div className="border border-border rounded-lg overflow-hidden">
-                        <table className="w-full text-sm">
-                          <thead className="bg-muted/50">
-                            <tr>
-                              <th className="text-left px-3 py-2 font-medium">Bot Name</th>
-                              <th className="text-left px-3 py-2 font-medium">Tags</th>
-                              <th className="text-right px-3 py-2 font-medium">CAGR</th>
-                              <th className="text-right px-3 py-2 font-medium">Sharpe</th>
-                              <th className="text-center px-3 py-2 font-medium">Action</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {eligibleBotsList.map(bot => {
-                              const metrics = analyzeBacktests[bot.id]?.result?.metrics
-                              const isInFund = Object.values(uiState.fundZones).includes(bot.id)
-                              return (
-                                <tr key={bot.id} className="border-t border-border">
-                                  <td className="px-3 py-2 font-bold">{bot.name}</td>
-                                  <td className="px-3 py-2">
-                                    {bot.tags?.map(tag => (
-                                      <span key={tag} className={cn(
-                                        "inline-block px-1.5 py-0.5 text-xs rounded mr-1",
-                                        tag === 'Nexus' ? 'bg-purple-500/20 text-purple-400' : 'bg-blue-500/20 text-blue-400'
-                                      )}>
-                                        {tag}
-                                      </span>
-                                    ))}
-                                  </td>
-                                  <td className="px-3 py-2 text-right">{formatPct(metrics?.cagr ?? NaN)}</td>
-                                  <td className="px-3 py-2 text-right">
-                                    {Number.isFinite(metrics?.sharpe) ? metrics!.sharpe.toFixed(2) : '—'}
-                                  </td>
-                                  <td className="px-3 py-2 text-center">
-                                    {isInFund ? (
-                                      <span className="text-xs text-muted">In Fund</span>
-                                    ) : (
-                                      <select
-                                        className="text-xs px-2 py-1 rounded border border-border bg-background"
-                                        value=""
-                                        onChange={(e) => {
-                                          const fundSlot = e.target.value as keyof FundZones
-                                          if (!fundSlot) return
-                                          // Add to fund zone
-                                          setUiState(prev => ({
-                                            ...prev,
-                                            fundZones: { ...prev.fundZones, [fundSlot]: bot.id }
-                                          }))
-                                          // Change tag from Nexus Eligible to Nexus
-                                          setSavedBots(prev => prev.map(b =>
-                                            b.id === bot.id
-                                              ? { ...b, tags: [...(b.tags || []).filter(t => t !== 'Nexus Eligible'), 'Nexus'] }
-                                              : b
-                                          ))
-                                        }}
-                                      >
-                                        <option value="">Add to Fund...</option>
-                                        {([1, 2, 3, 4, 5] as const).map(n => {
-                                          const fundKey = `fund${n}` as keyof FundZones
-                                          const isEmpty = !uiState.fundZones[fundKey]
+                      <div className="flex flex-col gap-2.5">
+                        {eligibleBotsList.map(b => {
+                          const collapsed = uiState.communityCollapsedByBotId[b.id] ?? true
+                          const analyzeState = analyzeBacktests[b.id]
+                          const isInFund = Object.values(uiState.fundZones).includes(b.id)
+                          const wlTags = watchlistsByBotId.get(b.id) ?? []
+
+                          const toggleCollapse = () => {
+                            const next = !collapsed
+                            setUiState(prev => ({
+                              ...prev,
+                              communityCollapsedByBotId: { ...prev.communityCollapsedByBotId, [b.id]: next }
+                            }))
+                            if (!next && (!analyzeState || analyzeState.status === 'idle' || analyzeState.status === 'error')) {
+                              runAnalyzeBacktest(b)
+                            }
+                          }
+
+                          return (
+                            <Card key={b.id} className="grid gap-2.5">
+                              <div className="flex items-center gap-2.5 flex-wrap">
+                                <Button variant="ghost" size="sm" onClick={toggleCollapse}>
+                                  {collapsed ? 'Expand' : 'Collapse'}
+                                </Button>
+                                <div className="font-black">{b.name}</div>
+                                <Badge variant={b.tags?.includes('Nexus') ? 'default' : b.tags?.includes('Atlas') ? 'default' : 'accent'}>
+                                  {b.tags?.includes('Nexus') ? 'Nexus' : b.tags?.includes('Atlas') ? 'Atlas' : 'Private'}
+                                </Badge>
+                                {b.tags?.includes('Nexus Eligible') && (
+                                  <Badge variant="secondary">Nexus Eligible</Badge>
+                                )}
+                                <Badge variant="default">Builder: {b.builderId}</Badge>
+                                <div className="flex gap-1.5 flex-wrap">
+                                  {wlTags.map((w) => (
+                                    <Badge key={w.id} variant="accent" className="gap-1.5">
+                                      {w.name}
+                                    </Badge>
+                                  ))}
+                                </div>
+                                <div className="ml-auto flex gap-2 flex-wrap items-center">
+                                  {isInFund ? (
+                                    <Badge variant="muted">In Fund</Badge>
+                                  ) : (
+                                    <select
+                                      className="text-xs px-2 py-1 rounded border border-border bg-background"
+                                      value=""
+                                      onChange={(e) => {
+                                        const fundSlot = e.target.value as keyof FundZones
+                                        if (!fundSlot) return
+                                        setUiState(prev => ({
+                                          ...prev,
+                                          fundZones: { ...prev.fundZones, [fundSlot]: b.id }
+                                        }))
+                                        setSavedBots(prev => prev.map(bot => {
+                                          if (bot.id !== b.id) return bot
+                                          // Remove Private, Nexus Eligible; add Nexus (keep other tags like Atlas if any)
+                                          const baseTags = (bot.tags || []).filter(t => t !== 'Private' && t !== 'Nexus Eligible' && t !== 'Nexus')
+                                          return { ...bot, tags: ['Nexus', ...baseTags] }
+                                        }))
+                                      }}
+                                    >
+                                      <option value="">Add to Fund...</option>
+                                      {([1, 2, 3, 4, 5] as const).map(n => {
+                                        const fundKey = `fund${n}` as keyof FundZones
+                                        const isEmpty = !uiState.fundZones[fundKey]
+                                        return (
+                                          <option key={n} value={fundKey} disabled={!isEmpty}>
+                                            Fund #{n} {isEmpty ? '' : '(occupied)'}
+                                          </option>
+                                        )
+                                      })}
+                                    </select>
+                                  )}
+                                  <Button size="sm" onClick={() => handleOpenSaved(b)}>Open in Build</Button>
+                                  <Button
+                                    size="sm"
+                                    onClick={() => {
+                                      setAddToWatchlistBotId(b.id)
+                                      setAddToWatchlistNewName('')
+                                    }}
+                                  >
+                                    Add to Watchlist
+                                  </Button>
+                                </div>
+                              </div>
+
+                              {!collapsed && (
+                                <div className="flex flex-col gap-2.5 w-full">
+                                  {/* Tab Navigation */}
+                                  <div className="flex gap-2 border-b border-border pb-2">
+                                    <Button
+                                      size="sm"
+                                      variant={(uiState.analyzeBotCardTab[b.id] ?? 'overview') === 'overview' ? 'default' : 'outline'}
+                                      onClick={() => setUiState((prev) => ({
+                                        ...prev,
+                                        analyzeBotCardTab: { ...prev.analyzeBotCardTab, [b.id]: 'overview' },
+                                      }))}
+                                    >
+                                      Overview
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant={(uiState.analyzeBotCardTab[b.id] ?? 'overview') === 'advanced' ? 'default' : 'outline'}
+                                      onClick={() => setUiState((prev) => ({
+                                        ...prev,
+                                        analyzeBotCardTab: { ...prev.analyzeBotCardTab, [b.id]: 'advanced' },
+                                      }))}
+                                    >
+                                      Advanced
+                                    </Button>
+                                  </div>
+
+                                  {/* Overview Tab Content */}
+                                  {(uiState.analyzeBotCardTab[b.id] ?? 'overview') === 'overview' && (
+                                    <div className="grid w-full max-w-full grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)] gap-2.5 items-stretch overflow-x-hidden">
+                                      <div className="saved-item grid grid-cols-1 gap-3.5 h-full w-full min-w-0 overflow-hidden items-stretch justify-items-stretch">
+                                        {analyzeState?.status === 'loading' ? (
+                                          <div className="text-muted">Running backtest…</div>
+                                        ) : analyzeState?.status === 'error' ? (
+                                          <div className="grid gap-2">
+                                            <div className="text-danger font-extrabold">{analyzeState.error ?? 'Failed to run backtest.'}</div>
+                                            <Button onClick={() => runAnalyzeBacktest(b)}>Retry</Button>
+                                          </div>
+                                        ) : analyzeState?.status === 'done' ? (
+                                          <div className="grid grid-cols-1 gap-2.5 min-w-0 w-full">
+                                            <div className="font-black text-center w-full">Base Stats</div>
+                                            <div className="base-stats-grid w-full self-stretch grid grid-cols-1 grid-rows-[auto_auto_auto] gap-3">
+                                              {(() => {
+                                                const investment = dashboardInvestmentsWithPnl.find((inv) => inv.botId === b.id)
+                                                const isInvested = !!investment
+                                                const amountInvested = investment?.costBasis ?? 0
+                                                const currentValue = investment?.currentValue ?? 0
+                                                const pnlPct = investment?.pnlPercent ?? 0
+                                                let liveCagr = 0
+                                                if (investment) {
+                                                  const daysSinceInvestment = (Date.now() - investment.buyDate) / (1000 * 60 * 60 * 24)
+                                                  const yearsSinceInvestment = daysSinceInvestment / 365
+                                                  if (yearsSinceInvestment > 0 && amountInvested > 0) {
+                                                    liveCagr = (Math.pow(currentValue / amountInvested, 1 / yearsSinceInvestment) - 1)
+                                                  }
+                                                }
+                                                return (
+                                                  <div className="base-stats-card w-full min-w-0 max-w-full flex flex-col items-stretch text-center">
+                                                    <div className="font-black mb-2 text-center">Live Stats</div>
+                                                    {isInvested ? (
+                                                      <div className="grid grid-cols-4 gap-2.5 justify-items-center w-full">
+                                                        <div>
+                                                          <div className="stat-label">Invested</div>
+                                                          <div className="stat-value">{formatUsd(amountInvested)}</div>
+                                                        </div>
+                                                        <div>
+                                                          <div className="stat-label">Current Value</div>
+                                                          <div className="stat-value">{formatUsd(currentValue)}</div>
+                                                        </div>
+                                                        <div>
+                                                          <div className="stat-label">P&L</div>
+                                                          <div className={cn("stat-value", pnlPct >= 0 ? 'text-success' : 'text-danger')}>
+                                                            {pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(2)}%
+                                                          </div>
+                                                        </div>
+                                                        <div>
+                                                          <div className="stat-label">CAGR</div>
+                                                          <div className={cn("stat-value", liveCagr >= 0 ? 'text-success' : 'text-danger')}>
+                                                            {formatPct(liveCagr)}
+                                                          </div>
+                                                        </div>
+                                                      </div>
+                                                    ) : (
+                                                      <div className="text-muted text-sm">Not invested in this bot. Buy from Dashboard to track live stats.</div>
+                                                    )}
+                                                  </div>
+                                                )
+                                              })()}
+
+                                              <div className="base-stats-card w-full min-w-0 text-center self-stretch">
+                                                <div className="w-full">
+                                                  <div className="font-black mb-1.5">Backtest Snapshot</div>
+                                                  <div className="text-xs text-muted mb-2.5">Benchmark: {backtestBenchmark}</div>
+                                                  <div className="w-full max-w-full overflow-hidden">
+                                                    <EquityChart
+                                                      points={analyzeState.result?.points ?? []}
+                                                      benchmarkPoints={analyzeState.result?.benchmarkPoints}
+                                                      markers={analyzeState.result?.markers ?? []}
+                                                      logScale
+                                                      showCursorStats={false}
+                                                      heightPx={390}
+                                                    />
+                                                  </div>
+                                                  <div className="mt-2.5 w-full">
+                                                    <DrawdownChart points={analyzeState.result?.drawdownPoints ?? []} />
+                                                  </div>
+                                                </div>
+                                              </div>
+
+                                              <div className="base-stats-card w-full min-w-0 text-center self-stretch">
+                                                <div className="w-full">
+                                                  <div className="font-black mb-2">Historical Stats</div>
+                                                  <div className="grid grid-cols-[repeat(4,minmax(140px,1fr))] gap-2.5 justify-items-center overflow-x-auto max-w-full w-full">
+                                                    <div>
+                                                      <div className="stat-label">CAGR</div>
+                                                      <div className="stat-value">{formatPct(analyzeState.result?.metrics.cagr ?? NaN)}</div>
+                                                    </div>
+                                                    <div>
+                                                      <div className="stat-label">Max DD</div>
+                                                      <div className="stat-value">{formatPct(analyzeState.result?.metrics.maxDrawdown ?? NaN)}</div>
+                                                    </div>
+                                                    <div>
+                                                      <div className="stat-label">Calmar Ratio</div>
+                                                      <div className="stat-value">
+                                                        {Number.isFinite(analyzeState.result?.metrics.calmar ?? NaN)
+                                                          ? (analyzeState.result?.metrics.calmar ?? 0).toFixed(2)
+                                                          : '--'}
+                                                      </div>
+                                                    </div>
+                                                    <div>
+                                                      <div className="stat-label">Sharpe Ratio</div>
+                                                      <div className="stat-value">
+                                                        {Number.isFinite(analyzeState.result?.metrics.sharpe ?? NaN)
+                                                          ? (analyzeState.result?.metrics.sharpe ?? 0).toFixed(2)
+                                                          : '--'}
+                                                      </div>
+                                                    </div>
+                                                    <div>
+                                                      <div className="stat-label">Sortino Ratio</div>
+                                                      <div className="stat-value">
+                                                        {Number.isFinite(analyzeState.result?.metrics.sortino ?? NaN)
+                                                          ? (analyzeState.result?.metrics.sortino ?? 0).toFixed(2)
+                                                          : '--'}
+                                                      </div>
+                                                    </div>
+                                                    <div>
+                                                      <div className="stat-label">Treynor Ratio</div>
+                                                      <div className="stat-value">
+                                                        {Number.isFinite(analyzeState.result?.metrics.treynor ?? NaN)
+                                                          ? (analyzeState.result?.metrics.treynor ?? 0).toFixed(2)
+                                                          : '--'}
+                                                      </div>
+                                                    </div>
+                                                    <div>
+                                                      <div className="stat-label">Volatility</div>
+                                                      <div className="stat-value">{formatPct(analyzeState.result?.metrics.vol ?? NaN)}</div>
+                                                    </div>
+                                                    <div>
+                                                      <div className="stat-label">Win Rate</div>
+                                                      <div className="stat-value">{formatPct(analyzeState.result?.metrics.winRate ?? NaN)}</div>
+                                                    </div>
+                                                    <div>
+                                                      <div className="stat-label">Turnover</div>
+                                                      <div className="stat-value">{formatPct(analyzeState.result?.metrics.avgTurnover ?? NaN)}</div>
+                                                    </div>
+                                                    <div>
+                                                      <div className="stat-label">Avg Holdings</div>
+                                                      <div className="stat-value">
+                                                        {Number.isFinite(analyzeState.result?.metrics.avgHoldings ?? NaN)
+                                                          ? (analyzeState.result?.metrics.avgHoldings ?? 0).toFixed(1)
+                                                          : '--'}
+                                                      </div>
+                                                    </div>
+                                                    <div>
+                                                      <div className="stat-label">Trading Days</div>
+                                                      <div className="stat-value">{analyzeState.result?.metrics.days ?? '--'}</div>
+                                                    </div>
+                                                  </div>
+                                                  <div className="mt-2 text-xs text-muted">
+                                                    Period: {analyzeState.result?.metrics.startDate ?? '--'} to {analyzeState.result?.metrics.endDate ?? '--'}
+                                                  </div>
+                                                </div>
+                                              </div>
+                                            </div>
+                                          </div>
+                                        ) : (
+                                          <button onClick={() => runAnalyzeBacktest(b)}>Run backtest</button>
+                                        )}
+                                      </div>
+
+                                      <div className="saved-item flex flex-col gap-2.5 h-full min-w-0">
+                                        <div className="font-black">Information</div>
+                                        <div className="text-xs text-muted font-extrabold">Placeholder text: Information, tickers, etc</div>
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {/* Advanced Tab Content */}
+                                  {(uiState.analyzeBotCardTab[b.id] ?? 'overview') === 'advanced' && (
+                                    <div className="saved-item flex flex-col gap-2.5 h-full min-w-0">
+                                      <div className="flex items-center justify-between gap-2.5">
+                                        <div className="font-black">Advanced Stats</div>
+                                        <Button size="sm">Run</Button>
+                                      </div>
+                                      <div className="font-black">Comparison Table</div>
+                                      <div className="flex-1 overflow-auto border border-border rounded-xl max-w-full">
+                                        {(() => {
+                                          const rows = [
+                                            'Monte Carlo Comparison',
+                                            'K-Fold Comparison',
+                                            'Null Set Comparison',
+                                            'Benchmark VTI',
+                                            'Benchmark SPY',
+                                            'Benchmark QQQ',
+                                            'Benchmark DIA',
+                                            'Benchmark DBC',
+                                            'Benchmark DBO',
+                                            'Benchmark GLD',
+                                            'Benchmark BND',
+                                            'Benchmark TLT',
+                                            'Benchmark GBTC',
+                                          ] as const
+                                          const cols = [
+                                            'CAGR-50',
+                                            'MaxDD-DD50',
+                                            'Tail Risk-DD95',
+                                            'Calmar Ratio-50',
+                                            'Calmar Ratio-95',
+                                            'Sharpe Ratio',
+                                            'Sortino Ratio',
+                                            'Treynor Ratio',
+                                            'Volatility',
+                                            'Win Rate',
+                                          ] as const
                                           return (
-                                            <option key={n} value={fundKey} disabled={!isEmpty}>
-                                              Fund #{n} {isEmpty ? '' : '(occupied)'}
-                                            </option>
+                                            <table className="analyze-compare-table">
+                                              <thead>
+                                                <tr>
+                                                  <th>Comparison</th>
+                                                  {cols.map((c) => (
+                                                    <th key={c}>{c}</th>
+                                                  ))}
+                                                </tr>
+                                              </thead>
+                                              <tbody>
+                                                {rows.map((rowName) => (
+                                                  <tr key={rowName}>
+                                                    <td>{rowName}</td>
+                                                    {cols.map((c) => (
+                                                      <td key={c}>0</td>
+                                                    ))}
+                                                  </tr>
+                                                ))}
+                                              </tbody>
+                                            </table>
                                           )
-                                        })}
-                                      </select>
-                                    )}
-                                  </td>
-                                </tr>
-                              )
-                            })}
-                          </tbody>
-                        </table>
+                                        })()}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </Card>
+                          )
+                        })}
                       </div>
                     )
                   })()}
