@@ -7671,7 +7671,7 @@ function App() {
   const [backtestFocusNodeId, setBacktestFocusNodeId] = useState<string | null>(null)
 
   // Load bots from API on mount/user change (database is source of truth)
-  const [botsLoadedFromApi, setBotsLoadedFromApi] = useState(false)
+  const [_botsLoadedFromApi, setBotsLoadedFromApi] = useState(false)
   useEffect(() => {
     if (!userId) return
     setBotsLoadedFromApi(false)
@@ -7910,10 +7910,17 @@ function App() {
   const callChainsById = useMemo(() => new Map(callChains.map((c) => [c.id, c])), [callChains])
 
   // Dashboard investment logic
+  // Combine savedBots + allNexusBots (de-duped) for eligible bots
   const eligibleBots = useMemo(() => {
     if (!userId) return []
-    return getEligibleBots(savedBots, userId)
-  }, [savedBots, userId])
+    // Combine savedBots and allNexusBots, preferring savedBots for duplicates
+    const savedBotIds = new Set(savedBots.map(b => b.id))
+    const combinedBots = [
+      ...savedBots,
+      ...allNexusBots.filter(b => !savedBotIds.has(b.id))
+    ]
+    return getEligibleBots(combinedBots, userId)
+  }, [savedBots, allNexusBots, userId])
 
   const dashboardCash = dashboardPortfolio.cash
 
@@ -7960,7 +7967,9 @@ function App() {
         let investedPrivate = 0
 
         dashboardInvestmentsWithPnl.forEach(inv => {
+          // Look in both savedBots and allNexusBots to find the bot
           const bot = savedBots.find(b => b.id === inv.botId)
+            ?? allNexusBots.find(b => b.id === inv.botId)
           const tags = bot?.tags || []
           if (tags.includes('Atlas')) {
             investedAtlas += inv.currentValue
@@ -7995,11 +8004,13 @@ function App() {
     // Also sync periodically (every 5 minutes)
     const interval = setInterval(syncPortfolioSummary, 300000)
     return () => clearInterval(interval)
-  }, [userId, dashboardTotalValue, dashboardCash, dashboardInvestmentsWithPnl, savedBots])
+  }, [userId, dashboardTotalValue, dashboardCash, dashboardInvestmentsWithPnl, savedBots, allNexusBots])
 
   const handleDashboardBuy = () => {
     if (!dashboardBuyBotId) return
+    // Look in both savedBots and allNexusBots to find the bot
     const bot = savedBots.find((b) => b.id === dashboardBuyBotId)
+      ?? allNexusBots.find((b) => b.id === dashboardBuyBotId)
     if (!bot) return
 
     // Calculate amount
@@ -8122,7 +8133,9 @@ function App() {
 
   // Handle buying Nexus bots from inline buy UI (Analyze tab, Community Nexus, watchlists)
   const handleNexusBuy = (botId: string) => {
+    // Look in both savedBots and allNexusBots to find the bot
     const bot = savedBots.find((b) => b.id === botId)
+      ?? allNexusBots.find((b) => b.id === botId)
     if (!bot) return
 
     // Calculate amount
@@ -8194,41 +8207,33 @@ function App() {
       return { dashboardEquityCurve: portfolioPoints, dashboardBotSeries: [] }
     }
 
-    // Build bot series from real backtest data, starting from each bot's buy date
+    // Build bot series from real backtest data (full historical data, scaled by cost basis)
     const botSeries: BotReturnSeries[] = []
     const botEquityByTime = new Map<number, Map<string, { value: number; costBasis: number }>>()
 
     investments.forEach((inv, botIdx) => {
       const backtestState = analyzeBacktests[inv.botId]
       const backtestResult = backtestState?.result
-      const buyDateSec = Math.floor(inv.buyDate / 1000)
 
       if (backtestResult?.points && backtestResult.points.length > 0) {
-        // Find the equity value at buy date to calculate growth ratio
-        let buyDateEquity: number | null = null
+        // Use start of backtest as baseline (value = 1 at start)
+        const startEquity = backtestResult.points[0].value
         const botPoints: EquityCurvePoint[] = []
 
         for (const pt of backtestResult.points) {
           const timeSec = typeof pt.time === 'number' ? pt.time : Math.floor(Date.parse(pt.time as string) / 1000)
 
-          // Only include points from buy date onwards
-          if (timeSec >= buyDateSec) {
-            if (buyDateEquity === null) {
-              buyDateEquity = pt.value
-            }
+          // Scale backtest equity to cost basis (if you invested $20k at start, show growth from $20k)
+          const growthRatio = startEquity > 0 ? pt.value / startEquity : 1
+          const currentValue = inv.costBasis * growthRatio
 
-            // Calculate the current value based on cost basis and growth
-            const growthRatio = buyDateEquity > 0 ? pt.value / buyDateEquity : 1
-            const currentValue = inv.costBasis * growthRatio
+          botPoints.push({ time: timeSec as UTCTimestamp, value: currentValue })
 
-            botPoints.push({ time: timeSec as UTCTimestamp, value: currentValue })
-
-            // Track for portfolio aggregation
-            if (!botEquityByTime.has(timeSec)) {
-              botEquityByTime.set(timeSec, new Map())
-            }
-            botEquityByTime.get(timeSec)!.set(inv.botId, { value: currentValue, costBasis: inv.costBasis })
+          // Track for portfolio aggregation
+          if (!botEquityByTime.has(timeSec)) {
+            botEquityByTime.set(timeSec, new Map())
           }
+          botEquityByTime.get(timeSec)!.set(inv.botId, { value: currentValue, costBasis: inv.costBasis })
         }
 
         if (botPoints.length > 0) {
@@ -9298,6 +9303,21 @@ function App() {
     })
   }, [savedBots, uiState.analyzeCollapsedByBotId, analyzeBacktests, runAnalyzeBacktest])
 
+  // Auto-run backtests for invested bots so their equity curves show in portfolio chart
+  useEffect(() => {
+    dashboardPortfolio.investments.forEach((inv) => {
+      const state = analyzeBacktests[inv.botId]
+      if (!state || state.status === 'idle' || state.status === 'error') {
+        // Find bot in savedBots or allNexusBots
+        const bot = savedBots.find((b) => b.id === inv.botId)
+          ?? allNexusBots.find((b) => b.id === inv.botId)
+        if (bot) {
+          runAnalyzeBacktest(bot)
+        }
+      }
+    })
+  }, [dashboardPortfolio.investments, savedBots, allNexusBots, analyzeBacktests, runAnalyzeBacktest])
+
   useEffect(() => {
     for (const bot of savedBots) {
       if (uiState.analyzeCollapsedByBotId[bot.id] !== false) continue
@@ -9565,6 +9585,15 @@ function App() {
   }
 
   const colorTheme = uiState.colorTheme ?? 'slate'
+
+  // Helper to find fund slot from uiState.fundZones (used in Dashboard and Community Nexus)
+  const getFundSlotForBot = (botId: string): number | null => {
+    for (let i = 1; i <= 5; i++) {
+      const key = `fund${i}` as keyof FundZones
+      if (uiState.fundZones[key] === botId) return i
+    }
+    return null
+  }
 
   if (!userId) {
     return (
@@ -10705,15 +10734,6 @@ function App() {
           <Card className="h-full flex flex-col overflow-hidden m-4">
             <CardContent className="p-4 flex flex-col h-full overflow-auto">
             {(() => {
-              // Helper to find fund slot from uiState.fundZones
-              const getFundSlotForBot = (botId: string): number | null => {
-                for (let i = 1; i <= 5; i++) {
-                  const key = `fund${i}` as keyof FundZones
-                  if (uiState.fundZones[key] === botId) return i
-                }
-                return null
-              }
-
               // Generate rows for Nexus bots from ALL users (cross-account)
               const communityBotRows: CommunityBotRow[] = allNexusBots.map((bot) => {
                   const tagNames = (watchlistsByBotId.get(bot.id) ?? []).map((w) => w.name)
@@ -10762,13 +10782,35 @@ function App() {
               }).filter(Boolean))]
 
               // Search results - filter by multiple criteria (AND logic)
+              // Includes: all Nexus bots + current user's private bots
               const searchedBots = (() => {
                 // Check if any filter has a value
                 const activeFilters = communitySearchFilters.filter(f => f.value.trim())
                 if (activeFilters.length === 0) return []
 
+                // Get current user's private bots (non-Nexus)
+                const nexusBotIds = new Set(allNexusBots.map(b => b.id))
+                const myPrivateBotRows: CommunityBotRow[] = savedBots
+                  .filter(bot => bot.builderId === userId && !nexusBotIds.has(bot.id))
+                  .map((bot) => {
+                    const tagNames = (watchlistsByBotId.get(bot.id) ?? []).map((w) => w.name)
+                    const tags = ['Private', `Builder: ${bot.builderId}`, ...tagNames]
+                    const metrics = analyzeBacktests[bot.id]?.result?.metrics
+                    return {
+                      id: bot.id,
+                      name: bot.name,
+                      tags,
+                      oosCagr: metrics?.cagr ?? 0,
+                      oosMaxdd: metrics?.maxDrawdown ?? 0,
+                      oosSharpe: metrics?.sharpe ?? 0,
+                    }
+                  })
+
+                // Combine Nexus bots + user's private bots for search
+                const allSearchableBots = [...communityBotRows, ...myPrivateBotRows]
+
                 // Start with all bots, add calmar
-                let result = communityBotRows.map((r) => ({
+                let result = allSearchableBots.map((r) => ({
                   ...r,
                   calmar: r.oosMaxdd !== 0 ? Math.abs(r.oosCagr / r.oosMaxdd) : 0,
                 }))
@@ -11534,69 +11576,100 @@ function App() {
                     {/* Divider */}
                     <div className="border-t border-border my-3" />
 
-                    {/* Bots Invested In Section */}
+                    {/* Bots Invested In Section - Uses same card format as Community Nexus */}
                     <div className="font-black mb-3">Bots Invested In ({dashboardInvestmentsWithPnl.length})</div>
                     {dashboardInvestmentsWithPnl.length === 0 ? (
                       <div className="text-muted text-center py-4">No investments yet.</div>
                     ) : (
-                      <div className="grid gap-2 max-h-[250px] overflow-y-auto">
+                      <div className="flex flex-col gap-2.5">
                         {dashboardInvestmentsWithPnl.map((inv, idx) => {
                           const isExpanded = dashboardBotExpanded[inv.botId] ?? false
                           const isSelling = dashboardSellBotId === inv.botId
                           const isBuyingMore = dashboardBuyMoreBotId === inv.botId
                           const botColor = BOT_CHART_COLORS[idx % BOT_CHART_COLORS.length]
                           const allocation = dashboardTotalValue > 0 ? (inv.currentValue / dashboardTotalValue) * 100 : 0
+                          // Look up bot from savedBots or allNexusBots
+                          const b = savedBots.find((bot) => bot.id === inv.botId)
+                            ?? allNexusBots.find((bot) => bot.id === inv.botId)
+                          const analyzeState = analyzeBacktests[inv.botId]
+                          const wlTags = watchlistsByBotId.get(inv.botId) ?? []
+
+                          const toggleCollapse = () => {
+                            const next = !isExpanded
+                            setDashboardBotExpanded((prev) => ({ ...prev, [inv.botId]: next }))
+                            // Run backtest if expanding and not already done
+                            if (next && b) {
+                              if (!analyzeState || analyzeState.status === 'idle' || analyzeState.status === 'error') {
+                                runAnalyzeBacktest(b)
+                              }
+                            }
+                          }
+
+                          // Use anonymized display name for Nexus bots from other users
+                          const fundSlot = b?.fundSlot ?? getFundSlotForBot(inv.botId)
+                          const displayName = b?.tags?.includes('Nexus') && b?.builderId !== userId && fundSlot
+                            ? `${b.builderId}'s Fund #${fundSlot}`
+                            : b?.tags?.includes('Nexus') && b?.builderId !== userId
+                              ? `${b.builderId}'s Fund`
+                              : inv.botName
+
                           return (
-                            <Card key={inv.botId} className="p-3 border">
-                              <div className="flex items-center gap-3">
-                                <div className="w-2 h-2 rounded-full" style={{ backgroundColor: botColor }} />
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  className="h-6 w-6 p-0"
-                                  onClick={() => setDashboardBotExpanded((prev) => ({ ...prev, [inv.botId]: !isExpanded }))}
-                                >
-                                  {isExpanded ? '▼' : '▶'}
+                            <Card key={inv.botId} className="grid gap-2.5">
+                              <div className="flex items-center gap-2.5 flex-wrap">
+                                <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: botColor }} />
+                                <Button variant="ghost" size="sm" onClick={toggleCollapse}>
+                                  {isExpanded ? 'Collapse' : 'Expand'}
                                 </Button>
-                                <div className="flex-1">
-                                  <div className="font-bold">{inv.botName}</div>
+                                <div className="font-black">{displayName}</div>
+                                <Badge variant={b?.tags?.includes('Nexus') ? 'default' : b?.tags?.includes('Atlas') ? 'default' : 'accent'}>
+                                  {b?.tags?.includes('Nexus') ? 'Nexus' : b?.tags?.includes('Atlas') ? 'Atlas' : 'Private'}
+                                </Badge>
+                                {b?.builderId && <Badge variant="default">Builder: {b.builderId}</Badge>}
+                                <div className="flex gap-1.5 flex-wrap">
+                                  {wlTags.map((w) => (
+                                    <Badge key={w.id} variant="accent" className="gap-1.5">
+                                      {w.name}
+                                    </Badge>
+                                  ))}
                                 </div>
-                                <div className="text-sm text-muted">
-                                  {formatUsd(inv.costBasis)} → {formatUsd(inv.currentValue)}
+                                <div className="ml-auto flex items-center gap-2.5 flex-wrap">
+                                  <div className="text-sm text-muted">
+                                    {formatUsd(inv.costBasis)} → {formatUsd(inv.currentValue)}
+                                  </div>
+                                  <div className={cn("font-bold min-w-[80px] text-right", inv.pnl >= 0 ? 'text-success' : 'text-danger')}>
+                                    {formatSignedUsd(inv.pnl)} ({inv.pnlPercent >= 0 ? '+' : ''}{inv.pnlPercent.toFixed(1)}%)
+                                  </div>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => {
+                                      setDashboardSellBotId(null)
+                                      setDashboardBuyMoreBotId(isBuyingMore ? null : inv.botId)
+                                    }}
+                                  >
+                                    Buy More
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => {
+                                      setDashboardBuyMoreBotId(null)
+                                      setDashboardSellBotId(isSelling ? null : inv.botId)
+                                    }}
+                                  >
+                                    Sell
+                                  </Button>
                                 </div>
-                                <div className={cn("font-bold min-w-[80px] text-right", inv.pnl >= 0 ? 'text-success' : 'text-danger')}>
-                                  {formatSignedUsd(inv.pnl)} ({inv.pnlPercent >= 0 ? '+' : ''}{inv.pnlPercent.toFixed(1)}%)
-                                </div>
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  className="h-6 px-2 text-xs"
-                                  onClick={() => {
-                                    setDashboardSellBotId(null)
-                                    setDashboardBuyMoreBotId(isBuyingMore ? null : inv.botId)
-                                  }}
-                                >
-                                  Buy
-                                </Button>
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  className="h-6 px-2 text-xs"
-                                  onClick={() => {
-                                    setDashboardBuyMoreBotId(null)
-                                    setDashboardSellBotId(isSelling ? null : inv.botId)
-                                  }}
-                                >
-                                  Sell
-                                </Button>
                               </div>
+
+                              {/* Buy More inline form */}
                               {isBuyingMore && (
-                                <div className="mt-3 pt-3 border-t border-border flex gap-2 items-center">
+                                <div className="pt-3 border-t border-border flex gap-2 items-center flex-wrap">
                                   <div className="flex gap-1">
                                     <Button
                                       size="sm"
                                       variant={dashboardBuyMoreMode === '$' ? 'accent' : 'outline'}
-                                      className="h-6 w-6 p-0 text-xs"
+                                      className="h-8 w-8 p-0"
                                       onClick={() => setDashboardBuyMoreMode('$')}
                                     >
                                       $
@@ -11604,7 +11677,7 @@ function App() {
                                     <Button
                                       size="sm"
                                       variant={dashboardBuyMoreMode === '%' ? 'accent' : 'outline'}
-                                      className="h-6 w-6 p-0 text-xs"
+                                      className="h-8 w-8 p-0"
                                       onClick={() => setDashboardBuyMoreMode('%')}
                                     >
                                       %
@@ -11615,26 +11688,27 @@ function App() {
                                     placeholder={dashboardBuyMoreMode === '$' ? 'Amount' : '% of cash'}
                                     value={dashboardBuyMoreAmount}
                                     onChange={(e) => setDashboardBuyMoreAmount(e.target.value)}
-                                    className="h-6 w-24 text-sm"
+                                    className="h-8 w-32"
                                   />
                                   <Button
                                     size="sm"
                                     variant="default"
-                                    className="h-6 px-2 text-xs"
                                     onClick={() => handleDashboardBuyMore(inv.botId)}
                                   >
                                     Buy More
                                   </Button>
-                                  <span className="text-xs text-muted">Cash: {formatUsd(dashboardCash)}</span>
+                                  <span className="text-sm text-muted">Cash: {formatUsd(dashboardCash)}</span>
                                 </div>
                               )}
+
+                              {/* Sell inline form */}
                               {isSelling && (
-                                <div className="mt-3 pt-3 border-t border-border flex gap-2 items-center">
+                                <div className="pt-3 border-t border-border flex gap-2 items-center flex-wrap">
                                   <div className="flex gap-1">
                                     <Button
                                       size="sm"
                                       variant={dashboardSellMode === '$' ? 'accent' : 'outline'}
-                                      className="h-6 w-6 p-0 text-xs"
+                                      className="h-8 w-8 p-0"
                                       onClick={() => setDashboardSellMode('$')}
                                     >
                                       $
@@ -11642,7 +11716,7 @@ function App() {
                                     <Button
                                       size="sm"
                                       variant={dashboardSellMode === '%' ? 'accent' : 'outline'}
-                                      className="h-6 w-6 p-0 text-xs"
+                                      className="h-8 w-8 p-0"
                                       onClick={() => setDashboardSellMode('%')}
                                     >
                                       %
@@ -11653,12 +11727,11 @@ function App() {
                                     placeholder={dashboardSellMode === '$' ? 'Amount' : 'Percent'}
                                     value={dashboardSellAmount}
                                     onChange={(e) => setDashboardSellAmount(e.target.value)}
-                                    className="h-6 w-24 text-sm"
+                                    className="h-8 w-32"
                                   />
                                   <Button
                                     size="sm"
                                     variant="default"
-                                    className="h-6 px-2 text-xs"
                                     onClick={() => handleDashboardSell(inv.botId, false)}
                                   >
                                     Sell
@@ -11666,34 +11739,132 @@ function App() {
                                   <Button
                                     size="sm"
                                     variant="destructive"
-                                    className="h-6 px-2 text-xs"
                                     onClick={() => handleDashboardSell(inv.botId, true)}
                                   >
                                     Sell All
                                   </Button>
                                 </div>
                               )}
+
+                              {/* Expanded view - same format as Community Nexus cards */}
                               {isExpanded && !isSelling && !isBuyingMore && (
-                                <div className="mt-3 pt-3 border-t border-border">
-                                  <div className="grid grid-cols-4 gap-4 text-sm">
-                                    <div>
-                                      <div className="text-[10px] text-muted font-bold">Allocation</div>
-                                      <div className="font-bold">{allocation.toFixed(1)}%</div>
-                                    </div>
-                                    <div>
-                                      <div className="text-[10px] text-muted font-bold">Cost Basis</div>
-                                      <div className="font-bold">{formatUsd(inv.costBasis)}</div>
-                                    </div>
-                                    <div>
-                                      <div className="text-[10px] text-muted font-bold">Current Value</div>
-                                      <div className="font-bold">{formatUsd(inv.currentValue)}</div>
-                                    </div>
-                                    <div>
-                                      <div className="text-[10px] text-muted font-bold">PnL</div>
-                                      <div className={cn("font-bold", inv.pnl >= 0 ? 'text-success' : 'text-danger')}>
-                                        {formatSignedUsd(inv.pnl)}
+                                <div className="flex flex-col gap-2.5 w-full">
+                                  <div className="saved-item grid grid-cols-1 gap-3.5 h-full w-full min-w-0 overflow-hidden items-stretch justify-items-stretch">
+                                    {analyzeState?.status === 'loading' ? (
+                                      <div className="text-muted">Running backtest…</div>
+                                    ) : analyzeState?.status === 'error' ? (
+                                      <div className="grid gap-2">
+                                        <div className="text-muted">{analyzeState.error ?? 'Failed to run backtest.'}</div>
+                                        {b?.payload && <Button onClick={() => runAnalyzeBacktest(b)}>Retry</Button>}
                                       </div>
-                                    </div>
+                                    ) : analyzeState?.status === 'done' ? (
+                                      <div className="grid grid-cols-1 gap-2.5 min-w-0 w-full">
+                                        {/* Live Stats */}
+                                        <div className="base-stats-card w-full min-w-0 max-w-full flex flex-col items-stretch text-center">
+                                          <div className="font-black mb-2 text-center">Live Stats</div>
+                                          <div className="grid grid-cols-4 gap-2.5 justify-items-center w-full">
+                                            <div>
+                                              <div className="stat-label">Allocation</div>
+                                              <div className="stat-value">{allocation.toFixed(1)}%</div>
+                                            </div>
+                                            <div>
+                                              <div className="stat-label">Cost Basis</div>
+                                              <div className="stat-value">{formatUsd(inv.costBasis)}</div>
+                                            </div>
+                                            <div>
+                                              <div className="stat-label">Current Value</div>
+                                              <div className="stat-value">{formatUsd(inv.currentValue)}</div>
+                                            </div>
+                                            <div>
+                                              <div className="stat-label">P&L</div>
+                                              <div className={cn("stat-value", inv.pnl >= 0 ? 'text-success' : 'text-danger')}>
+                                                {formatSignedUsd(inv.pnl)} ({inv.pnlPercent >= 0 ? '+' : ''}{inv.pnlPercent.toFixed(1)}%)
+                                              </div>
+                                            </div>
+                                          </div>
+                                        </div>
+
+                                        {/* Backtest Snapshot */}
+                                        <div className="base-stats-card w-full min-w-0 text-center self-stretch">
+                                          <div className="w-full">
+                                            <div className="font-black mb-1.5">Backtest Snapshot</div>
+                                            <div className="text-xs text-muted mb-2.5">Benchmark: {backtestBenchmark}</div>
+                                            <div className="w-full max-w-full overflow-hidden">
+                                              <EquityChart
+                                                points={analyzeState.result?.points ?? []}
+                                                benchmarkPoints={analyzeState.result?.benchmarkPoints}
+                                                markers={analyzeState.result?.markers ?? []}
+                                                logScale
+                                                showCursorStats={false}
+                                                heightPx={390}
+                                              />
+                                            </div>
+                                            <div className="mt-2.5 w-full">
+                                              <DrawdownChart points={analyzeState.result?.drawdownPoints ?? []} />
+                                            </div>
+                                          </div>
+                                        </div>
+
+                                        {/* Historical Stats */}
+                                        <div className="base-stats-card w-full min-w-0 text-center self-stretch">
+                                          <div className="w-full">
+                                            <div className="font-black mb-2">Historical Stats</div>
+                                            <div className="grid grid-cols-[repeat(4,minmax(140px,1fr))] gap-2.5 justify-items-center overflow-x-auto max-w-full w-full">
+                                              <div>
+                                                <div className="stat-label">CAGR</div>
+                                                <div className="stat-value">{formatPct(analyzeState.result?.metrics.cagr ?? NaN)}</div>
+                                              </div>
+                                              <div>
+                                                <div className="stat-label">Max DD</div>
+                                                <div className="stat-value">{formatPct(analyzeState.result?.metrics.maxDrawdown ?? NaN)}</div>
+                                              </div>
+                                              <div>
+                                                <div className="stat-label">Calmar Ratio</div>
+                                                <div className="stat-value">
+                                                  {Number.isFinite(analyzeState.result?.metrics.calmar ?? NaN)
+                                                    ? (analyzeState.result?.metrics.calmar ?? 0).toFixed(2)
+                                                    : '--'}
+                                                </div>
+                                              </div>
+                                              <div>
+                                                <div className="stat-label">Sharpe Ratio</div>
+                                                <div className="stat-value">
+                                                  {Number.isFinite(analyzeState.result?.metrics.sharpe ?? NaN)
+                                                    ? (analyzeState.result?.metrics.sharpe ?? 0).toFixed(2)
+                                                    : '--'}
+                                                </div>
+                                              </div>
+                                              <div>
+                                                <div className="stat-label">Sortino Ratio</div>
+                                                <div className="stat-value">
+                                                  {Number.isFinite(analyzeState.result?.metrics.sortino ?? NaN)
+                                                    ? (analyzeState.result?.metrics.sortino ?? 0).toFixed(2)
+                                                    : '--'}
+                                                </div>
+                                              </div>
+                                              <div>
+                                                <div className="stat-label">Treynor Ratio</div>
+                                                <div className="stat-value">
+                                                  {Number.isFinite(analyzeState.result?.metrics.treynor ?? NaN)
+                                                    ? (analyzeState.result?.metrics.treynor ?? 0).toFixed(2)
+                                                    : '--'}
+                                                </div>
+                                              </div>
+                                              <div>
+                                                <div className="stat-label">Volatility</div>
+                                                <div className="stat-value">{formatPct(analyzeState.result?.metrics.vol ?? NaN)}</div>
+                                              </div>
+                                              <div>
+                                                <div className="stat-label">Win Rate</div>
+                                                <div className="stat-value">{formatPct(analyzeState.result?.metrics.winRate ?? NaN)}</div>
+                                              </div>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <div className="text-muted">Click Expand to load backtest data.</div>
+                                    )}
                                   </div>
                                 </div>
                               )}
