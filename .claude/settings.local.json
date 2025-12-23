@@ -26,7 +26,18 @@
       "Bash(curl:*)",
       "Bash(npm run dev:*)",
       "Bash(timeout /t 2)",
-      "Bash(C:/Python313/python.exe:*)"
+      "Bash(C:/Python313/python.exe:*)",
+      "Bash(git reset:*)",
+      "Bash(git stash:*)",
+      "Bash(tasklist:*)",
+      "Bash(timeout 10 npm run:*)",
+      "Bash(cmd /c \"taskkill /PID 192552 /F\")",
+      "Bash(timeout /t 5)",
+      "Bash(powershell:*)",
+      "Bash(node:*)",
+      "Bash(npx tsc:*)",
+      "Bash(cmd /c \"taskkill /PID 225976 /F\")",
+      "Bash(cmd /c \"taskkill /PID 232188 /F\")"
     ]
   }
 }

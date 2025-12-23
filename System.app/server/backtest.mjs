@@ -719,6 +719,8 @@ export async function runBacktest(payload, options = {}) {
 
   let equity = 1
   let peak = 1
+  let spyEquity = 1  // For benchmark curve
+  const benchmarkPoints = [{ time: db.dates[startPointIndex], value: 1 }]
   const startEnd = backtestMode === 'OC' ? startTradeIndex : startTradeIndex + 1
 
   for (let end = startEnd; end < db.dates.length; end++) {
@@ -798,6 +800,10 @@ export async function runBacktest(payload, options = {}) {
     }
     spyReturns.push(spyRet)
 
+    // Accumulate SPY equity for benchmark curve
+    spyEquity *= 1 + spyRet
+    benchmarkPoints.push({ time: db.dates[end], value: spyEquity })
+
     if (!Number.isFinite(gross)) gross = 0
 
     let net = gross - cost
@@ -820,8 +826,9 @@ export async function runBacktest(payload, options = {}) {
   const equityValues = points.map(p => p.value)
   const metrics = computeMetrics(equityValues, returns)
 
-  // Compute Treynor ratio (beta-adjusted return)
+  // Compute Treynor ratio (beta-adjusted return) and Beta
   let treynorRatio = 0
+  let beta = 0
   if (spyReturns.length > 1 && returns.length > 1) {
     const meanRet = returns.reduce((a, b) => a + b, 0) / returns.length
     const meanSpy = spyReturns.reduce((a, b) => a + b, 0) / spyReturns.length
@@ -831,7 +838,7 @@ export async function runBacktest(payload, options = {}) {
       cov += (returns[i] - meanRet) * (spyReturns[i] - meanSpy)
       varSpy += (spyReturns[i] - meanSpy) ** 2
     }
-    const beta = varSpy > 0 ? cov / varSpy : 0
+    beta = varSpy > 0 ? cov / varSpy : 0
     if (beta > 0) {
       treynorRatio = (metrics.cagr) / beta
     }
@@ -850,6 +857,7 @@ export async function runBacktest(payload, options = {}) {
       sharpeRatio: metrics.sharpe,
       sortinoRatio: metrics.sortino,
       treynorRatio,
+      beta, // FRD-016: Add Beta metric
       volatility: metrics.volatility,
       winRate,
       avgTurnover,
@@ -859,6 +867,7 @@ export async function runBacktest(payload, options = {}) {
       tradingDays: metrics.days,
     },
     equityCurve: points.map(p => ({ date: new Date(p.time * 1000).toISOString().split('T')[0], equity: p.value })),
+    benchmarkCurve: benchmarkPoints.map(p => ({ date: new Date(p.time * 1000).toISOString().split('T')[0], equity: p.value })),
     // Include daily allocations for the Allocations tab (sample every N days to reduce payload size)
     allocations: dailyAllocations.filter((_, i) => i % 5 === 0 || i === dailyAllocations.length - 1),
   }

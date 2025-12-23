@@ -417,11 +417,15 @@ async function readAdminData() {
     if (!data.config.eligibilityRequirements) {
       data.config.eligibilityRequirements = []
     }
+    // Ensure atlasFundSlots exists (for Atlas Sponsored systems)
+    if (!data.config.atlasFundSlots) {
+      data.config.atlasFundSlots = []
+    }
     return data
   } catch (e) {
     if (e.code === 'ENOENT') {
       return {
-        config: { atlasFeePercent: 0, partnerProgramSharePercent: 0, eligibilityRequirements: [] },
+        config: { atlasFeePercent: 0, partnerProgramSharePercent: 0, eligibilityRequirements: [], atlasFundSlots: [] },
         treasury: { balance: 100000, entries: [] },
         userSummaries: {}
       }
@@ -448,12 +452,16 @@ app.get('/api/admin/config', async (req, res) => {
 app.put('/api/admin/config', async (req, res) => {
   try {
     const data = await readAdminData()
-    const { atlasFeePercent, partnerProgramSharePercent } = req.body
+    const { atlasFeePercent, partnerProgramSharePercent, atlasFundSlots } = req.body
     if (typeof atlasFeePercent === 'number') {
       data.config.atlasFeePercent = Math.max(0, Math.min(100, atlasFeePercent))
     }
     if (typeof partnerProgramSharePercent === 'number') {
       data.config.partnerProgramSharePercent = Math.max(0, Math.min(100, partnerProgramSharePercent))
+    }
+    // Update Atlas Fund Slots (array of bot IDs)
+    if (Array.isArray(atlasFundSlots)) {
+      data.config.atlasFundSlots = atlasFundSlots.filter(id => typeof id === 'string' && id.length > 0)
     }
     await writeAdminData(data)
     res.json({ config: data.config })
@@ -593,15 +601,72 @@ app.put('/api/admin/eligibility', async (req, res) => {
 // ============================================================================
 import * as database from './db/index.mjs'
 import { runBacktest } from './backtest.mjs'
+import * as backtestCache from './db/cache.mjs'
 
 // Initialize database on startup
 let dbInitialized = false
+let cacheInitialized = false
 
 async function ensureDbInitialized() {
   if (!dbInitialized) {
     database.initializeDatabase()
     dbInitialized = true
   }
+  if (!cacheInitialized) {
+    backtestCache.initializeCacheDatabase()
+    cacheInitialized = true
+  }
+}
+
+// ============================================================================
+// FRD-014: Helper to get latest ticker data date for cache invalidation
+// ============================================================================
+let cachedDataDate = null
+let dataDateCacheTime = 0
+const DATA_DATE_CACHE_TTL = 60 * 1000 // 1 minute TTL
+
+async function getLatestTickerDataDate() {
+  // Return cached value if still fresh
+  if (cachedDataDate && Date.now() - dataDateCacheTime < DATA_DATE_CACHE_TTL) {
+    return cachedDataDate
+  }
+
+  try {
+    // Get a sample ticker to check latest date
+    const parquetTickers = await listParquetTickers()
+    if (parquetTickers.length === 0) {
+      return new Date().toISOString().split('T')[0]
+    }
+
+    // Query the first available ticker for max date
+    const sampleTicker = parquetTickers[0]
+    const parquetPath = path.join(PARQUET_DIR, `${sampleTicker}.parquet`)
+    const fileForDuckdb = parquetPath.replace(/\\/g, '/').replace(/'/g, "''")
+
+    const result = await new Promise((resolve, reject) => {
+      conn.all(`SELECT MAX(Date) as max_date FROM read_parquet('${fileForDuckdb}')`, (err, rows) => {
+        if (err) reject(err)
+        else resolve(rows)
+      })
+    })
+
+    if (result && result[0]?.max_date) {
+      // DuckDB returns Date as epoch or string - handle both
+      const maxDate = result[0].max_date
+      const dateStr = typeof maxDate === 'number'
+        ? new Date(maxDate * 1000).toISOString().split('T')[0]
+        : String(maxDate).split('T')[0]
+
+      cachedDataDate = dateStr
+      dataDateCacheTime = Date.now()
+      return dateStr
+    }
+  } catch (e) {
+    console.warn('[Cache] Failed to get ticker data date:', e.message)
+  }
+
+  // Fallback to today
+  return new Date().toISOString().split('T')[0]
 }
 
 // ============================================================================
@@ -620,9 +685,16 @@ app.post('/api/auth/login', async (req, res) => {
     if (!user) {
       return res.status(401).json({ error: 'Invalid credentials' })
     }
+
+    // FRD-014: Check and trigger daily refresh on first login of the day
+    const dailyRefreshTriggered = backtestCache.checkAndTriggerDailyRefresh()
+
     // Return user without password
     const { passwordHash, ...safeUser } = user
-    res.json({ user: safeUser })
+    res.json({
+      user: safeUser,
+      dailyRefreshTriggered, // Let client know if cache was cleared
+    })
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) })
   }
@@ -1038,10 +1110,12 @@ app.post('/api/migrate/user-data', async (req, res) => {
 // ============================================================================
 
 // POST /api/bots/:id/run-backtest - Run backtest on server and save metrics
+// FRD-014: Supports caching - checks cache first, only runs backtest on miss
 app.post('/api/bots/:id/run-backtest', async (req, res) => {
   try {
     await ensureDbInitialized()
     const botId = req.params.id
+    const forceRefresh = req.body.forceRefresh === true
 
     // Get bot with payload (only works for bots in database)
     const bot = await database.getBotById(botId, true) // includePayload = true
@@ -1053,7 +1127,32 @@ app.post('/api/bots/:id/run-backtest', async (req, res) => {
       return res.status(400).json({ error: 'Bot has no payload' })
     }
 
-    console.log(`[Backtest] Running backtest for bot ${botId} (${bot.name})...`)
+    // FRD-014: Calculate payload hash and get current data date
+    const payloadHash = backtestCache.hashPayload(bot.payload)
+    const dataDate = await getLatestTickerDataDate()
+
+    // FRD-014: Check cache first (unless force refresh requested)
+    if (!forceRefresh) {
+      const cached = backtestCache.getCachedBacktest(botId, payloadHash, dataDate)
+      if (cached) {
+        console.log(`[Backtest] Cache hit for bot ${botId} (${bot.name})`)
+
+        // Still update metrics in main DB (in case they were cleared)
+        await database.updateBotMetrics(botId, cached.metrics)
+
+        return res.json({
+          success: true,
+          cached: true,
+          cachedAt: cached.cachedAt,
+          metrics: cached.metrics,
+          equityCurve: cached.equityCurve,
+          benchmarkCurve: cached.benchmarkCurve,
+          allocations: cached.allocations,
+        })
+      }
+    }
+
+    console.log(`[Backtest] Running backtest for bot ${botId} (${bot.name})${forceRefresh ? ' (force refresh)' : ''}...`)
     const startTime = Date.now()
 
     // Run backtest on server
@@ -1068,9 +1167,18 @@ app.post('/api/bots/:id/run-backtest', async (req, res) => {
     // Save metrics to database
     await database.updateBotMetrics(botId, result.metrics)
 
+    // FRD-014: Store result in cache (only for completed runs - errors don't reach here)
+    backtestCache.setCachedBacktest(botId, payloadHash, dataDate, {
+      metrics: result.metrics,
+      equityCurve: result.equityCurve,
+      benchmarkCurve: result.benchmarkCurve,
+      allocations: result.allocations,
+    })
+
     // Return metrics (never the payload)
     res.json({
       success: true,
+      cached: false,
       metrics: result.metrics,
       equityCurve: result.equityCurve,
       benchmarkCurve: result.benchmarkCurve,
@@ -1098,6 +1206,235 @@ app.get('/api/bots/:id/metrics', async (req, res) => {
       metrics: bot.metrics || null,
     })
   } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// ============================================================================
+// FRD-014: Backtest Cache Admin Endpoints
+// ============================================================================
+
+// GET /api/admin/cache/stats - Get cache statistics
+app.get('/api/admin/cache/stats', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const stats = backtestCache.getCacheStats()
+    const dataDate = await getLatestTickerDataDate()
+    res.json({
+      ...stats,
+      currentDataDate: dataDate,
+    })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// POST /api/admin/cache/invalidate - Invalidate cache (all or specific bot)
+app.post('/api/admin/cache/invalidate', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const { botId } = req.body
+
+    if (botId) {
+      // Invalidate specific bot
+      const invalidated = backtestCache.invalidateBotCache(botId)
+      res.json({ success: true, botId, invalidated })
+    } else {
+      // Invalidate all
+      const count = backtestCache.invalidateAllCache()
+      res.json({ success: true, invalidatedCount: count })
+    }
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// POST /api/admin/cache/refresh - Force daily refresh (clears all cache)
+app.post('/api/admin/cache/refresh', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const count = backtestCache.invalidateAllCache()
+    backtestCache.setLastRefreshDate()
+    res.json({
+      success: true,
+      invalidatedCount: count,
+      newRefreshDate: backtestCache.getLastRefreshDate(),
+    })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// POST /api/admin/cache/prewarm - Run backtests for all systems to pre-warm cache
+app.post('/api/admin/cache/prewarm', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+
+    // Get all bots from database
+    const allBots = database.sqlite.prepare(`
+      SELECT id, name, payload FROM bots WHERE deleted_at IS NULL AND payload IS NOT NULL
+    `).all()
+
+    if (allBots.length === 0) {
+      return res.json({ success: true, processed: 0, cached: 0, errors: 0, message: 'No systems found' })
+    }
+
+    console.log(`[Cache Prewarm] Starting pre-warm for ${allBots.length} systems...`)
+
+    const dataDate = await getLatestTickerDataDate()
+    let processed = 0
+    let cached = 0
+    let errors = 0
+    const errorList = []
+
+    for (const bot of allBots) {
+      processed++
+      try {
+        const payloadHash = backtestCache.hashPayload(bot.payload)
+
+        // Check if already cached
+        const existing = backtestCache.getCachedBacktest(bot.id, payloadHash, dataDate)
+        if (existing) {
+          cached++
+          console.log(`[Cache Prewarm] ${processed}/${allBots.length} - ${bot.name}: Already cached`)
+          continue
+        }
+
+        // Run backtest
+        console.log(`[Cache Prewarm] ${processed}/${allBots.length} - ${bot.name}: Running backtest...`)
+        const result = await runBacktest(bot.payload, { mode: 'OC', costBps: 0 })
+
+        // Store in cache
+        backtestCache.setCachedBacktest(bot.id, payloadHash, dataDate, {
+          metrics: result.metrics,
+          equityCurve: result.equityCurve,
+          benchmarkCurve: result.benchmarkCurve,
+          allocations: result.allocations,
+        })
+
+        // Also update metrics in main DB
+        await database.updateBotMetrics(bot.id, result.metrics)
+
+        cached++
+        console.log(`[Cache Prewarm] ${processed}/${allBots.length} - ${bot.name}: Cached (CAGR: ${(result.metrics.cagr * 100).toFixed(2)}%)`)
+      } catch (err) {
+        errors++
+        const errorMsg = `${bot.name}: ${err.message || err}`
+        errorList.push(errorMsg)
+        console.error(`[Cache Prewarm] ${processed}/${allBots.length} - ${bot.name}: ERROR - ${err.message || err}`)
+      }
+    }
+
+    console.log(`[Cache Prewarm] Complete: ${cached} cached, ${errors} errors out of ${processed} systems`)
+
+    res.json({
+      success: true,
+      processed,
+      cached,
+      errors,
+      errorList: errorList.slice(0, 10), // Only return first 10 errors
+    })
+  } catch (e) {
+    console.error('[Cache Prewarm] Fatal error:', e)
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// ============================================
+// DATABASE VIEWER ENDPOINTS
+// ============================================
+
+// GET /api/admin/db/:table - Get all rows from a table
+app.get('/api/admin/db/:table', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+
+    const { table } = req.params
+
+    // Define allowed tables and their queries
+    const tableQueries = {
+      'users': {
+        query: `SELECT id, username, display_name, role, is_partner_eligible, created_at, updated_at, last_login_at FROM users ORDER BY created_at DESC`,
+        columns: ['id', 'username', 'display_name', 'role', 'is_partner_eligible', 'created_at', 'updated_at', 'last_login_at']
+      },
+      'bots': {
+        query: `SELECT id, owner_id, name, description, visibility, tags, fund_slot, created_at, updated_at, published_at, deleted_at FROM bots ORDER BY created_at DESC LIMIT 500`,
+        columns: ['id', 'owner_id', 'name', 'description', 'visibility', 'tags', 'fund_slot', 'created_at', 'updated_at', 'published_at', 'deleted_at']
+      },
+      'bot_metrics': {
+        query: `SELECT * FROM bot_metrics ORDER BY cagr DESC LIMIT 500`,
+        columns: ['bot_id', 'cagr', 'max_drawdown', 'calmar_ratio', 'sharpe_ratio', 'sortino_ratio', 'treynor_ratio', 'volatility', 'win_rate', 'avg_turnover', 'avg_holdings', 'trading_days', 'backtest_start_date', 'backtest_end_date', 'last_backtest_at']
+      },
+      'portfolios': {
+        query: `SELECT p.*,
+                (SELECT COUNT(*) FROM portfolio_positions pp WHERE pp.portfolio_id = p.id AND pp.exit_date IS NULL) as active_positions
+                FROM portfolios p ORDER BY p.created_at DESC`,
+        columns: ['id', 'owner_id', 'cash_balance', 'created_at', 'updated_at', 'active_positions']
+      },
+      'portfolio_positions': {
+        query: `SELECT pp.*, b.name as bot_name FROM portfolio_positions pp LEFT JOIN bots b ON pp.bot_id = b.id ORDER BY pp.entry_date DESC LIMIT 500`,
+        columns: ['id', 'portfolio_id', 'bot_id', 'bot_name', 'cost_basis', 'shares', 'entry_date', 'exit_date', 'exit_value']
+      },
+      'watchlists': {
+        query: `SELECT w.*, (SELECT COUNT(*) FROM watchlist_bots wb WHERE wb.watchlist_id = w.id) as bot_count FROM watchlists w ORDER BY w.created_at DESC`,
+        columns: ['id', 'owner_id', 'name', 'is_default', 'created_at', 'updated_at', 'bot_count']
+      },
+      'cache': {
+        query: `SELECT bot_id, payload_hash, data_date, computed_at, created_at, updated_at, LENGTH(results) as results_size FROM backtest_cache ORDER BY computed_at DESC LIMIT 500`,
+        columns: ['bot_id', 'payload_hash', 'data_date', 'computed_at', 'created_at', 'updated_at', 'results_size'],
+        db: 'cache'
+      },
+      'admin_config': {
+        query: `SELECT * FROM admin_config ORDER BY key`,
+        columns: ['key', 'value', 'updated_at', 'updated_by']
+      },
+      'eligibility_requirements': {
+        query: `SELECT * FROM eligibility_requirements ORDER BY created_at DESC`,
+        columns: ['id', 'metric', 'comparison', 'value', 'is_active', 'created_at']
+      },
+      'user_preferences': {
+        query: `SELECT user_id, theme, color_scheme, updated_at FROM user_preferences ORDER BY updated_at DESC`,
+        columns: ['user_id', 'theme', 'color_scheme', 'updated_at']
+      }
+    }
+
+    const tableConfig = tableQueries[table]
+    if (!tableConfig) {
+      return res.status(400).json({ error: `Unknown table: ${table}. Available: ${Object.keys(tableQueries).join(', ')}` })
+    }
+
+    let rows
+    if (tableConfig.db === 'cache') {
+      // Query from cache database
+      rows = backtestCache.cacheDb.prepare(tableConfig.query).all()
+    } else {
+      // Query from main database
+      rows = database.sqlite.prepare(tableConfig.query).all()
+    }
+
+    // Format timestamps
+    const formatRow = (row) => {
+      const formatted = { ...row }
+      for (const key of Object.keys(formatted)) {
+        if (key.endsWith('_at') && formatted[key]) {
+          // Convert timestamp to readable format
+          const ts = formatted[key]
+          if (typeof ts === 'number') {
+            formatted[key] = new Date(ts).toISOString().replace('T', ' ').substring(0, 19)
+          }
+        }
+      }
+      return formatted
+    }
+
+    res.json({
+      table,
+      columns: tableConfig.columns,
+      rows: rows.map(formatRow),
+      count: rows.length
+    })
+  } catch (e) {
+    console.error(`[DB Viewer] Error fetching ${req.params.table}:`, e)
     res.status(500).json({ error: String(e?.message || e) })
   }
 })

@@ -43,7 +43,7 @@ import {
   type UTCTimestamp,
 } from 'lightweight-charts'
 
-type BlockKind = 'basic' | 'function' | 'indicator' | 'numbered' | 'position' | 'call'
+type BlockKind = 'basic' | 'function' | 'indicator' | 'numbered' | 'position' | 'call' | 'altExit' | 'scaling'
 type SlotId = 'next' | 'then' | 'else'
 type PositionChoice = string
 type MetricChoice =
@@ -144,6 +144,9 @@ const normalizeNodeForBacktest = (node: FlowNode): FlowNode => {
           items: node.numbered.items.map((item) => ({ ...item, conditions: normalizeConditions(item.conditions) ?? item.conditions })),
         }
       : undefined,
+    // Alt Exit conditions
+    entryConditions: normalizeConditions(node.entryConditions),
+    exitConditions: normalizeConditions(node.exitConditions),
     children: { ...node.children },
   }
   for (const slot of SLOT_ORDER[node.kind]) {
@@ -256,6 +259,7 @@ const loadBotsFromApi = async (userId: UserId): Promise<SavedBot[]> => {
         sharpeRatio?: number
         sortinoRatio?: number
         treynorRatio?: number
+        beta?: number
         volatility?: number
         winRate?: number
         avgTurnover?: number
@@ -289,6 +293,7 @@ const loadBotsFromApi = async (userId: UserId): Promise<SavedBot[]> => {
           sharpe: bot.metrics.sharpeRatio ?? 0,
           sortino: bot.metrics.sortinoRatio ?? 0,
           treynor: bot.metrics.treynorRatio ?? 0,
+          beta: bot.metrics.beta ?? 0,
           volatility: bot.metrics.volatility ?? 0,
           winRate: bot.metrics.winRate ?? 0,
           avgTurnover: bot.metrics.avgTurnover ?? 0,
@@ -760,9 +765,10 @@ type AdminDownloadJob = {
   logs?: string[]
 }
 
-type BotVisibility = 'private' | 'community'
+type SystemVisibility = 'private' | 'community'
+type BotVisibility = SystemVisibility // Backwards compat alias
 
-type SavedBot = {
+type SavedSystem = {
   id: string
   name: string
   builderId: UserId
@@ -770,15 +776,22 @@ type SavedBot = {
   visibility: BotVisibility
   createdAt: number
   tags?: string[] // e.g., ['Atlas', 'Nexus']
-  fundSlot?: 1 | 2 | 3 | 4 | 5 | null // Which fund slot this bot is in (for Nexus bots)
-  backtestResult?: { // Cached metrics from API for cross-user Nexus bots
+  fundSlot?: 1 | 2 | 3 | 4 | 5 | null // Which fund slot this system is in (for Nexus systems)
+  backtestResult?: { // Cached metrics from API for cross-user Nexus systems
     cagr: number
     maxDrawdown: number
     calmar: number
     sharpe: number
     sortino: number
+    treynor: number
+    beta: number
+    volatility: number
+    winRate: number
+    avgTurnover: number
+    avgHoldings: number
   }
 }
+type SavedBot = SavedSystem // Backwards compat alias
 
 type Watchlist = {
   id: string
@@ -800,7 +813,7 @@ type DashboardPortfolio = {
 }
 
 // Admin types for Atlas Overview
-type EligibilityMetric = 'cagr' | 'maxDrawdown' | 'calmar' | 'sharpe' | 'sortino' | 'treynor' | 'vol' | 'winRate' | 'avgTurnover' | 'avgHoldings'
+type EligibilityMetric = 'cagr' | 'maxDrawdown' | 'calmar' | 'sharpe' | 'sortino' | 'treynor' | 'beta' | 'vol' | 'winRate' | 'avgTurnover' | 'avgHoldings'
 
 type EligibilityRequirement = {
   id: string
@@ -814,6 +827,7 @@ type AdminConfig = {
   atlasFeePercent: number
   partnerProgramSharePercent: number
   eligibilityRequirements: EligibilityRequirement[]
+  atlasFundSlots: string[] // Array of bot IDs for Atlas Sponsored systems
 }
 
 type TreasuryEntry = {
@@ -925,6 +939,15 @@ type FlowNode = {
   bottom?: number
   rank?: RankChoice
   callRefId?: string
+  // Alt Exit node properties
+  entryConditions?: ConditionLine[]
+  exitConditions?: ConditionLine[]
+  // Scaling node properties
+  scaleMetric?: MetricChoice
+  scaleWindow?: number
+  scaleTicker?: string
+  scaleFrom?: number
+  scaleTo?: number
 }
 
 const SLOT_ORDER: Record<BlockKind, SlotId[]> = {
@@ -934,6 +957,8 @@ const SLOT_ORDER: Record<BlockKind, SlotId[]> = {
   numbered: ['then', 'else', 'next'],
   position: [],
   call: [],
+  altExit: ['then', 'else'],
+  scaling: ['then', 'else'],
 }
 
 const newId = (() => {
@@ -947,6 +972,7 @@ const newId = (() => {
 })()
 
 const createNode = (kind: BlockKind): FlowNode => {
+  const needsThenElseWeighting = kind === 'indicator' || kind === 'numbered' || kind === 'altExit' || kind === 'scaling'
   const base: FlowNode = {
     id: newId(),
     kind,
@@ -961,11 +987,15 @@ const createNode = (kind: BlockKind): FlowNode => {
               ? 'Position'
               : kind === 'call'
                 ? 'Call Reference'
-                : 'Basic',
+                : kind === 'altExit'
+                  ? 'Alt Exit'
+                  : kind === 'scaling'
+                    ? 'Scaling'
+                    : 'Basic',
     children: {},
     weighting: 'equal',
-    weightingThen: kind === 'indicator' || kind === 'numbered' ? 'equal' : undefined,
-    weightingElse: kind === 'indicator' || kind === 'numbered' ? 'equal' : undefined,
+    weightingThen: needsThenElseWeighting ? 'equal' : undefined,
+    weightingElse: needsThenElseWeighting ? 'equal' : undefined,
     cappedFallback: undefined,
     cappedFallbackThen: undefined,
     cappedFallbackElse: undefined,
@@ -1019,6 +1049,41 @@ const createNode = (kind: BlockKind): FlowNode => {
   bottom: kind === 'function' ? 1 : undefined,
     rank: kind === 'function' ? 'Bottom' : undefined,
     collapsed: false,
+    // Alt Exit properties
+    entryConditions:
+      kind === 'altExit'
+        ? [
+            {
+              id: newId(),
+              type: 'if',
+              window: 14,
+              metric: 'Relative Strength Index',
+              comparator: 'gt',
+              ticker: 'SPY',
+              threshold: 30,
+            },
+          ]
+        : undefined,
+    exitConditions:
+      kind === 'altExit'
+        ? [
+            {
+              id: newId(),
+              type: 'if',
+              window: 14,
+              metric: 'Relative Strength Index',
+              comparator: 'lt',
+              ticker: 'SPY',
+              threshold: 70,
+            },
+          ]
+        : undefined,
+    // Scaling properties
+    scaleMetric: kind === 'scaling' ? 'Relative Strength Index' : undefined,
+    scaleWindow: kind === 'scaling' ? 14 : undefined,
+    scaleTicker: kind === 'scaling' ? 'SPY' : undefined,
+    scaleFrom: kind === 'scaling' ? 30 : undefined,
+    scaleTo: kind === 'scaling' ? 70 : undefined,
   }
   SLOT_ORDER[kind].forEach((slot) => {
     base.children[slot] = [null]
@@ -2447,12 +2512,16 @@ function AdminPanel({
   onTickersUpdated,
   userId,
   onClearData,
+  savedBots,
+  setSavedBots,
 }: {
   adminTab: AdminSubtab
   setAdminTab: (t: AdminSubtab) => void
   onTickersUpdated?: (tickers: string[]) => void
   userId: string
   onClearData: () => void
+  savedBots: SavedBot[]
+  setSavedBots: React.Dispatch<React.SetStateAction<SavedBot[]>>
 }) {
   const [status, setStatus] = useState<AdminStatus | null>(null)
   const [tickers, setTickers] = useState<string[]>([])
@@ -2475,8 +2544,8 @@ function AdminPanel({
 
   // Atlas Overview state
   const [adminStats, setAdminStats] = useState<AdminAggregatedStats | null>(null)
-  const [adminConfig, setAdminConfig] = useState<AdminConfig>({ atlasFeePercent: 0, partnerProgramSharePercent: 0, eligibilityRequirements: [] })
-  const [savedConfig, setSavedConfig] = useState<AdminConfig>({ atlasFeePercent: 0, partnerProgramSharePercent: 0, eligibilityRequirements: [] })
+  const [adminConfig, setAdminConfig] = useState<AdminConfig>({ atlasFeePercent: 0, partnerProgramSharePercent: 0, eligibilityRequirements: [], atlasFundSlots: [] })
+  const [savedConfig, setSavedConfig] = useState<AdminConfig>({ atlasFeePercent: 0, partnerProgramSharePercent: 0, eligibilityRequirements: [], atlasFundSlots: [] })
   const [feeBreakdown, setFeeBreakdown] = useState<TreasuryFeeBreakdown>({ atlasFeesTotal: 0, privateFeesTotal: 0, nexusFeesTotal: 0, nexusPartnerPaymentsTotal: 0 })
   const [treasury, setTreasury] = useState<TreasuryState>({ balance: 100000, entries: [] })
   const [configSaving, setConfigSaving] = useState(false)
@@ -2489,6 +2558,12 @@ function AdminPanel({
   const [newComparison, setNewComparison] = useState<'at_least' | 'at_most'>('at_least')
   const [newMetricValue, setNewMetricValue] = useState(0)
   const [eligibilitySaving, setEligibilitySaving] = useState(false)
+
+  // FRD-014: Cache management state
+  const [cacheStats, setCacheStats] = useState<{ entryCount: number; totalSizeBytes: number; lastRefreshDate: string | null; currentDataDate: string } | null>(null)
+  const [cacheRefreshing, setCacheRefreshing] = useState(false)
+  const [prewarmRunning, setPrewarmRunning] = useState(false)
+  const [prewarmProgress, setPrewarmProgress] = useState<{ processed: number; cached: number; errors: number; total: number } | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -2593,6 +2668,16 @@ function AdminPanel({
         if (cancelled) return
         setParquetTickers([])
       }
+
+      // FRD-014: Also fetch cache stats
+      try {
+        const cacheRes = await fetch(`${API_BASE}/admin/cache/stats`)
+        if (cacheRes.ok && !cancelled) {
+          setCacheStats(await cacheRes.json())
+        }
+      } catch {
+        // Ignore cache stats errors
+      }
     }
     void run()
     return () => {
@@ -2660,6 +2745,85 @@ function AdminPanel({
       setConfigSaving(false)
     }
   }, [adminConfig])
+
+  // Atlas Fund Slot handlers
+  const handleAddAtlasSlot = useCallback(async (botId: string) => {
+    // Add to Atlas Fund Slots
+    const newSlots = [...adminConfig.atlasFundSlots, botId]
+    setAdminConfig(prev => ({ ...prev, atlasFundSlots: newSlots }))
+
+    // Update bot tags: remove 'Private', add 'Atlas'
+    const bot = savedBots.find(b => b.id === botId)
+    if (!bot) return
+
+    const updatedBot: SavedBot = {
+      ...bot,
+      tags: [...(bot.tags || []).filter(t => t !== 'Private' && t !== 'Atlas Eligible'), 'Atlas']
+    }
+    setSavedBots(prev => prev.map(b => b.id === botId ? updatedBot : b))
+
+    // Sync bot tags to API
+    try {
+      await updateBotInApi('admin', updatedBot)
+    } catch (e) {
+      console.error('Failed to sync Atlas bot tags:', e)
+    }
+
+    // Save config to server
+    try {
+      await fetch('/api/admin/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...adminConfig, atlasFundSlots: newSlots })
+      })
+      setSavedConfig(prev => ({ ...prev, atlasFundSlots: newSlots }))
+    } catch (e) {
+      console.error('Failed to save Atlas slots:', e)
+    }
+  }, [adminConfig, savedBots])
+
+  const handleRemoveAtlasSlot = useCallback(async (botId: string) => {
+    // Remove from Atlas Fund Slots
+    const newSlots = adminConfig.atlasFundSlots.filter(id => id !== botId)
+    setAdminConfig(prev => ({ ...prev, atlasFundSlots: newSlots }))
+
+    // Update bot tags: remove 'Atlas', add 'Private'
+    const bot = savedBots.find(b => b.id === botId)
+    if (!bot) return
+
+    const updatedBot: SavedBot = {
+      ...bot,
+      tags: [...(bot.tags || []).filter(t => t !== 'Atlas'), 'Private']
+    }
+    setSavedBots(prev => prev.map(b => b.id === botId ? updatedBot : b))
+
+    // Sync bot tags to API
+    try {
+      await updateBotInApi('admin', updatedBot)
+    } catch (e) {
+      console.error('Failed to sync Atlas bot tags:', e)
+    }
+
+    // Save config to server
+    try {
+      await fetch('/api/admin/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...adminConfig, atlasFundSlots: newSlots })
+      })
+      setSavedConfig(prev => ({ ...prev, atlasFundSlots: newSlots }))
+    } catch (e) {
+      console.error('Failed to save Atlas slots:', e)
+    }
+  }, [adminConfig, savedBots])
+
+  // Get admin's bots that are available to add to Atlas Fund
+  // Show ALL admin bots that aren't already tagged as Atlas
+  const adminBots = savedBots.filter(b => b.builderId === 'admin' && !b.tags?.includes('Atlas'))
+  const availableForAtlas = adminBots.filter(b => !adminConfig.atlasFundSlots.includes(b.id))
+  const atlasFundBots = adminConfig.atlasFundSlots
+    .map(id => savedBots.find(b => b.id === id))
+    .filter((b): b is SavedBot => b !== undefined)
 
   // Fetch eligibility requirements for Nexus Maintenance tab
   useEffect(() => {
@@ -2735,6 +2899,7 @@ function AdminPanel({
     sharpe: 'Sharpe Ratio',
     sortino: 'Sortino Ratio',
     treynor: 'Treynor Ratio',
+    beta: 'Beta',
     vol: 'Volatility',
     winRate: 'Win Rate',
     avgTurnover: 'Avg Turnover',
@@ -2880,6 +3045,61 @@ function AdminPanel({
                 <div className="text-xs text-muted mt-1">
                   Currently: {savedConfig.partnerProgramSharePercent}%
                 </div>
+              </div>
+            </div>
+          </Card>
+
+          {/* Atlas Fund Zones - Admin Sponsored Systems */}
+          <Card className="p-6">
+            <div className="font-bold mb-4">Atlas Sponsored Systems</div>
+            <div className="space-y-4">
+              {/* Current Atlas Fund Slots */}
+              <div className="grid grid-cols-5 gap-3">
+                {atlasFundBots.length === 0 ? (
+                  <div className="col-span-5 text-center py-6 text-muted border border-dashed border-border rounded-lg">
+                    No Atlas systems yet. Add systems from the dropdown below.
+                  </div>
+                ) : (
+                  atlasFundBots.map((bot, idx) => (
+                    <div key={bot.id} className="p-3 bg-blue-500/10 rounded-lg border border-blue-500/30">
+                      <div className="text-xs text-muted mb-1">Atlas #{idx + 1}</div>
+                      <div className="font-bold text-sm truncate" title={bot.name}>{bot.name}</div>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="mt-2 w-full text-xs"
+                        onClick={() => void handleRemoveAtlasSlot(bot.id)}
+                      >
+                        Remove
+                      </Button>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              {/* Add New Atlas System */}
+              <div className="flex items-center gap-3">
+                <select
+                  className="flex-1 px-3 py-2 rounded border border-border bg-background text-sm"
+                  value=""
+                  onChange={(e) => {
+                    if (e.target.value) void handleAddAtlasSlot(e.target.value)
+                  }}
+                  disabled={availableForAtlas.length === 0}
+                >
+                  <option value="">
+                    {availableForAtlas.length === 0
+                      ? 'No systems available (create systems in Build tab first)'
+                      : 'Select a system to add as Atlas...'}
+                  </option>
+                  {availableForAtlas.map((b) => (
+                    <option key={b.id} value={b.id}>{b.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="text-xs text-muted">
+                Atlas systems appear in the "Select Systems" section of Community Nexus. Unlike Nexus systems, Atlas systems do not require eligibility metrics.
               </div>
             </div>
           </Card>
@@ -3217,7 +3437,7 @@ function AdminPanel({
               variant="default"
               size="sm"
               onClick={() => {
-                if (!confirm(`Clear saved data for user ${userId}? This will remove saved bots, watchlists, and UI state.`)) return
+                if (!confirm(`Clear saved data for user ${userId}? This will remove saved systems, watchlists, and UI state.`)) return
                 onClearData()
               }}
               title="Clear all locally saved data for this user"
@@ -3322,7 +3542,123 @@ function AdminPanel({
         {/* Divider */}
         <div className="border-t border-border mb-6"></div>
 
-        {/* Section 3: Data Download */}
+        {/* Section 3: Backtest Cache Management */}
+        <div className="mb-6">
+          <div className="font-black text-lg mb-4">Backtest Cache Management</div>
+
+          {/* Cache stats */}
+          <div className="mb-4 p-3 bg-muted rounded-lg text-sm space-y-1">
+            <div>
+              <strong>Cached entries:</strong> {cacheStats?.entryCount ?? '...'} systems
+            </div>
+            <div>
+              <strong>Cache size:</strong> {cacheStats?.totalSizeBytes ? `${(cacheStats.totalSizeBytes / 1024).toFixed(1)} KB` : '...'}
+            </div>
+            <div>
+              <strong>Last refresh:</strong> {cacheStats?.lastRefreshDate ?? 'Never'}
+            </div>
+            <div>
+              <strong>Current data date:</strong> {cacheStats?.currentDataDate ?? '...'}
+            </div>
+          </div>
+
+          {/* Cache actions */}
+          <div className="flex gap-2 flex-wrap">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={async () => {
+                try {
+                  const res = await fetch(`${API_BASE}/admin/cache/stats`)
+                  if (res.ok) {
+                    const stats = await res.json()
+                    setCacheStats(stats)
+                  }
+                } catch (e) {
+                  console.error('Failed to fetch cache stats:', e)
+                }
+              }}
+            >
+              Refresh Stats
+            </Button>
+            <Button
+              variant="default"
+              size="sm"
+              disabled={cacheRefreshing}
+              onClick={async () => {
+                if (!confirm('This will clear all cached backtest results and force recalculation on next access. Continue?')) return
+                setCacheRefreshing(true)
+                try {
+                  const res = await fetch(`${API_BASE}/admin/cache/refresh`, { method: 'POST' })
+                  if (res.ok) {
+                    const result = await res.json()
+                    alert(`Cache cleared! ${result.invalidatedCount} entries removed. New refresh date: ${result.newRefreshDate}`)
+                    // Refresh stats
+                    const statsRes = await fetch(`${API_BASE}/admin/cache/stats`)
+                    if (statsRes.ok) {
+                      setCacheStats(await statsRes.json())
+                    }
+                  } else {
+                    alert('Failed to refresh cache')
+                  }
+                } catch (e) {
+                  alert(`Error: ${e}`)
+                } finally {
+                  setCacheRefreshing(false)
+                }
+              }}
+            >
+              {cacheRefreshing ? 'Refreshing...' : 'Force Daily Refresh'}
+            </Button>
+            <Button
+              variant="default"
+              size="sm"
+              disabled={prewarmRunning}
+              onClick={async () => {
+                if (!confirm('This will run backtests for ALL systems in the database and cache the results. This may take several minutes. Continue?')) return
+                setPrewarmRunning(true)
+                setPrewarmProgress(null)
+                try {
+                  const res = await fetch(`${API_BASE}/admin/cache/prewarm`, { method: 'POST' })
+                  if (res.ok) {
+                    const result = await res.json()
+                    setPrewarmProgress(result)
+                    alert(`Pre-warm complete!\n\nProcessed: ${result.processed} systems\nAlready cached: ${result.cached}\nNew backtests: ${result.processed - result.cached - result.errors}\nErrors: ${result.errors}`)
+                    // Refresh stats
+                    const statsRes = await fetch(`${API_BASE}/admin/cache/stats`)
+                    if (statsRes.ok) {
+                      setCacheStats(await statsRes.json())
+                    }
+                  } else {
+                    const err = await res.json()
+                    alert(`Failed to pre-warm cache: ${err.error || 'Unknown error'}`)
+                  }
+                } catch (e) {
+                  alert(`Error: ${e}`)
+                } finally {
+                  setPrewarmRunning(false)
+                }
+              }}
+            >
+              {prewarmRunning ? 'Pre-warming...' : 'Pre-warm All Backtests'}
+            </Button>
+          </div>
+
+          {prewarmProgress && (
+            <div className="mt-3 p-2 bg-muted rounded text-sm">
+              <strong>Last pre-warm results:</strong> {prewarmProgress.processed} processed, {prewarmProgress.cached} already cached, {prewarmProgress.errors} errors
+            </div>
+          )}
+
+          <div className="mt-3 text-xs text-muted">
+            Cache is automatically cleared on first login each day. Use "Force Daily Refresh" to manually trigger this. Use "Pre-warm All Backtests" to run and cache backtests for all systems in the database.
+          </div>
+        </div>
+
+        {/* Divider */}
+        <div className="border-t border-border mb-6"></div>
+
+        {/* Section 4: Data Download */}
         <div className="mb-6">
           <div className="font-black text-lg mb-4">Download Ticker Data</div>
 
@@ -3469,6 +3805,146 @@ function AdminPanel({
           </div>
         )}
         </>
+      )}
+    </>
+  )
+}
+
+// ============================================
+// DATABASES PANEL - View all database tables
+// ============================================
+type DatabasesSubtab = 'Users' | 'Systems' | 'Portfolios' | 'Cache' | 'Admin Config'
+
+function DatabasesPanel({
+  databasesTab,
+  setDatabasesTab,
+}: {
+  databasesTab: DatabasesSubtab
+  setDatabasesTab: (t: DatabasesSubtab) => void
+}) {
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [data, setData] = useState<Record<string, unknown>[] | null>(null)
+  const [columns, setColumns] = useState<string[]>([])
+
+  const fetchTable = useCallback(async (table: string) => {
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await fetch(`${API_BASE}/admin/db/${table}`)
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.error || `Failed to fetch ${table}`)
+      }
+      const result = await res.json()
+      setData(result.rows || [])
+      setColumns(result.columns || [])
+    } catch (e) {
+      setError(String((e as Error)?.message || e))
+      setData(null)
+      setColumns([])
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    const tableMap: Record<DatabasesSubtab, string> = {
+      'Users': 'users',
+      'Systems': 'bots',
+      'Portfolios': 'portfolios',
+      'Cache': 'cache',
+      'Admin Config': 'admin_config',
+    }
+    fetchTable(tableMap[databasesTab])
+  }, [databasesTab, fetchTable])
+
+  const formatValue = (val: unknown): string => {
+    if (val === null || val === undefined) return '—'
+    if (typeof val === 'object') {
+      const str = JSON.stringify(val)
+      return str.length > 100 ? str.substring(0, 100) + '...' : str
+    }
+    const str = String(val)
+    return str.length > 100 ? str.substring(0, 100) + '...' : str
+  }
+
+  return (
+    <>
+      <div className="flex items-center gap-3 mb-6">
+        <div className="font-black text-lg">Databases</div>
+        <div className="flex gap-2">
+          {(['Users', 'Systems', 'Portfolios', 'Cache', 'Admin Config'] as const).map((t) => (
+            <Button
+              key={t}
+              variant={databasesTab === t ? 'accent' : 'secondary'}
+              size="sm"
+              onClick={() => setDatabasesTab(t)}
+            >
+              {t}
+            </Button>
+          ))}
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            const tableMap: Record<DatabasesSubtab, string> = {
+              'Users': 'users',
+              'Systems': 'bots',
+              'Portfolios': 'portfolios',
+              'Cache': 'cache',
+              'Admin Config': 'admin_config',
+            }
+            fetchTable(tableMap[databasesTab])
+          }}
+          disabled={loading}
+        >
+          {loading ? 'Loading...' : 'Refresh'}
+        </Button>
+      </div>
+
+      {error && (
+        <div className="mb-4 p-3 bg-destructive/10 border border-destructive rounded text-destructive text-sm">
+          {error}
+        </div>
+      )}
+
+      {loading ? (
+        <div className="text-muted text-center py-8">Loading...</div>
+      ) : data && data.length > 0 ? (
+        <div className="border rounded-lg overflow-auto max-h-[calc(100vh-300px)]">
+          <table className="w-full text-sm">
+            <thead className="bg-muted sticky top-0">
+              <tr>
+                {columns.map((col) => (
+                  <th key={col} className="px-3 py-2 text-left font-semibold border-b whitespace-nowrap">
+                    {col}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {data.map((row, i) => (
+                <tr key={i} className="hover:bg-muted/50 border-b border-border/50">
+                  {columns.map((col) => (
+                    <td key={col} className="px-3 py-2 font-mono text-xs whitespace-nowrap max-w-[300px] overflow-hidden text-ellipsis">
+                      {formatValue(row[col])}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : data && data.length === 0 ? (
+        <div className="text-muted text-center py-8">No records found</div>
+      ) : null}
+
+      {data && (
+        <div className="mt-3 text-xs text-muted">
+          Showing {data.length} record{data.length !== 1 ? 's' : ''}
+        </div>
       )}
     </>
   )
@@ -3810,6 +4286,176 @@ const updateConditionFields = (
   return { ...node, children }
 }
 
+// ============================================
+// ALT EXIT CONDITION FUNCTIONS
+// ============================================
+
+const addEntryCondition = (node: FlowNode, id: string, type: 'and' | 'or'): FlowNode => {
+  if (node.id === id && node.kind === 'altExit') {
+    const last = node.entryConditions && node.entryConditions.length ? node.entryConditions[node.entryConditions.length - 1] : null
+    const next = [
+      ...(node.entryConditions ?? []),
+      {
+        id: newId(),
+        type,
+        window: last?.window ?? 14,
+        metric: (last?.metric as MetricChoice) ?? 'Relative Strength Index',
+        comparator: normalizeComparatorChoice(last?.comparator ?? 'gt'),
+        ticker: last?.ticker ?? 'SPY',
+        threshold: last?.threshold ?? 30,
+        expanded: false,
+        rightWindow: last?.rightWindow ?? 14,
+        rightMetric: (last?.rightMetric as MetricChoice) ?? 'Relative Strength Index',
+        rightTicker: last?.rightTicker ?? 'SPY',
+      },
+    ]
+    return { ...node, entryConditions: next }
+  }
+  const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
+  SLOT_ORDER[node.kind].forEach((s) => {
+    const arr = node.children[s]
+    children[s] = arr ? arr.map((c) => (c ? addEntryCondition(c, id, type) : c)) : arr
+  })
+  return { ...node, children }
+}
+
+const addExitCondition = (node: FlowNode, id: string, type: 'and' | 'or'): FlowNode => {
+  if (node.id === id && node.kind === 'altExit') {
+    const last = node.exitConditions && node.exitConditions.length ? node.exitConditions[node.exitConditions.length - 1] : null
+    const next = [
+      ...(node.exitConditions ?? []),
+      {
+        id: newId(),
+        type,
+        window: last?.window ?? 14,
+        metric: (last?.metric as MetricChoice) ?? 'Relative Strength Index',
+        comparator: normalizeComparatorChoice(last?.comparator ?? 'lt'),
+        ticker: last?.ticker ?? 'SPY',
+        threshold: last?.threshold ?? 70,
+        expanded: false,
+        rightWindow: last?.rightWindow ?? 14,
+        rightMetric: (last?.rightMetric as MetricChoice) ?? 'Relative Strength Index',
+        rightTicker: last?.rightTicker ?? 'SPY',
+      },
+    ]
+    return { ...node, exitConditions: next }
+  }
+  const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
+  SLOT_ORDER[node.kind].forEach((s) => {
+    const arr = node.children[s]
+    children[s] = arr ? arr.map((c) => (c ? addExitCondition(c, id, type) : c)) : arr
+  })
+  return { ...node, children }
+}
+
+const deleteEntryCondition = (node: FlowNode, id: string, condId: string): FlowNode => {
+  if (node.id === id && node.kind === 'altExit' && node.entryConditions) {
+    const keep = node.entryConditions.filter((c, idx) => idx === 0 || c.id !== condId)
+    return { ...node, entryConditions: keep.length ? keep : node.entryConditions }
+  }
+  const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
+  SLOT_ORDER[node.kind].forEach((s) => {
+    const arr = node.children[s]
+    children[s] = arr ? arr.map((c) => (c ? deleteEntryCondition(c, id, condId) : c)) : arr
+  })
+  return { ...node, children }
+}
+
+const deleteExitCondition = (node: FlowNode, id: string, condId: string): FlowNode => {
+  if (node.id === id && node.kind === 'altExit' && node.exitConditions) {
+    const keep = node.exitConditions.filter((c, idx) => idx === 0 || c.id !== condId)
+    return { ...node, exitConditions: keep.length ? keep : node.exitConditions }
+  }
+  const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
+  SLOT_ORDER[node.kind].forEach((s) => {
+    const arr = node.children[s]
+    children[s] = arr ? arr.map((c) => (c ? deleteExitCondition(c, id, condId) : c)) : arr
+  })
+  return { ...node, children }
+}
+
+const updateEntryConditionFields = (
+  node: FlowNode,
+  id: string,
+  condId: string,
+  updates: Partial<{
+    window: number
+    metric: MetricChoice
+    comparator: ComparatorChoice
+    ticker: PositionChoice
+    threshold: number
+    expanded?: boolean
+    rightWindow?: number
+    rightMetric?: MetricChoice
+    rightTicker?: PositionChoice
+  }>,
+): FlowNode => {
+  if (node.id === id && node.kind === 'altExit' && node.entryConditions) {
+    const next = node.entryConditions.map((c) => (c.id === condId ? { ...c, ...updates } : c))
+    return { ...node, entryConditions: next }
+  }
+  const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
+  SLOT_ORDER[node.kind].forEach((s) => {
+    const arr = node.children[s]
+    children[s] = arr ? arr.map((c) => (c ? updateEntryConditionFields(c, id, condId, updates) : c)) : arr
+  })
+  return { ...node, children }
+}
+
+const updateExitConditionFields = (
+  node: FlowNode,
+  id: string,
+  condId: string,
+  updates: Partial<{
+    window: number
+    metric: MetricChoice
+    comparator: ComparatorChoice
+    ticker: PositionChoice
+    threshold: number
+    expanded?: boolean
+    rightWindow?: number
+    rightMetric?: MetricChoice
+    rightTicker?: PositionChoice
+  }>,
+): FlowNode => {
+  if (node.id === id && node.kind === 'altExit' && node.exitConditions) {
+    const next = node.exitConditions.map((c) => (c.id === condId ? { ...c, ...updates } : c))
+    return { ...node, exitConditions: next }
+  }
+  const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
+  SLOT_ORDER[node.kind].forEach((s) => {
+    const arr = node.children[s]
+    children[s] = arr ? arr.map((c) => (c ? updateExitConditionFields(c, id, condId, updates) : c)) : arr
+  })
+  return { ...node, children }
+}
+
+// ============================================
+// SCALING NODE FUNCTIONS
+// ============================================
+
+const updateScalingFields = (
+  node: FlowNode,
+  id: string,
+  updates: Partial<{
+    scaleMetric: MetricChoice
+    scaleWindow: number
+    scaleTicker: string
+    scaleFrom: number
+    scaleTo: number
+  }>,
+): FlowNode => {
+  if (node.id === id && node.kind === 'scaling') {
+    return { ...node, ...updates }
+  }
+  const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
+  SLOT_ORDER[node.kind].forEach((s) => {
+    const arr = node.children[s]
+    children[s] = arr ? arr.map((c) => (c ? updateScalingFields(c, id, updates) : c)) : arr
+  })
+  return { ...node, children }
+}
+
 const updateNumberedQuantifier = (node: FlowNode, id: string, quantifier: NumberedQuantifier): FlowNode => {
   if (node.id === id && node.kind === 'numbered' && node.numbered) {
     return { ...node, numbered: { ...node.numbered, quantifier } }
@@ -3924,6 +4570,15 @@ const cloneNode = (node: FlowNode): FlowNode => {
     bgColor: node.bgColor,
     collapsed: node.collapsed,
     callRefId: node.callRefId,
+    // Alt Exit properties
+    entryConditions: node.entryConditions ? node.entryConditions.map((c) => ({ ...c })) : undefined,
+    exitConditions: node.exitConditions ? node.exitConditions.map((c) => ({ ...c })) : undefined,
+    // Scaling properties
+    scaleMetric: node.scaleMetric,
+    scaleWindow: node.scaleWindow,
+    scaleTicker: node.scaleTicker,
+    scaleFrom: node.scaleFrom,
+    scaleTo: node.scaleTo,
   }
   SLOT_ORDER[node.kind].forEach((slot) => {
     const arr = node.children[slot]
@@ -3984,6 +4639,22 @@ const buildLines = (node: FlowNode): LineView[] => {
       ]
     case 'call':
       return [{ id: `${node.id}-call`, depth: 1, kind: 'text', text: 'Call reference', tone: 'title' }]
+    case 'altExit':
+      return [
+        { id: `${node.id}-tag1`, depth: 0, kind: 'text', text: 'Equal Weight', tone: 'tag' },
+        { id: `${node.id}-then`, depth: 2, kind: 'text', text: 'Then', tone: 'title' },
+        { id: `${node.id}-slot-then`, depth: 3, kind: 'slot', slot: 'then' },
+        { id: `${node.id}-else`, depth: 2, kind: 'text', text: 'Else', tone: 'title' },
+        { id: `${node.id}-slot-else`, depth: 3, kind: 'slot', slot: 'else' },
+      ]
+    case 'scaling':
+      return [
+        { id: `${node.id}-tag1`, depth: 0, kind: 'text', text: 'Equal Weight', tone: 'tag' },
+        { id: `${node.id}-then`, depth: 2, kind: 'text', text: 'Then (Low)', tone: 'title' },
+        { id: `${node.id}-slot-then`, depth: 3, kind: 'slot', slot: 'then' },
+        { id: `${node.id}-else`, depth: 2, kind: 'text', text: 'Else (High)', tone: 'title' },
+        { id: `${node.id}-slot-else`, depth: 3, kind: 'slot', slot: 'else' },
+      ]
   }
 }
 
@@ -4040,6 +4711,52 @@ type CardProps = {
   clipboard: FlowNode | null
   callChains: CallChain[]
   onUpdateCallRef: (id: string, callId: string | null) => void
+  // Alt Exit handlers
+  onAddEntryCondition: (id: string, type: 'and' | 'or') => void
+  onAddExitCondition: (id: string, type: 'and' | 'or') => void
+  onDeleteEntryCondition: (id: string, condId: string) => void
+  onDeleteExitCondition: (id: string, condId: string) => void
+  onUpdateEntryCondition: (
+    id: string,
+    condId: string,
+    updates: Partial<{
+      window: number
+      metric: MetricChoice
+      comparator: ComparatorChoice
+      ticker: PositionChoice
+      threshold: number
+      expanded?: boolean
+      rightWindow?: number
+      rightMetric?: MetricChoice
+      rightTicker?: PositionChoice
+    }>,
+  ) => void
+  onUpdateExitCondition: (
+    id: string,
+    condId: string,
+    updates: Partial<{
+      window: number
+      metric: MetricChoice
+      comparator: ComparatorChoice
+      ticker: PositionChoice
+      threshold: number
+      expanded?: boolean
+      rightWindow?: number
+      rightMetric?: MetricChoice
+      rightTicker?: PositionChoice
+    }>,
+  ) => void
+  // Scaling handlers
+  onUpdateScaling: (
+    id: string,
+    updates: Partial<{
+      scaleMetric: MetricChoice
+      scaleWindow: number
+      scaleTicker: string
+      scaleFrom: number
+      scaleTo: number
+    }>,
+  ) => void
 }
 
 const NodeCard = ({
@@ -4080,6 +4797,13 @@ const NodeCard = ({
   clipboard,
   callChains,
   onUpdateCallRef,
+  onAddEntryCondition,
+  onAddExitCondition,
+  onDeleteEntryCondition,
+  onDeleteExitCondition,
+  onUpdateEntryCondition,
+  onUpdateExitCondition,
+  onUpdateScaling,
 }: CardProps) => {
   const [addRowOpen, setAddRowOpen] = useState<string | null>(null)
   const [editing, setEditing] = useState(false)
@@ -4217,6 +4941,26 @@ const NodeCard = ({
                   >
                     Add Call Reference
                   </Button>
+                  <Button
+                    variant="ghost"
+                    className="justify-start rounded-none"
+                    onClick={() => {
+                      onAdd(node.id, slot, 0, 'altExit')
+                      setAddRowOpen(null)
+                    }}
+                  >
+                    Add Alt Exit
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    className="justify-start rounded-none"
+                    onClick={() => {
+                      onAdd(node.id, slot, 0, 'scaling')
+                      setAddRowOpen(null)
+                    }}
+                  >
+                    Add Scaling
+                  </Button>
                   {clipboard && (
                     <Button
                       variant="ghost"
@@ -4286,6 +5030,13 @@ const NodeCard = ({
                   clipboard={clipboard}
                   callChains={callChains}
                   onUpdateCallRef={onUpdateCallRef}
+                  onAddEntryCondition={onAddEntryCondition}
+                  onAddExitCondition={onAddExitCondition}
+                  onDeleteEntryCondition={onDeleteEntryCondition}
+                  onDeleteExitCondition={onDeleteExitCondition}
+                  onUpdateEntryCondition={onUpdateEntryCondition}
+                  onUpdateExitCondition={onUpdateExitCondition}
+                  onUpdateScaling={onUpdateScaling}
                 />
                 {node.kind === 'function' && slot === 'next' && index > 0 ? (
                   <Button variant="destructive" size="icon" className="h-7 w-7" onClick={() => onRemoveSlotEntry(node.id, slot, index)}>
@@ -4367,6 +5118,22 @@ const NodeCard = ({
                         }}
                       >
                         Add Call Reference
+                      </button>
+                      <button
+                        onClick={() => {
+                          onAdd(node.id, slot, originalIndex + 1, 'altExit')
+                          setAddRowOpen(null)
+                        }}
+                      >
+                        Add Alt Exit
+                      </button>
+                      <button
+                        onClick={() => {
+                          onAdd(node.id, slot, originalIndex + 1, 'scaling')
+                          setAddRowOpen(null)
+                        }}
+                      >
+                        Add Scaling
                       </button>
                       {clipboard && (
                         <button
@@ -5355,6 +6122,550 @@ const NodeCard = ({
                 </div>
                 {renderSlot('else', 3 * 14)}
               </>
+            ) : node.kind === 'altExit' ? (
+              <>
+                {/* ENTER IF conditions */}
+                <div className="condition-bubble">
+                  {node.entryConditions?.map((cond, idx) => {
+                    const prefix = cond.type === 'and' ? 'And if the ' : cond.type === 'or' ? 'Or if the ' : 'If the '
+                    return (
+                      <div className="flex items-center gap-2" key={cond.id}>
+                        <div className="w-3.5 h-full border-l border-border" />
+                        <Badge variant="default" className="gap-1 py-1 px-2.5">
+                          {prefix}
+                          {cond.metric === 'Current Price' ? null : (
+                            <>
+                              <Input
+                                className="w-14 h-7 px-1.5 mx-1 inline-flex"
+                                type="number"
+                                value={cond.window}
+                                onChange={(e) => onUpdateEntryCondition(node.id, cond.id, { window: Number(e.target.value) })}
+                              />
+                              d{' '}
+                            </>
+                          )}
+                          <Select
+                            className="h-7 px-1.5 mx-1"
+                            value={cond.metric}
+                            onChange={(e) => onUpdateEntryCondition(node.id, cond.id, { metric: e.target.value as MetricChoice })}
+                          >
+                            <option value="Current Price">Current Price</option>
+                            <option value="Simple Moving Average">Simple Moving Average</option>
+                            <option value="Exponential Moving Average">Exponential Moving Average</option>
+                            <option value="Relative Strength Index">Relative Strength Index</option>
+                            <option value="Max Drawdown">Max Drawdown</option>
+                            <option value="Standard Deviation">Standard Deviation</option>
+                            <option value="Standard Deviation of Price">Standard Deviation of Price</option>
+                            <option value="Cumulative Return">Cumulative Return</option>
+                            <option value="SMA of Returns">SMA of Returns</option>
+                          </Select>
+                          {' of '}
+                          <Select
+                            className="h-7 px-1.5 mx-1"
+                            value={cond.ticker}
+                            onChange={(e) => onUpdateEntryCondition(node.id, cond.id, { ticker: e.target.value as PositionChoice })}
+                          >
+                            {[cond.ticker, ...tickerOptions.filter((t) => t !== cond.ticker)].map((t) => (
+                              <option key={t} value={t}>{t}</option>
+                            ))}
+                          </Select>{' '}
+                          is{' '}
+                          <Select
+                            className="h-7 px-1.5 mx-1"
+                            value={cond.comparator}
+                            onChange={(e) => onUpdateEntryCondition(node.id, cond.id, { comparator: e.target.value as ComparatorChoice })}
+                          >
+                            <option value="lt">Less Than</option>
+                            <option value="gt">Greater Than</option>
+                          </Select>{' '}
+                          {cond.expanded ? null : (
+                            <Input
+                              className="w-14 h-7 px-1.5 mx-1 inline-flex"
+                              type="number"
+                              value={cond.threshold}
+                              onChange={(e) => onUpdateEntryCondition(node.id, cond.id, { threshold: Number(e.target.value) })}
+                            />
+                          )}
+                          {cond.expanded ? (
+                            <>
+                              {' '}the{' '}
+                              {cond.rightMetric === 'Current Price' ? null : (
+                                <>
+                                  <Input
+                                    className="w-14 h-7 px-1.5 mx-1 inline-flex"
+                                    type="number"
+                                    value={cond.rightWindow ?? 14}
+                                    onChange={(e) => onUpdateEntryCondition(node.id, cond.id, { rightWindow: Number(e.target.value) })}
+                                  />
+                                  d{' '}
+                                </>
+                              )}
+                              <Select
+                                className="h-7 px-1.5 mx-1"
+                                value={cond.rightMetric ?? 'Relative Strength Index'}
+                                onChange={(e) => onUpdateEntryCondition(node.id, cond.id, { rightMetric: e.target.value as MetricChoice })}
+                              >
+                                <option value="Current Price">Current Price</option>
+                                <option value="Simple Moving Average">Simple Moving Average</option>
+                                <option value="Exponential Moving Average">Exponential Moving Average</option>
+                                <option value="Relative Strength Index">Relative Strength Index</option>
+                                <option value="Max Drawdown">Max Drawdown</option>
+                                <option value="Standard Deviation">Standard Deviation</option>
+                                <option value="Standard Deviation of Price">Standard Deviation of Price</option>
+                                <option value="Cumulative Return">Cumulative Return</option>
+                                <option value="SMA of Returns">SMA of Returns</option>
+                              </Select>{' '}
+                              of{' '}
+                              <Select
+                                className="h-7 px-1.5 mx-1"
+                                value={cond.rightTicker ?? 'SPY'}
+                                onChange={(e) => onUpdateEntryCondition(node.id, cond.id, { rightTicker: e.target.value as PositionChoice })}
+                              >
+                                {[cond.rightTicker ?? 'SPY', ...tickerOptions.filter((t) => t !== (cond.rightTicker ?? 'SPY'))].map((t) => (
+                                  <option key={t} value={t}>{t}</option>
+                                ))}
+                              </Select>{' '}
+                            </>
+                          ) : null}
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 p-0"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              onUpdateEntryCondition(node.id, cond.id, { expanded: !cond.expanded })
+                            }}
+                            title="Flip condition"
+                          >
+                            ⇆
+                          </Button>
+                        </Badge>
+                        {idx > 0 ? (
+                          <Button variant="destructive" size="icon" className="h-7 w-7 p-0" onClick={() => onDeleteEntryCondition(node.id, cond.id)}>
+                            X
+                          </Button>
+                        ) : null}
+                      </div>
+                    )
+                  })}
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-3.5 h-full border-l border-border" />
+                  <div className="flex items-center gap-1.5">
+                    <Button variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); onAddEntryCondition(node.id, 'and') }}>
+                      And If
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); onAddEntryCondition(node.id, 'or') }}>
+                      Or If
+                    </Button>
+                  </div>
+                </div>
+
+                {/* THEN slot */}
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-full border-l border-border" />
+                  <div className="text-sm font-extrabold">Then Enter</div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="indent with-line" style={{ width: 3 * 14 }} />
+                  <div className="relative flex items-center gap-2">
+                    <Badge
+                      variant="default"
+                      className="cursor-pointer gap-1 py-1 px-2.5"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setWeightThenOpen((v) => !v)
+                        setWeightElseOpen(false)
+                        setWeightMainOpen(false)
+                      }}
+                    >
+                      {weightLabel(node.weightingThen ?? node.weighting)}
+                    </Badge>
+                    {renderWeightDetailChip('then')}
+                    {weightThenOpen ? (
+                      <div
+                        className="absolute top-full mt-1 left-0 flex flex-col bg-surface border border-border rounded-lg shadow-lg z-10 min-w-[120px]"
+                        onClick={(e) => { e.stopPropagation() }}
+                      >
+                        {(['equal', 'defined', 'inverse', 'pro', 'capped'] as WeightMode[]).map((w) => (
+                          <Button
+                            key={w}
+                            variant="ghost"
+                            className="justify-start rounded-none first:rounded-t-lg last:rounded-b-lg"
+                            onClick={() => {
+                              onWeightChange(node.id, w, 'then')
+                              if (w !== 'capped') {
+                                setWeightThenOpen(false)
+                                setWeightElseOpen(false)
+                                setWeightMainOpen(false)
+                              }
+                            }}
+                          >
+                            {weightLabel(w)}
+                          </Button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+                {renderSlot('then', 3 * 14)}
+
+                {/* EXIT IF conditions */}
+                <div className="flex items-center gap-2">
+                  <div className="indent with-line" style={{ width: 14 }} />
+                  <div className="text-sm font-extrabold text-red-500">Exit If</div>
+                </div>
+                <div className="condition-bubble">
+                  {node.exitConditions?.map((cond, idx) => {
+                    const prefix = cond.type === 'and' ? 'And if the ' : cond.type === 'or' ? 'Or if the ' : 'If the '
+                    return (
+                      <div className="flex items-center gap-2" key={cond.id}>
+                        <div className="w-3.5 h-full border-l border-border" />
+                        <Badge variant="default" className="gap-1 py-1 px-2.5">
+                          {prefix}
+                          {cond.metric === 'Current Price' ? null : (
+                            <>
+                              <Input
+                                className="w-14 h-7 px-1.5 mx-1 inline-flex"
+                                type="number"
+                                value={cond.window}
+                                onChange={(e) => onUpdateExitCondition(node.id, cond.id, { window: Number(e.target.value) })}
+                              />
+                              d{' '}
+                            </>
+                          )}
+                          <Select
+                            className="h-7 px-1.5 mx-1"
+                            value={cond.metric}
+                            onChange={(e) => onUpdateExitCondition(node.id, cond.id, { metric: e.target.value as MetricChoice })}
+                          >
+                            <option value="Current Price">Current Price</option>
+                            <option value="Simple Moving Average">Simple Moving Average</option>
+                            <option value="Exponential Moving Average">Exponential Moving Average</option>
+                            <option value="Relative Strength Index">Relative Strength Index</option>
+                            <option value="Max Drawdown">Max Drawdown</option>
+                            <option value="Standard Deviation">Standard Deviation</option>
+                            <option value="Standard Deviation of Price">Standard Deviation of Price</option>
+                            <option value="Cumulative Return">Cumulative Return</option>
+                            <option value="SMA of Returns">SMA of Returns</option>
+                          </Select>
+                          {' of '}
+                          <Select
+                            className="h-7 px-1.5 mx-1"
+                            value={cond.ticker}
+                            onChange={(e) => onUpdateExitCondition(node.id, cond.id, { ticker: e.target.value as PositionChoice })}
+                          >
+                            {[cond.ticker, ...tickerOptions.filter((t) => t !== cond.ticker)].map((t) => (
+                              <option key={t} value={t}>{t}</option>
+                            ))}
+                          </Select>{' '}
+                          is{' '}
+                          <Select
+                            className="h-7 px-1.5 mx-1"
+                            value={cond.comparator}
+                            onChange={(e) => onUpdateExitCondition(node.id, cond.id, { comparator: e.target.value as ComparatorChoice })}
+                          >
+                            <option value="lt">Less Than</option>
+                            <option value="gt">Greater Than</option>
+                          </Select>{' '}
+                          {cond.expanded ? null : (
+                            <Input
+                              className="w-14 h-7 px-1.5 mx-1 inline-flex"
+                              type="number"
+                              value={cond.threshold}
+                              onChange={(e) => onUpdateExitCondition(node.id, cond.id, { threshold: Number(e.target.value) })}
+                            />
+                          )}
+                          {cond.expanded ? (
+                            <>
+                              {' '}the{' '}
+                              {cond.rightMetric === 'Current Price' ? null : (
+                                <>
+                                  <Input
+                                    className="w-14 h-7 px-1.5 mx-1 inline-flex"
+                                    type="number"
+                                    value={cond.rightWindow ?? 14}
+                                    onChange={(e) => onUpdateExitCondition(node.id, cond.id, { rightWindow: Number(e.target.value) })}
+                                  />
+                                  d{' '}
+                                </>
+                              )}
+                              <Select
+                                className="h-7 px-1.5 mx-1"
+                                value={cond.rightMetric ?? 'Relative Strength Index'}
+                                onChange={(e) => onUpdateExitCondition(node.id, cond.id, { rightMetric: e.target.value as MetricChoice })}
+                              >
+                                <option value="Current Price">Current Price</option>
+                                <option value="Simple Moving Average">Simple Moving Average</option>
+                                <option value="Exponential Moving Average">Exponential Moving Average</option>
+                                <option value="Relative Strength Index">Relative Strength Index</option>
+                                <option value="Max Drawdown">Max Drawdown</option>
+                                <option value="Standard Deviation">Standard Deviation</option>
+                                <option value="Standard Deviation of Price">Standard Deviation of Price</option>
+                                <option value="Cumulative Return">Cumulative Return</option>
+                                <option value="SMA of Returns">SMA of Returns</option>
+                              </Select>{' '}
+                              of{' '}
+                              <Select
+                                className="h-7 px-1.5 mx-1"
+                                value={cond.rightTicker ?? 'SPY'}
+                                onChange={(e) => onUpdateExitCondition(node.id, cond.id, { rightTicker: e.target.value as PositionChoice })}
+                              >
+                                {[cond.rightTicker ?? 'SPY', ...tickerOptions.filter((t) => t !== (cond.rightTicker ?? 'SPY'))].map((t) => (
+                                  <option key={t} value={t}>{t}</option>
+                                ))}
+                              </Select>{' '}
+                            </>
+                          ) : null}
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 p-0"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              onUpdateExitCondition(node.id, cond.id, { expanded: !cond.expanded })
+                            }}
+                            title="Flip condition"
+                          >
+                            ⇆
+                          </Button>
+                        </Badge>
+                        {idx > 0 ? (
+                          <Button variant="destructive" size="icon" className="h-7 w-7 p-0" onClick={() => onDeleteExitCondition(node.id, cond.id)}>
+                            X
+                          </Button>
+                        ) : null}
+                      </div>
+                    )
+                  })}
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-3.5 h-full border-l border-border" />
+                  <div className="flex items-center gap-1.5">
+                    <Button variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); onAddExitCondition(node.id, 'and') }}>
+                      And If
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); onAddExitCondition(node.id, 'or') }}>
+                      Or If
+                    </Button>
+                  </div>
+                </div>
+
+                {/* EXIT INTO slot */}
+                <div className="flex items-center gap-2">
+                  <div className="indent with-line" style={{ width: 2 * 14 }} />
+                  <div className="text-sm font-extrabold">Exit Into</div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="indent with-line" style={{ width: 3 * 14 }} />
+                  <div className="relative flex items-center gap-2">
+                    <Badge
+                      variant="default"
+                      className="cursor-pointer gap-1 py-1 px-2.5"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setWeightElseOpen((v) => !v)
+                        setWeightThenOpen(false)
+                        setWeightMainOpen(false)
+                      }}
+                    >
+                      {weightLabel(node.weightingElse ?? node.weighting)}
+                    </Badge>
+                    {renderWeightDetailChip('else')}
+                    {weightElseOpen ? (
+                      <div
+                        className="absolute top-full mt-1 left-0 flex flex-col bg-surface border border-border rounded-lg shadow-lg z-10 min-w-[120px]"
+                        onClick={(e) => { e.stopPropagation() }}
+                      >
+                        {(['equal', 'defined', 'inverse', 'pro', 'capped'] as WeightMode[]).map((w) => (
+                          <Button
+                            key={w}
+                            variant="ghost"
+                            className="justify-start rounded-none first:rounded-t-lg last:rounded-b-lg"
+                            onClick={() => {
+                              onWeightChange(node.id, w, 'else')
+                              if (w !== 'capped') {
+                                setWeightElseOpen(false)
+                                setWeightThenOpen(false)
+                                setWeightMainOpen(false)
+                              }
+                            }}
+                          >
+                            {weightLabel(w)}
+                          </Button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+                {renderSlot('else', 3 * 14)}
+              </>
+            ) : node.kind === 'scaling' ? (
+              <>
+                {/* SCALE BY indicator */}
+                <div className="flex items-center gap-2">
+                  <div className="indent with-line" style={{ width: 14 }} />
+                  <Badge variant="default" className="gap-1.5 py-1 px-2.5">
+                    Scale by{' '}
+                    {node.scaleMetric === 'Current Price' ? null : (
+                      <>
+                        <Input
+                          type="number"
+                          className="w-14 h-7 px-1.5 inline-flex"
+                          value={node.scaleWindow ?? 14}
+                          onChange={(e) => onUpdateScaling(node.id, { scaleWindow: Number(e.target.value) })}
+                        />
+                        d{' '}
+                      </>
+                    )}
+                    <Select
+                      className="h-7 px-1.5 mx-1 inline-flex"
+                      value={node.scaleMetric ?? 'Relative Strength Index'}
+                      onChange={(e) => onUpdateScaling(node.id, { scaleMetric: e.target.value as MetricChoice })}
+                    >
+                      <option value="Current Price">Current Price</option>
+                      <option value="Simple Moving Average">Simple Moving Average</option>
+                      <option value="Exponential Moving Average">Exponential Moving Average</option>
+                      <option value="Relative Strength Index">Relative Strength Index</option>
+                      <option value="Max Drawdown">Max Drawdown</option>
+                      <option value="Standard Deviation">Standard Deviation</option>
+                      <option value="Standard Deviation of Price">Standard Deviation of Price</option>
+                      <option value="Cumulative Return">Cumulative Return</option>
+                      <option value="SMA of Returns">SMA of Returns</option>
+                    </Select>
+                    {' of '}
+                    <Select
+                      className="h-7 px-1.5 mx-1 inline-flex"
+                      value={node.scaleTicker ?? 'SPY'}
+                      onChange={(e) => onUpdateScaling(node.id, { scaleTicker: e.target.value })}
+                    >
+                      {[node.scaleTicker ?? 'SPY', ...tickerOptions.filter((t) => t !== (node.scaleTicker ?? 'SPY'))].map((t) => (
+                        <option key={t} value={t}>{t}</option>
+                      ))}
+                    </Select>
+                  </Badge>
+                </div>
+
+                {/* FROM / TO range */}
+                <div className="flex items-center gap-2">
+                  <div className="indent with-line" style={{ width: 14 }} />
+                  <Badge variant="default" className="gap-1.5 py-1 px-2.5">
+                    From{' '}
+                    <Input
+                      type="number"
+                      className="w-16 h-7 px-1.5 inline-flex"
+                      value={node.scaleFrom ?? 30}
+                      onChange={(e) => onUpdateScaling(node.id, { scaleFrom: Number(e.target.value) })}
+                    />
+                    {' (100% Then) to '}
+                    <Input
+                      type="number"
+                      className="w-16 h-7 px-1.5 inline-flex"
+                      value={node.scaleTo ?? 70}
+                      onChange={(e) => onUpdateScaling(node.id, { scaleTo: Number(e.target.value) })}
+                    />
+                    {' (100% Else)'}
+                  </Badge>
+                </div>
+
+                {/* THEN (Low) slot */}
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-full border-l border-border" />
+                  <div className="text-sm font-extrabold">Then (Low)</div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="indent with-line" style={{ width: 3 * 14 }} />
+                  <div className="relative flex items-center gap-2">
+                    <Badge
+                      variant="default"
+                      className="cursor-pointer gap-1 py-1 px-2.5"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setWeightThenOpen((v) => !v)
+                        setWeightElseOpen(false)
+                        setWeightMainOpen(false)
+                      }}
+                    >
+                      {weightLabel(node.weightingThen ?? node.weighting)}
+                    </Badge>
+                    {renderWeightDetailChip('then')}
+                    {weightThenOpen ? (
+                      <div
+                        className="absolute top-full mt-1 left-0 flex flex-col bg-surface border border-border rounded-lg shadow-lg z-10 min-w-[120px]"
+                        onClick={(e) => { e.stopPropagation() }}
+                      >
+                        {(['equal', 'defined', 'inverse', 'pro', 'capped'] as WeightMode[]).map((w) => (
+                          <Button
+                            key={w}
+                            variant="ghost"
+                            className="justify-start rounded-none first:rounded-t-lg last:rounded-b-lg"
+                            onClick={() => {
+                              onWeightChange(node.id, w, 'then')
+                              if (w !== 'capped') {
+                                setWeightThenOpen(false)
+                                setWeightElseOpen(false)
+                                setWeightMainOpen(false)
+                              }
+                            }}
+                          >
+                            {weightLabel(w)}
+                          </Button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+                {renderSlot('then', 3 * 14)}
+
+                {/* ELSE (High) slot */}
+                <div className="flex items-center gap-2">
+                  <div className="indent with-line" style={{ width: 2 * 14 }} />
+                  <div className="text-sm font-extrabold">Else (High)</div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="indent with-line" style={{ width: 3 * 14 }} />
+                  <div className="relative flex items-center gap-2">
+                    <Badge
+                      variant="default"
+                      className="cursor-pointer gap-1 py-1 px-2.5"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setWeightElseOpen((v) => !v)
+                        setWeightThenOpen(false)
+                        setWeightMainOpen(false)
+                      }}
+                    >
+                      {weightLabel(node.weightingElse ?? node.weighting)}
+                    </Badge>
+                    {renderWeightDetailChip('else')}
+                    {weightElseOpen ? (
+                      <div
+                        className="absolute top-full mt-1 left-0 flex flex-col bg-surface border border-border rounded-lg shadow-lg z-10 min-w-[120px]"
+                        onClick={(e) => { e.stopPropagation() }}
+                      >
+                        {(['equal', 'defined', 'inverse', 'pro', 'capped'] as WeightMode[]).map((w) => (
+                          <Button
+                            key={w}
+                            variant="ghost"
+                            className="justify-start rounded-none first:rounded-t-lg last:rounded-b-lg"
+                            onClick={() => {
+                              onWeightChange(node.id, w, 'else')
+                              if (w !== 'capped') {
+                                setWeightElseOpen(false)
+                                setWeightThenOpen(false)
+                                setWeightMainOpen(false)
+                              }
+                            }}
+                          >
+                            {weightLabel(w)}
+                          </Button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+                {renderSlot('else', 3 * 14)}
+              </>
             ) : (
               lines.map((line) => {
                 if (line.kind === 'text') {
@@ -5539,7 +6850,7 @@ type BacktestConditionTrace = {
 
 type BacktestNodeTrace = {
   nodeId: string
-  kind: 'indicator' | 'numbered' | 'numbered-item'
+  kind: 'indicator' | 'numbered' | 'numbered-item' | 'altExit' | 'scaling'
   thenCount: number
   elseCount: number
   conditions: BacktestConditionTrace[]
@@ -5553,6 +6864,9 @@ type BacktestTraceCollector = {
   recordBranch: (nodeId: string, kind: BacktestNodeTrace['kind'], ok: boolean) => void
   recordCondition: (traceOwnerId: string, cond: ConditionLine, ok: boolean, sample: BacktestTraceSample) => void
   toResult: () => BacktestTrace
+  // Alt Exit state tracking
+  getAltExitState: (nodeId: string) => 'then' | 'else' | null
+  setAltExitState: (nodeId: string, state: 'then' | 'else') => void
 }
 
 type BacktestResult = {
@@ -5573,6 +6887,7 @@ type BacktestResult = {
     sharpe: number
     sortino: number
     treynor: number
+    beta: number
     winRate: number
     bestDay: number
     worstDay: number
@@ -5967,9 +7282,35 @@ const collectBacktestInputs = (root: FlowNode, callMap: Map<string, CallChain>):
       }
     }
 
+    // Alt Exit node - validate entry/exit conditions and add their tickers
+    if (node.kind === 'altExit') {
+      if (node.entryConditions) {
+        node.entryConditions.forEach((c) => validateCondition(node.id, 'entryConditions', c))
+      }
+      if (node.exitConditions) {
+        node.exitConditions.forEach((c) => validateCondition(node.id, 'exitConditions', c))
+      }
+    }
+
+    // Scaling node - validate and add the scale ticker
+    if (node.kind === 'scaling') {
+      const scaleTicker = normalizeChoice(node.scaleTicker ?? 'SPY')
+      if (scaleTicker === 'Empty') {
+        addError(node.id, 'scaleTicker', 'Scaling node is missing a ticker.')
+      } else {
+        addTicker(scaleTicker, node.id, 'scaleTicker')
+      }
+      const scaleMetric = node.scaleMetric ?? 'Relative Strength Index'
+      const scaleWin = scaleMetric === 'Current Price' ? 0 : Math.floor(Number(node.scaleWindow ?? 14))
+      if (scaleMetric !== 'Current Price' && (!(scaleWin >= 1) || !Number.isFinite(scaleWin))) {
+        addError(node.id, 'scaleWindow', 'Scale window must be >= 1.')
+      }
+      maxLookback = Math.max(maxLookback, scaleWin || 0)
+    }
+
     // weight-mode-specific validations for the node's active slots
     const slotsToCheck: SlotId[] =
-      node.kind === 'indicator' || node.kind === 'numbered' ? ['then', 'else'] : node.kind === 'position' ? [] : ['next']
+      node.kind === 'indicator' || node.kind === 'numbered' || node.kind === 'altExit' || node.kind === 'scaling' ? ['then', 'else'] : node.kind === 'position' ? [] : ['next']
 
     for (const slot of slotsToCheck) {
       const { mode, volWindow, cappedFallback } = getSlotConfig(node, slot)
@@ -6348,6 +7689,7 @@ const conditionExpr = (cond: ConditionLine): string => {
 const createBacktestTraceCollector = (): BacktestTraceCollector => {
   const branches = new Map<string, { thenCount: number; elseCount: number; kind: BacktestNodeTrace['kind'] }>()
   const conditionsByOwner = new Map<string, Map<string, BacktestConditionTrace>>()
+  const altExitStates = new Map<string, 'then' | 'else'>()
 
   const recordBranch: BacktestTraceCollector['recordBranch'] = (nodeId, kind, ok) => {
     const cur = branches.get(nodeId) ?? { thenCount: 0, elseCount: 0, kind }
@@ -6408,7 +7750,15 @@ const createBacktestTraceCollector = (): BacktestTraceCollector => {
     return { nodes }
   }
 
-  return { recordBranch, recordCondition, toResult }
+  const getAltExitState: BacktestTraceCollector['getAltExitState'] = (nodeId) => {
+    return altExitStates.get(nodeId) ?? null
+  }
+
+  const setAltExitState: BacktestTraceCollector['setAltExitState'] = (nodeId, state) => {
+    altExitStates.set(nodeId, state)
+  }
+
+  return { recordBranch, recordCondition, toResult, getAltExitState, setAltExitState }
 }
 
 const evalCondition = (ctx: EvalCtx, ownerId: string, traceOwnerId: string, cond: ConditionLine): boolean => {
@@ -6701,6 +8051,90 @@ const evaluateNode = (ctx: EvalCtx, node: FlowNode, callStack: string[] = []): A
       for (const w of weighted) mergeAlloc(out, w.alloc, w.share)
       return normalizeAlloc(out)
     }
+    case 'altExit': {
+      // Evaluate both entry and exit conditions
+      const entryOk = evalConditions(ctx, node.id, node.entryConditions, `${node.id}:entry`)
+      const exitOk = evalConditions(ctx, node.id, node.exitConditions, `${node.id}:exit`)
+
+      // Get previous state from trace (or null for first bar)
+      const prevState = ctx.trace?.getAltExitState(node.id) ?? null
+
+      let currentState: 'then' | 'else'
+      if (prevState === null) {
+        // First bar: entry takes priority
+        currentState = entryOk ? 'then' : 'else'
+      } else if (prevState === 'then') {
+        // In THEN: only exit condition can change us
+        currentState = exitOk ? 'else' : 'then'
+      } else {
+        // In ELSE: only entry condition can change us
+        currentState = entryOk ? 'then' : 'else'
+      }
+
+      // Store current state for next bar
+      ctx.trace?.setAltExitState(node.id, currentState)
+      ctx.trace?.recordBranch(node.id, 'altExit', currentState === 'then')
+
+      const slot: SlotId = currentState
+      const children = (node.children[slot] || []).filter((c): c is FlowNode => Boolean(c))
+      const childAllocs = children.map((c) => evaluateNode(ctx, c, callStack))
+      const weighted = weightChildren(ctx, node, slot, children, childAllocs)
+      const out: Allocation = {}
+      for (const w of weighted) mergeAlloc(out, w.alloc, w.share)
+      return normalizeAlloc(out)
+    }
+    case 'scaling': {
+      const metric = node.scaleMetric ?? 'Relative Strength Index'
+      const win = Math.floor(Number(node.scaleWindow ?? 14))
+      const ticker = node.scaleTicker ?? 'SPY'
+      const fromVal = Number(node.scaleFrom ?? 30)
+      const toVal = Number(node.scaleTo ?? 70)
+
+      const currentVal = metricAt(ctx, ticker, metric, win)
+
+      // Calculate weights
+      let thenWeight: number
+      let elseWeight: number
+
+      if (currentVal == null) {
+        // No data available - default to 50/50
+        thenWeight = 0.5
+        elseWeight = 0.5
+      } else {
+        const isInverted = fromVal > toVal
+        const low = isInverted ? toVal : fromVal
+        const high = isInverted ? fromVal : toVal
+
+        if (currentVal <= low) {
+          thenWeight = isInverted ? 0 : 1
+          elseWeight = isInverted ? 1 : 0
+        } else if (currentVal >= high) {
+          thenWeight = isInverted ? 1 : 0
+          elseWeight = isInverted ? 0 : 1
+        } else {
+          const ratio = (currentVal - low) / (high - low)
+          elseWeight = isInverted ? (1 - ratio) : ratio
+          thenWeight = 1 - elseWeight
+        }
+      }
+
+      ctx.trace?.recordBranch(node.id, 'scaling', thenWeight > 0.5)
+
+      // Evaluate both branches and blend allocations
+      const thenChildren = (node.children.then || []).filter((c): c is FlowNode => Boolean(c))
+      const elseChildren = (node.children.else || []).filter((c): c is FlowNode => Boolean(c))
+
+      const thenAllocs = thenChildren.map((c) => evaluateNode(ctx, c, callStack))
+      const elseAllocs = elseChildren.map((c) => evaluateNode(ctx, c, callStack))
+
+      const thenWeighted = weightChildren(ctx, node, 'then', thenChildren, thenAllocs)
+      const elseWeighted = weightChildren(ctx, node, 'else', elseChildren, elseAllocs)
+
+      const out: Allocation = {}
+      for (const w of thenWeighted) mergeAlloc(out, w.alloc, w.share * thenWeight)
+      for (const w of elseWeighted) mergeAlloc(out, w.alloc, w.share * elseWeight)
+      return normalizeAlloc(out)
+    }
   }
 }
 
@@ -6781,6 +8215,7 @@ const computeBacktestSummary = (points: EquityPoint[], drawdowns: number[], days
   // Treynor Ratio: (Portfolio Return - Risk-Free Rate) / Beta
   // Beta = Cov(Rp, Rm) / Var(Rm)
   let treynor = 0
+  let beta = 0
   if (benchmarkPoints && benchmarkPoints.length > 1 && returns.length > 1) {
     // Calculate benchmark returns from benchmark equity points
     const benchReturns: number[] = []
@@ -6812,7 +8247,7 @@ const computeBacktestSummary = (points: EquityPoint[], drawdowns: number[], days
       mktVar /= (minLen - 1)
 
       // Beta = Cov(Rp, Rm) / Var(Rm)
-      const beta = mktVar > 0 ? cov / mktVar : 0
+      beta = mktVar > 0 ? cov / mktVar : 0
 
       // Treynor = annualized excess return / beta (assuming 0% risk-free rate)
       if (beta !== 0) {
@@ -6847,6 +8282,7 @@ const computeBacktestSummary = (points: EquityPoint[], drawdowns: number[], days
     sharpe: base.sharpe,
     sortino,
     treynor,
+    beta,
     winRate,
     bestDay,
     worstDay,
@@ -7377,6 +8813,10 @@ function BacktesterPanel({
                 <div className="text-sm font-black">{Number.isFinite(result.metrics.treynor) ? result.metrics.treynor.toFixed(2) : '—'}</div>
               </Card>
               <Card className="p-2 text-center">
+                <div className="text-[10px] font-bold text-muted">Beta</div>
+                <div className="text-sm font-black">{Number.isFinite(result.metrics.beta) ? result.metrics.beta.toFixed(2) : '—'}</div>
+              </Card>
+              <Card className="p-2 text-center">
                 <div className="text-[10px] font-bold text-muted">Vol</div>
                 <div className="text-sm font-black">{formatPct(result.metrics.vol)}</div>
               </Card>
@@ -7839,10 +9279,11 @@ function App() {
   const [bots, setBots] = useState<BotSession[]>(() => [initialBot])
   const [activeBotId, setActiveBotId] = useState<string>(() => initialBot.id)
   const [clipboard, setClipboard] = useState<FlowNode | null>(null)
-  const [tab, setTab] = useState<'Dashboard' | 'Community Nexus' | 'Analyze' | 'Build' | 'Help/Support' | 'Admin'>('Build')
+  const [tab, setTab] = useState<'Dashboard' | 'Community Nexus' | 'Analyze' | 'Build' | 'Help/Support' | 'Admin' | 'Databases'>('Build')
   const [dashboardSubtab, setDashboardSubtab] = useState<'Portfolio' | 'Partner Program'>('Portfolio')
-  const [analyzeSubtab, setAnalyzeSubtab] = useState<'Bots' | 'Correlation Tool'>('Bots')
+  const [analyzeSubtab, setAnalyzeSubtab] = useState<'Systems' | 'Correlation Tool'>('Systems')
   const [adminTab, setAdminTab] = useState<'Atlas Overview' | 'Nexus Maintenance' | 'Ticker Data'>('Atlas Overview')
+  const [databasesTab, setDatabasesTab] = useState<'Users' | 'Systems' | 'Portfolios' | 'Cache' | 'Admin Config'>('Users')
   const [saveMenuOpen, setSaveMenuOpen] = useState(false)
   const [saveNewWatchlistName, setSaveNewWatchlistName] = useState('')
   const [addToWatchlistBotId, setAddToWatchlistBotId] = useState<string | null>(null)
@@ -8033,7 +9474,7 @@ function App() {
     }
     // Check if already invested
     if (dashboardPortfolio.investments.some((inv) => inv.botId === dashboardBuyBotId)) {
-      alert('Already invested in this bot. Sell first to reinvest.')
+      alert('Already invested in this system. Sell first to reinvest.')
       return
     }
 
@@ -8845,6 +10286,8 @@ function App() {
       if (!savedBotId) {
         // Create new bot - save to API first
         savedBotId = `saved-${newId()}`
+        // Admin bots get 'Atlas Eligible' tag by default, others get 'Private'
+        const defaultTags = userId === 'admin' ? ['Private', 'Atlas Eligible'] : ['Private']
         const entry: SavedBot = {
           id: savedBotId,
           name: current.title || 'Algo',
@@ -8852,6 +10295,7 @@ function App() {
           payload,
           visibility: 'private',
           createdAt: now,
+          tags: defaultTags,
         }
         // Save to API first (database is source of truth)
         const createdId = await createBotInApi(userId, entry)
@@ -8903,173 +10347,117 @@ function App() {
 
   const runAnalyzeBacktest = useCallback(
     async (bot: SavedBot) => {
-      // For bots without payload (cross-user Nexus bots), run backtest on server
-      if (!bot.payload) {
-        setAnalyzeBacktests((prev) => {
-          if (prev[bot.id]?.status === 'loading') return prev
-          return { ...prev, [bot.id]: { status: 'loading' } }
-        })
-
-        try {
-          // Try server-side backtest first
-          const res = await fetch(`${API_BASE}/bots/${bot.id}/run-backtest`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ mode: backtestMode, costBps: backtestCostBps }),
-          })
-
-          if (res.ok) {
-            const { metrics, equityCurve, benchmarkCurve, allocations: serverAllocations } = await res.json() as {
-              metrics: {
-                cagr: number
-                maxDrawdown: number
-                calmarRatio: number
-                sharpeRatio: number
-                sortinoRatio: number
-                treynorRatio?: number
-                volatility: number
-                winRate?: number
-                avgTurnover?: number
-                avgHoldings?: number
-                bestDay?: number
-                worstDay?: number
-                tradingDays: number
-              }
-              equityCurve?: { date: string; equity: number }[]
-              benchmarkCurve?: { date: string; equity: number }[]
-              allocations?: { date: string; alloc: Record<string, number> }[]
-            }
-            // Convert equity curve from server format to frontend format
-            // Convert date strings to Unix timestamps (seconds) for Lightweight Charts
-            const points: EquityPoint[] = (equityCurve || []).map((p) => ({
-              time: (new Date(p.date).getTime() / 1000) as UTCTimestamp,
-              value: p.equity,
-            }))
-            // Convert benchmark curve (SPY) to frontend format
-            const benchmarkPoints: EquityPoint[] = (benchmarkCurve || []).map((p) => ({
-              time: (new Date(p.date).getTime() / 1000) as UTCTimestamp,
-              value: p.equity,
-            }))
-            // Compute drawdown points from equity curve
-            let peak = 1
-            const drawdownPoints: EquityPoint[] = points.map((p) => {
-              if (p.value > peak) peak = p.value
-              const dd = (p.value - peak) / peak
-              return { time: p.time, value: dd }
-            })
-            const startDate = equityCurve?.[0]?.date || ''
-            const endDate = equityCurve?.[equityCurve.length - 1]?.date || ''
-            const totalReturn = points.length > 0 ? points[points.length - 1].value - 1 : 0
-            const years = metrics.tradingDays / 252
-
-            // Convert server allocations to frontend format
-            const allocations: BacktestAllocationRow[] = (serverAllocations || []).map((a) => ({
-              date: a.date,
-              entries: Object.entries(a.alloc)
-                .filter(([, w]) => w > 0)
-                .map(([ticker, weight]) => ({ ticker, weight })),
-            }))
-
-            setAnalyzeBacktests((prev) => ({
-              ...prev,
-              [bot.id]: {
-                status: 'done',
-                result: {
-                  points,
-                  benchmarkPoints,
-                  drawdownPoints,
-                  markers: [],
-                  metrics: {
-                    startDate,
-                    endDate,
-                    days: metrics.tradingDays,
-                    years,
-                    totalReturn,
-                    cagr: metrics.cagr,
-                    maxDrawdown: metrics.maxDrawdown,
-                    calmar: metrics.calmarRatio,
-                    sharpe: metrics.sharpeRatio,
-                    sortino: metrics.sortinoRatio,
-                    vol: metrics.volatility,
-                    treynor: metrics.treynorRatio ?? 0,
-                    winRate: metrics.winRate ?? 0,
-                    bestDay: metrics.bestDay ?? 0,
-                    worstDay: metrics.worstDay ?? 0,
-                    avgTurnover: metrics.avgTurnover ?? 0,
-                    avgHoldings: metrics.avgHoldings ?? 0,
-                  },
-                  days: [],
-                  allocations,
-                  warnings: [],
-                  monthly: [],
-                },
-              },
-            }))
-            return
-          }
-
-          // If server backtest fails, use cached result or show error
-          if (bot.backtestResult) {
-            const cached = bot.backtestResult
-            setAnalyzeBacktests((prev) => ({
-              ...prev,
-              [bot.id]: {
-                status: 'done',
-                result: {
-                  points: [],
-                  drawdownPoints: [],
-                  markers: [],
-                  metrics: {
-                    startDate: '',
-                    endDate: '',
-                    days: 0,
-                    years: 0,
-                    totalReturn: 0,
-                    cagr: cached.cagr,
-                    maxDrawdown: cached.maxDrawdown,
-                    calmar: cached.calmar,
-                    sharpe: cached.sharpe,
-                    sortino: cached.sortino,
-                    vol: 0,
-                    treynor: 0,
-                    winRate: 0,
-                    bestDay: 0,
-                    worstDay: 0,
-                    avgTurnover: 0,
-                    avgHoldings: 0,
-                  },
-                  days: [],
-                  allocations: [],
-                  warnings: [],
-                  monthly: [],
-                },
-              },
-            }))
-          } else {
-            const errorData = await res.json().catch(() => ({ error: 'Server backtest failed' }))
-            setAnalyzeBacktests((prev) => ({
-              ...prev,
-              [bot.id]: { status: 'error', error: errorData.error || 'Failed to run server-side backtest' },
-            }))
-          }
-        } catch (err) {
-          setAnalyzeBacktests((prev) => ({
-            ...prev,
-            [bot.id]: { status: 'error', error: `Network error: ${String(err)}` },
-          }))
-        }
-        return
-      }
       setAnalyzeBacktests((prev) => {
         if (prev[bot.id]?.status === 'loading') return prev
         return { ...prev, [bot.id]: { status: 'loading' } }
       })
-      try {
-        const { result } = await runBacktestForNode(bot.payload)
-        setAnalyzeBacktests((prev) => ({ ...prev, [bot.id]: { status: 'done', result } }))
 
-        // Auto eligibility tagging (only for regular users, not admin)
-        if (userId && userId !== 'admin' && result?.metrics) {
+      // FRD-014: Always try server-side cached backtest first
+      // This uses the backtest cache for instant results on repeated requests
+      try {
+        const res = await fetch(`${API_BASE}/bots/${bot.id}/run-backtest`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: backtestMode, costBps: backtestCostBps }),
+        })
+
+        if (res.ok) {
+          const { metrics, equityCurve, benchmarkCurve, allocations: serverAllocations, cached: wasCached } = await res.json() as {
+            metrics: {
+              cagr: number
+              maxDrawdown: number
+              calmarRatio: number
+              sharpeRatio: number
+              sortinoRatio: number
+              treynorRatio?: number
+              beta?: number
+              volatility: number
+              winRate?: number
+              avgTurnover?: number
+              avgHoldings?: number
+              bestDay?: number
+              worstDay?: number
+              tradingDays: number
+            }
+            equityCurve?: { date: string; equity: number }[]
+            benchmarkCurve?: { date: string; equity: number }[]
+            allocations?: { date: string; alloc: Record<string, number> }[]
+            cached?: boolean
+          }
+
+          if (wasCached) {
+            console.log(`[Backtest] Cache hit for ${bot.name}`)
+          }
+
+          // Convert equity curve from server format to frontend format
+          // Convert date strings to Unix timestamps (seconds) for Lightweight Charts
+          const points: EquityPoint[] = (equityCurve || []).map((p) => ({
+            time: (new Date(p.date).getTime() / 1000) as UTCTimestamp,
+            value: p.equity,
+          }))
+          // Convert benchmark curve (SPY) to frontend format
+          const benchmarkPoints: EquityPoint[] = (benchmarkCurve || []).map((p) => ({
+            time: (new Date(p.date).getTime() / 1000) as UTCTimestamp,
+            value: p.equity,
+          }))
+          // Compute drawdown points from equity curve
+          let peak = 1
+          const drawdownPoints: EquityPoint[] = points.map((p) => {
+            if (p.value > peak) peak = p.value
+            const dd = (p.value - peak) / peak
+            return { time: p.time, value: dd }
+          })
+          const startDate = equityCurve?.[0]?.date || ''
+          const endDate = equityCurve?.[equityCurve.length - 1]?.date || ''
+          const totalReturn = points.length > 0 ? points[points.length - 1].value - 1 : 0
+          const years = metrics.tradingDays / 252
+
+          // Convert server allocations to frontend format
+          const allocations: BacktestAllocationRow[] = (serverAllocations || []).map((a) => ({
+            date: a.date,
+            entries: Object.entries(a.alloc)
+              .filter(([, w]) => w > 0)
+              .map(([ticker, weight]) => ({ ticker, weight })),
+          }))
+
+          const result: BacktestResult = {
+            points,
+            benchmarkPoints,
+            drawdownPoints,
+            markers: [],
+            metrics: {
+              startDate,
+              endDate,
+              days: metrics.tradingDays,
+              years,
+              totalReturn,
+              cagr: metrics.cagr,
+              maxDrawdown: metrics.maxDrawdown,
+              calmar: metrics.calmarRatio,
+              sharpe: metrics.sharpeRatio,
+              sortino: metrics.sortinoRatio,
+              vol: metrics.volatility,
+              treynor: metrics.treynorRatio ?? 0,
+              beta: metrics.beta ?? 0,
+              winRate: metrics.winRate ?? 0,
+              bestDay: metrics.bestDay ?? 0,
+              worstDay: metrics.worstDay ?? 0,
+              avgTurnover: metrics.avgTurnover ?? 0,
+              avgHoldings: metrics.avgHoldings ?? 0,
+            },
+            days: [],
+            allocations,
+            warnings: [],
+            monthly: [],
+          }
+
+          setAnalyzeBacktests((prev) => ({
+            ...prev,
+            [bot.id]: { status: 'done', result },
+          }))
+
+          // Auto eligibility tagging (only for regular users, not admin)
+          if (userId && userId !== 'admin' && result?.metrics) {
           console.log('[Eligibility] Checking bot:', bot.name, 'userId:', userId)
           try {
             // Fetch eligibility requirements
@@ -9171,22 +10559,32 @@ function App() {
           }
         }
 
-        // Sync metrics to database for Nexus bots (scalable cross-user visibility)
-        if (result?.metrics && bot.tags?.includes('Nexus')) {
-          syncBotMetricsToApi(bot.id, {
-            cagr: result.metrics.cagr,
-            maxDrawdown: result.metrics.maxDrawdown,
-            calmarRatio: result.metrics.calmar,
-            sharpeRatio: result.metrics.sharpe,
-            sortinoRatio: result.metrics.sortino,
-            treynorRatio: result.metrics.treynor,
-            volatility: result.metrics.vol,
-            winRate: result.metrics.winRate,
-            avgTurnover: result.metrics.avgTurnover,
-            avgHoldings: result.metrics.avgHoldings,
-            tradingDays: result.metrics.days,
-          }).catch((err) => console.warn('[API] Failed to sync metrics:', err))
+          // Sync metrics to database for Nexus bots (scalable cross-user visibility)
+          if (result?.metrics && bot.tags?.includes('Nexus')) {
+            syncBotMetricsToApi(bot.id, {
+              cagr: result.metrics.cagr,
+              maxDrawdown: result.metrics.maxDrawdown,
+              calmarRatio: result.metrics.calmar,
+              sharpeRatio: result.metrics.sharpe,
+              sortinoRatio: result.metrics.sortino,
+              treynorRatio: result.metrics.treynor,
+              volatility: result.metrics.vol,
+              winRate: result.metrics.winRate,
+              avgTurnover: result.metrics.avgTurnover,
+              avgHoldings: result.metrics.avgHoldings,
+              tradingDays: result.metrics.days,
+            }).catch((err) => console.warn('[API] Failed to sync metrics:', err))
+          }
+
+          return // Success - exit early
         }
+
+        // Server returned error - show error message
+        const errorData = await res.json().catch(() => ({ error: 'Server backtest failed' }))
+        setAnalyzeBacktests((prev) => ({
+          ...prev,
+          [bot.id]: { status: 'error', error: errorData.error || 'Failed to run backtest' },
+        }))
       } catch (err) {
         let message = String((err as Error)?.message || err)
         if (isValidationError(err)) {
@@ -9369,7 +10767,7 @@ function App() {
   const handleCopySaved = useCallback(
     async (bot: SavedBot) => {
       if (bot.visibility === 'community') {
-        alert('Community bots cannot be copied/exported.')
+        alert('Community systems cannot be copied/exported.')
         return
       }
       const ensured = ensureSlots(cloneNode(bot.payload))
@@ -9386,6 +10784,46 @@ function App() {
     [setClipboard],
   )
 
+  // FRD-012: Copy to New System - for Nexus/Atlas bots that can't be edited
+  const handleCopyToNew = useCallback(
+    async (bot: SavedBot) => {
+      if (!userId) return
+
+      // Clone the payload with new IDs
+      const clonedPayload = ensureSlots(cloneNode(bot.payload))
+
+      // Create new bot with (Copy) suffix, stripped of Fund tags
+      // Admin bots get 'Atlas Eligible' tag by default, others get 'Private'
+      const defaultTags = userId === 'admin' ? ['Private', 'Atlas Eligible'] : ['Private']
+      const newBot: SavedBot = {
+        id: `saved-bot-${Date.now()}`,
+        name: `${bot.name} (Copy)`,
+        payload: clonedPayload,
+        visibility: 'private',
+        tags: defaultTags,
+        builderId: userId,
+        createdAt: Date.now(),
+        fundSlot: undefined,
+      }
+
+      // Add to savedBots and sync to API
+      setSavedBots((prev) => [...prev, newBot])
+      await syncBotToApi(userId, newBot)
+
+      // Open in Build tab
+      const session: BotSession = {
+        id: `bot-${newId()}`,
+        history: [clonedPayload],
+        historyIndex: 0,
+        savedBotId: newBot.id
+      }
+      setBots((prev) => [...prev, session])
+      setActiveBotId(session.id)
+      setTab('Build')
+    },
+    [userId, setTab],
+  )
+
   const handleDeleteSaved = useCallback(async (id: string) => {
     // Delete from API first (database is source of truth)
     if (userId) {
@@ -9397,13 +10835,20 @@ function App() {
 
   const handleOpenSaved = useCallback(
     (bot: SavedBot) => {
-      // Block non-owners from opening Nexus bots (IP protection)
-      if (bot.tags?.includes('Nexus') && bot.builderId !== userId) {
-        alert('You cannot open other users\' Nexus bots.')
+      // FRD-012: Block ALL Nexus/Atlas bots from being edited (even by owner)
+      // Owners should use "Copy to New System" instead
+      const isPublished = bot.tags?.includes('Nexus') || bot.tags?.includes('Atlas')
+      if (isPublished) {
+        alert('Published systems cannot be edited. Use "Copy to New System" to create an editable copy.')
+        return
+      }
+      // Block non-owners from opening any bot (IP protection)
+      if (bot.builderId !== userId) {
+        alert('You cannot open other users\' systems.')
         return
       }
       if (bot.visibility === 'community') {
-        alert('Community bots cannot be opened in Build.')
+        alert('Community systems cannot be opened in Build.')
         return
       }
       const payload = ensureSlots(cloneNode(bot.payload))
@@ -9450,7 +10895,7 @@ function App() {
         const root0 = extractRoot(parsed)
         const hasTitle = Boolean(root0.title?.trim())
         const shouldInfer = !hasTitle || (root0.title.trim() === 'Algo Name Here' && inferredTitle && inferredTitle !== 'Algo Name Here')
-        const root1 = shouldInfer ? { ...root0, title: inferredTitle || 'Imported Bot' } : root0
+        const root1 = shouldInfer ? { ...root0, title: inferredTitle || 'Imported System' } : root0
         const ensured0 = ensureSlots(root1)
         const ensured = hasLegacyIdsOrDuplicates(ensured0) ? ensureSlots(regenerateIds(ensured0)) : ensured0
         setBots((prev) =>
@@ -9507,6 +10952,101 @@ function App() {
   const handleDeleteNumberedItem = useCallback(
     (id: string, itemId: string) => {
       const next = deleteNumberedItem(current, id, itemId)
+      push(next)
+    },
+    [current, push],
+  )
+
+  // Alt Exit handlers
+  const handleAddEntryCondition = useCallback(
+    (id: string, type: 'and' | 'or') => {
+      const next = addEntryCondition(current, id, type)
+      push(next)
+    },
+    [current, push],
+  )
+
+  const handleAddExitCondition = useCallback(
+    (id: string, type: 'and' | 'or') => {
+      const next = addExitCondition(current, id, type)
+      push(next)
+    },
+    [current, push],
+  )
+
+  const handleDeleteEntryCondition = useCallback(
+    (id: string, condId: string) => {
+      const next = deleteEntryCondition(current, id, condId)
+      push(next)
+    },
+    [current, push],
+  )
+
+  const handleDeleteExitCondition = useCallback(
+    (id: string, condId: string) => {
+      const next = deleteExitCondition(current, id, condId)
+      push(next)
+    },
+    [current, push],
+  )
+
+  const handleUpdateEntryCondition = useCallback(
+    (
+      id: string,
+      condId: string,
+      updates: Partial<{
+        window: number
+        metric: MetricChoice
+        comparator: ComparatorChoice
+        ticker: PositionChoice
+        threshold: number
+        expanded?: boolean
+        rightWindow?: number
+        rightMetric?: MetricChoice
+        rightTicker?: PositionChoice
+      }>,
+    ) => {
+      const next = updateEntryConditionFields(current, id, condId, updates)
+      push(next)
+    },
+    [current, push],
+  )
+
+  const handleUpdateExitCondition = useCallback(
+    (
+      id: string,
+      condId: string,
+      updates: Partial<{
+        window: number
+        metric: MetricChoice
+        comparator: ComparatorChoice
+        ticker: PositionChoice
+        threshold: number
+        expanded?: boolean
+        rightWindow?: number
+        rightMetric?: MetricChoice
+        rightTicker?: PositionChoice
+      }>,
+    ) => {
+      const next = updateExitConditionFields(current, id, condId, updates)
+      push(next)
+    },
+    [current, push],
+  )
+
+  // Scaling handlers
+  const handleUpdateScaling = useCallback(
+    (
+      id: string,
+      updates: Partial<{
+        scaleMetric: MetricChoice
+        scaleWindow: number
+        scaleTicker: string
+        scaleFrom: number
+        scaleTo: number
+      }>,
+    ) => {
+      const next = updateScalingFields(current, id, updates)
       push(next)
     },
     [current, push],
@@ -9632,7 +11172,7 @@ function App() {
             </div>
           </div>
           <div className="flex gap-2 mt-3">
-            {(['Dashboard', 'Community Nexus', 'Analyze', 'Build', 'Help/Support', ...(userId === 'admin' ? ['Admin'] : [])] as ('Dashboard' | 'Community Nexus' | 'Analyze' | 'Build' | 'Help/Support' | 'Admin')[]).map((t) => (
+            {(['Dashboard', 'Community Nexus', 'Analyze', 'Build', 'Help/Support', ...(userId === 'admin' ? ['Admin', 'Databases'] : [])] as ('Dashboard' | 'Community Nexus' | 'Analyze' | 'Build' | 'Help/Support' | 'Admin' | 'Databases')[]).map((t) => (
               <Button
                 key={t}
                 variant={tab === t ? 'accent' : 'secondary'}
@@ -9644,11 +11184,11 @@ function App() {
           </div>
           {tab === 'Build' && (
             <div className="flex gap-2 mt-3">
-              <Button onClick={handleNewBot}>New Bot</Button>
+              <Button onClick={handleNewBot}>New System</Button>
               <div className="relative inline-block">
                 <Button
                   onClick={() => setSaveMenuOpen((v) => !v)}
-                  title="Save this bot to a watchlist"
+                  title="Save this system to a watchlist"
                 >
                   Save to Watchlist
                 </Button>
@@ -10006,6 +11546,34 @@ function App() {
                                   const next = updateCallReference(c.root, id, callId)
                                   pushCallChain(c.id, next)
                                 }}
+                                onAddEntryCondition={(id, type) => {
+                                  const next = addEntryCondition(c.root, id, type)
+                                  pushCallChain(c.id, next)
+                                }}
+                                onAddExitCondition={(id, type) => {
+                                  const next = addExitCondition(c.root, id, type)
+                                  pushCallChain(c.id, next)
+                                }}
+                                onDeleteEntryCondition={(id, condId) => {
+                                  const next = deleteEntryCondition(c.root, id, condId)
+                                  pushCallChain(c.id, next)
+                                }}
+                                onDeleteExitCondition={(id, condId) => {
+                                  const next = deleteExitCondition(c.root, id, condId)
+                                  pushCallChain(c.id, next)
+                                }}
+                                onUpdateEntryCondition={(id, condId, updates) => {
+                                  const next = updateEntryConditionFields(c.root, id, condId, updates)
+                                  pushCallChain(c.id, next)
+                                }}
+                                onUpdateExitCondition={(id, condId, updates) => {
+                                  const next = updateExitConditionFields(c.root, id, condId, updates)
+                                  pushCallChain(c.id, next)
+                                }}
+                                onUpdateScaling={(id, updates) => {
+                                  const next = updateScalingFields(c.root, id, updates)
+                                  pushCallChain(c.id, next)
+                                }}
                               />
                             </div>
                           ) : null}
@@ -10066,6 +11634,13 @@ function App() {
                     clipboard={clipboard}
                     callChains={callChains}
                     onUpdateCallRef={handleUpdateCallRef}
+                    onAddEntryCondition={handleAddEntryCondition}
+                    onAddExitCondition={handleAddExitCondition}
+                    onDeleteEntryCondition={handleDeleteEntryCondition}
+                    onDeleteExitCondition={handleDeleteExitCondition}
+                    onUpdateEntryCondition={handleUpdateEntryCondition}
+                    onUpdateExitCondition={handleUpdateExitCondition}
+                    onUpdateScaling={handleUpdateScaling}
                   />
                   </div>
                 </div>
@@ -10104,7 +11679,15 @@ function App() {
                   setUiState(data.ui)
                   setAnalyzeBacktests({})
                 }}
+                savedBots={savedBots}
+                setSavedBots={setSavedBots}
               />
+            </CardContent>
+          </Card>
+        ) : tab === 'Databases' ? (
+          <Card className="h-full flex flex-col overflow-hidden m-4">
+            <CardContent className="p-6 flex flex-col h-full overflow-auto">
+              <DatabasesPanel databasesTab={databasesTab} setDatabasesTab={setDatabasesTab} />
             </CardContent>
           </Card>
         ) : tab === 'Analyze' ? (
@@ -10114,7 +11697,7 @@ function App() {
               <div className="flex items-center gap-2.5 flex-wrap">
                 <div className="font-black">Analyze</div>
                 <div className="flex gap-2">
-                  {(['Bots', 'Correlation Tool'] as const).map((t) => (
+                  {(['Systems', 'Correlation Tool'] as const).map((t) => (
                     <Button
                       key={t}
                       variant={analyzeSubtab === t ? 'accent' : 'secondary'}
@@ -10158,10 +11741,10 @@ function App() {
               </div>
             ) : null}
 
-            {analyzeSubtab !== 'Bots' ? null : (
+            {analyzeSubtab !== 'Systems' ? null : (
               <>
                 {analyzeVisibleBotIds.length === 0 ? (
-              <div className="mt-3 text-muted">No bots in your watchlists yet.</div>
+              <div className="mt-3 text-muted">No systems in your watchlists yet.</div>
             ) : (
               <div className="grid gap-3 mt-3">
                 {analyzeVisibleBotIds
@@ -10213,9 +11796,13 @@ function App() {
                             ))}
                           </div>
                           <div className="ml-auto flex gap-2 flex-wrap">
-                            {/* Only show Open in Build for bot owners (IP protection) */}
+                            {/* FRD-012: Show Copy to New for published systems, Open in Build for private */}
                             {b.builderId === userId && b.visibility !== 'community' && (
-                              <Button size="sm" onClick={() => handleOpenSaved(b)}>Open in Build</Button>
+                              (b.tags?.includes('Nexus') || b.tags?.includes('Atlas')) ? (
+                                <Button size="sm" onClick={() => handleCopyToNew(b)}>Copy to New System</Button>
+                              ) : (
+                                <Button size="sm" onClick={() => handleOpenSaved(b)}>Open in Build</Button>
+                              )
                             )}
                             <Button
                               size="sm"
@@ -10226,12 +11813,12 @@ function App() {
                             >
                               Add to Watchlist
                             </Button>
-                            {/* Only show Copy for bot owners (IP protection) */}
+                            {/* Only show Copy to clipboard for bot owners (IP protection) */}
                             {b.builderId === userId && b.visibility !== 'community' && (
-                              <Button size="sm" onClick={() => handleCopySaved(b)}>Copy</Button>
+                              <Button size="sm" onClick={() => handleCopySaved(b)}>Copy JSON</Button>
                             )}
-                            {/* Only show Delete for bot owners */}
-                            {b.builderId === userId && (
+                            {/* Only show Delete for bot owners - but NOT for published systems */}
+                            {b.builderId === userId && !(b.tags?.includes('Nexus') || b.tags?.includes('Atlas')) && (
                               <Button variant="destructive" size="sm" onClick={() => handleDeleteSaved(b.id)}>Delete</Button>
                             )}
                           </div>
@@ -10276,9 +11863,9 @@ function App() {
                                   </div>
                                 ) : analyzeState?.status === 'done' ? (
                                   <div className="grid grid-cols-1 gap-2.5 min-w-0 w-full">
-                                    {/* Buy Bot Section */}
+                                    {/* Buy System Section */}
                                     <div className="border-b border-border pb-3 mb-1">
-                                      <div className="font-bold mb-2">Buy Bot</div>
+                                      <div className="font-bold mb-2">Buy System</div>
                                       <div className="text-sm mb-2">
                                         <span className="text-muted">Cash Available:</span>{' '}
                                         <span className="font-bold">{formatUsd(dashboardCash)}</span>
@@ -10369,7 +11956,7 @@ function App() {
                                                 </div>
                                               </div>
                                             ) : (
-                                              <div className="text-muted text-sm">Not invested in this bot. Buy from Dashboard to track live stats.</div>
+                                              <div className="text-muted text-sm">Not invested in this system. Buy from Dashboard to track live stats.</div>
                                             )}
                                           </div>
                                         )
@@ -10436,6 +12023,14 @@ function App() {
                                               <div className="stat-value">
                                                 {Number.isFinite(analyzeState.result?.metrics.treynor ?? NaN)
                                                   ? (analyzeState.result?.metrics.treynor ?? 0).toFixed(2)
+                                                  : '--'}
+                                              </div>
+                                            </div>
+                                            <div>
+                                              <div className="stat-label">Beta</div>
+                                              <div className="stat-value">
+                                                {Number.isFinite(analyzeState.result?.metrics.beta ?? NaN)
+                                                  ? (analyzeState.result?.metrics.beta ?? 0).toFixed(2)
                                                   : '--'}
                                               </div>
                                             </div>
@@ -10690,6 +12285,7 @@ function App() {
                                       'Sharpe Ratio',
                                       'Sortino Ratio',
                                       'Treynor Ratio',
+                                      'Beta',
                                       'Volatility',
                                       'Win Rate',
                                     ] as const
@@ -10749,6 +12345,23 @@ function App() {
                   return {
                     id: bot.id,
                     name: displayName,
+                    tags,
+                    oosCagr: metrics?.cagr ?? 0,
+                    oosMaxdd: metrics?.maxDrawdown ?? 0,
+                    oosSharpe: metrics?.sharpe ?? 0,
+                  }
+                })
+
+              // Atlas sponsored systems (from admin)
+              const atlasBotRows: CommunityBotRow[] = savedBots
+                .filter(bot => bot.tags?.includes('Atlas'))
+                .map((bot) => {
+                  const tagNames = (watchlistsByBotId.get(bot.id) ?? []).map((w) => w.name)
+                  const tags = ['Atlas', 'Sponsored', ...tagNames]
+                  const metrics = analyzeBacktests[bot.id]?.result?.metrics
+                  return {
+                    id: bot.id,
+                    name: bot.name, // Atlas systems show real names, not anonymized
                     tags,
                     oosCagr: metrics?.cagr ?? 0,
                     oosMaxdd: metrics?.maxDrawdown ?? 0,
@@ -10874,7 +12487,7 @@ function App() {
               ) => {
                 const sorted = sortRows(rows, sort)
                 if (sorted.length === 0) {
-                  return <div className="text-muted p-3">{opts?.emptyMessage ?? 'No bots yet.'}</div>
+                  return <div className="text-muted p-3">{opts?.emptyMessage ?? 'No systems yet.'}</div>
                 }
                 return (
                   <div className="flex flex-col gap-2.5">
@@ -10940,9 +12553,9 @@ function App() {
                               ))}
                             </div>
                             <div className="ml-auto flex gap-2 flex-wrap">
-                              {/* Only show Open in Build for bot owners (IP protection) */}
+                              {/* FRD-012: Show Copy to New for published systems (Nexus/Atlas are always published) */}
                               {b.builderId === userId && (
-                                <Button size="sm" onClick={() => handleOpenSaved(b)}>Open in Build</Button>
+                                <Button size="sm" onClick={() => handleCopyToNew(b)}>Copy to New System</Button>
                               )}
                               <Button
                                 size="sm"
@@ -10970,9 +12583,9 @@ function App() {
                                   </div>
                                 ) : analyzeState?.status === 'done' ? (
                                   <div className="grid grid-cols-1 gap-2.5 min-w-0 w-full">
-                                    {/* Buy Bot Section */}
+                                    {/* Buy System Section */}
                                     <div className="border-b border-border pb-3 mb-1">
-                                      <div className="font-bold mb-2">Buy Bot</div>
+                                      <div className="font-bold mb-2">Buy System</div>
                                       <div className="text-sm mb-2">
                                         <span className="text-muted">Cash Available:</span>{' '}
                                         <span className="font-bold">{formatUsd(dashboardCash)}</span>
@@ -11059,7 +12672,7 @@ function App() {
                                                 </div>
                                               </div>
                                             ) : (
-                                              <div className="text-muted text-sm">Not invested in this bot. Buy from Dashboard to track live stats.</div>
+                                              <div className="text-muted text-sm">Not invested in this system. Buy from Dashboard to track live stats.</div>
                                             )}
                                           </div>
                                         )
@@ -11130,6 +12743,14 @@ function App() {
                                               </div>
                                             </div>
                                             <div>
+                                              <div className="stat-label">Beta</div>
+                                              <div className="stat-value">
+                                                {Number.isFinite(analyzeState.result?.metrics.beta ?? NaN)
+                                                  ? (analyzeState.result?.metrics.beta ?? 0).toFixed(2)
+                                                  : '--'}
+                                              </div>
+                                            </div>
+                                            <div>
                                               <div className="stat-label">Volatility</div>
                                               <div className="stat-value">{formatPct(analyzeState.result?.metrics.vol ?? NaN)}</div>
                                             </div>
@@ -11182,10 +12803,40 @@ function App() {
 
               return (
                 <div className="grid grid-cols-2 gap-4 min-h-[calc(100vh-260px)] items-stretch">
-                  {/* Left Column - News and Search */}
+                  {/* Left Column - Atlas Systems and Search */}
                   <Card className="flex flex-col gap-4 p-4">
-                    <Card className="flex-[2] flex items-center justify-center p-4 border-2">
-                      <div className="font-black text-center">News and Select Bots</div>
+                    <Card className="flex-[2] flex flex-col p-4 border-2 overflow-auto">
+                      <div className="font-bold mb-3">Atlas Sponsored Systems</div>
+                      {atlasBotRows.length === 0 ? (
+                        <div className="flex-1 flex items-center justify-center text-muted text-sm">
+                          No Atlas sponsored systems yet.
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          {atlasBotRows.map((row) => (
+                            <div
+                              key={row.id}
+                              className="p-3 bg-blue-500/10 rounded-lg border border-blue-500/30 hover:bg-blue-500/20 cursor-pointer transition-colors"
+                              onClick={() => {
+                                const bot = savedBots.find((b) => b.id === row.id)
+                                if (bot) {
+                                  setAddToWatchlistBotId(bot.id)
+                                }
+                              }}
+                            >
+                              <div className="flex items-center gap-2">
+                                <Badge className="bg-blue-500 text-white">Atlas</Badge>
+                                <span className="font-bold text-sm">{row.name}</span>
+                              </div>
+                              <div className="text-xs text-muted mt-1 flex gap-3">
+                                <span>CAGR: {(row.oosCagr * 100).toFixed(1)}%</span>
+                                <span>Sharpe: {row.oosSharpe.toFixed(2)}</span>
+                                <span>MaxDD: {(row.oosMaxdd * 100).toFixed(1)}%</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </Card>
                     <Card className="flex-1 flex flex-col p-3 border-2">
                       <div className="font-bold text-center mb-2">Search Nexus Strategies</div>
@@ -11295,11 +12946,11 @@ function App() {
                         {communitySearchFilters.some(f => f.value.trim()) ? (
                           searchedBots.length > 0 ? (
                             renderBotCards(searchedBots.slice(0, 20), communitySearchSort, setCommunitySearchSort, {
-                              emptyMessage: 'No matching bots found.',
+                              emptyMessage: 'No matching systems found.',
                             })
                           ) : (
                             <div className="text-muted text-center p-3">
-                              No bots match these criteria.
+                              No systems match these criteria.
                             </div>
                           )
                         ) : (
@@ -11311,31 +12962,31 @@ function App() {
                     </Card>
                   </Card>
 
-                  {/* Right Column - Top Nexus Strategies */}
+                  {/* Right Column - Top Nexus Systems */}
                   <Card className="flex flex-col p-4">
-                    <div className="font-black text-center mb-4">Top Nexus Strategies</div>
+                    <div className="font-black text-center mb-4">Top Nexus Systems</div>
                     <div className="flex flex-col gap-4 flex-1">
                       <Card className="flex-1 flex flex-col p-3 border-2">
-                        <div className="font-bold text-center mb-2">Top Nexus Strategies by CAGR</div>
+                        <div className="font-bold text-center mb-2">Top Nexus Systems by CAGR</div>
                         <div className="flex-1 overflow-auto max-h-[400px]">
                           {renderBotCards(topByCagr, communityTopSort, setCommunityTopSort, {
-                            emptyMessage: 'No Nexus strategies with backtest data.',
+                            emptyMessage: 'No Nexus systems with backtest data.',
                           })}
                         </div>
                       </Card>
                       <Card className="flex-1 flex flex-col p-3 border-2">
-                        <div className="font-bold text-center mb-2">Top Nexus Strategies by Calmar Ratio</div>
+                        <div className="font-bold text-center mb-2">Top Nexus Systems by Calmar Ratio</div>
                         <div className="flex-1 overflow-auto max-h-[400px]">
                           {renderBotCards(topByCalmar, communityTopSort, setCommunityTopSort, {
-                            emptyMessage: 'No Nexus strategies with backtest data.',
+                            emptyMessage: 'No Nexus systems with backtest data.',
                           })}
                         </div>
                       </Card>
                       <Card className="flex-1 flex flex-col p-3 border-2">
-                        <div className="font-bold text-center mb-2">Top Nexus Strategies by Sharpe Ratio</div>
+                        <div className="font-bold text-center mb-2">Top Nexus Systems by Sharpe Ratio</div>
                         <div className="flex-1 overflow-auto max-h-[400px]">
                           {renderBotCards(topBySharpe, communityTopSort, setCommunityTopSort, {
-                            emptyMessage: 'No Nexus strategies with backtest data.',
+                            emptyMessage: 'No Nexus systems with backtest data.',
                           })}
                         </div>
                       </Card>
@@ -11435,12 +13086,12 @@ function App() {
                   />
                 </Card>
 
-                {/* Bottom Zone: Buy Bot + Invested Bots (left 2/3) | Portfolio Allocation (right 1/3) */}
+                {/* Bottom Zone: Buy System + Invested Systems (left 2/3) | Portfolio Allocation (right 1/3) */}
                 <div className="grid grid-cols-3 gap-4">
-                  {/* Left Panel: Buy Bot + Bots Invested In (2/3 width) */}
+                  {/* Left Panel: Buy System + Systems Invested In (2/3 width) */}
                   <Card className="col-span-2 p-4">
-                    {/* Buy Bot Section */}
-                    <div className="font-black mb-3">Buy Bot</div>
+                    {/* Buy System Section */}
+                    <div className="font-black mb-3">Buy System</div>
                     <div className="grid gap-2 mb-4">
                       {/* Cash available line */}
                       <div className="text-sm">
@@ -11487,11 +13138,11 @@ function App() {
                         />
                       </div>
 
-                      {/* Bot selector with search */}
+                      {/* System selector with search */}
                       <div className="relative">
                         <Input
                           type="text"
-                          placeholder="Search and select a bot..."
+                          placeholder="Search and select a system..."
                           value={dashboardBuyBotSearch}
                           onChange={(e) => {
                             setDashboardBuyBotSearch(e.target.value)
@@ -11522,8 +13173,8 @@ function App() {
                                   return (
                                     <div className="px-3 py-2 text-sm text-muted">
                                       {availableBots.length === 0
-                                        ? 'No eligible bots available'
-                                        : 'No matching bots found'}
+                                        ? 'No eligible systems available'
+                                        : 'No matching systems found'}
                                     </div>
                                   )
                                 }
@@ -11568,7 +13219,7 @@ function App() {
 
                       {eligibleBots.length === 0 && (
                         <div className="text-xs text-muted">
-                          No eligible bots. Your private bots or bots tagged "Atlas"/"Nexus" will appear here.
+                          No eligible systems. Your private systems or systems tagged "Atlas"/"Nexus" will appear here.
                         </div>
                       )}
                     </div>
@@ -11576,8 +13227,8 @@ function App() {
                     {/* Divider */}
                     <div className="border-t border-border my-3" />
 
-                    {/* Bots Invested In Section - Uses same card format as Community Nexus */}
-                    <div className="font-black mb-3">Bots Invested In ({dashboardInvestmentsWithPnl.length})</div>
+                    {/* Systems Invested In Section - Uses same card format as Community Nexus */}
+                    <div className="font-black mb-3">Systems Invested In ({dashboardInvestmentsWithPnl.length})</div>
                     {dashboardInvestmentsWithPnl.length === 0 ? (
                       <div className="text-muted text-center py-4">No investments yet.</div>
                     ) : (
@@ -11851,6 +13502,14 @@ function App() {
                                                 </div>
                                               </div>
                                               <div>
+                                                <div className="stat-label">Beta</div>
+                                                <div className="stat-value">
+                                                  {Number.isFinite(analyzeState.result?.metrics.beta ?? NaN)
+                                                    ? (analyzeState.result?.metrics.beta ?? 0).toFixed(2)
+                                                    : '--'}
+                                                </div>
+                                              </div>
+                                              <div>
                                                 <div className="stat-label">Volatility</div>
                                                 <div className="stat-value">{formatPct(analyzeState.result?.metrics.vol ?? NaN)}</div>
                                               </div>
@@ -12115,7 +13774,7 @@ function App() {
                     if (eligibleBotsList.length === 0) {
                       return (
                         <div className="text-center text-muted py-8">
-                          No eligible bots. Bots become eligible when they meet the Partner Program requirements.
+                          No eligible systems. Systems become eligible when they meet the Partner Program requirements.
                         </div>
                       )
                     }
@@ -12199,7 +13858,12 @@ function App() {
                                       })}
                                     </select>
                                   )}
-                                  <Button size="sm" onClick={() => handleOpenSaved(b)}>Open in Build</Button>
+                                  {/* FRD-012: Show Copy to New for published systems, Open in Build for private */}
+                                  {(b.tags?.includes('Nexus') || b.tags?.includes('Atlas')) ? (
+                                    <Button size="sm" onClick={() => handleCopyToNew(b)}>Copy to New System</Button>
+                                  ) : (
+                                    <Button size="sm" onClick={() => handleOpenSaved(b)}>Open in Build</Button>
+                                  )}
                                   <Button
                                     size="sm"
                                     onClick={() => {
@@ -12251,9 +13915,9 @@ function App() {
                                           </div>
                                         ) : analyzeState?.status === 'done' ? (
                                           <div className="grid grid-cols-1 gap-2.5 min-w-0 w-full">
-                                            {/* Buy Bot Section */}
+                                            {/* Buy System Section */}
                                             <div className="border-b border-border pb-3 mb-1">
-                                              <div className="font-bold mb-2">Buy Bot</div>
+                                              <div className="font-bold mb-2">Buy System</div>
                                               <div className="text-sm mb-2">
                                                 <span className="text-muted">Cash Available:</span>{' '}
                                                 <span className="font-bold">{formatUsd(dashboardCash)}</span>
@@ -12340,7 +14004,7 @@ function App() {
                                                         </div>
                                                       </div>
                                                     ) : (
-                                                      <div className="text-muted text-sm">Not invested in this bot. Buy from Dashboard to track live stats.</div>
+                                                      <div className="text-muted text-sm">Not invested in this system. Buy from Dashboard to track live stats.</div>
                                                     )}
                                                   </div>
                                                 )
@@ -12407,6 +14071,14 @@ function App() {
                                                       <div className="stat-value">
                                                         {Number.isFinite(analyzeState.result?.metrics.treynor ?? NaN)
                                                           ? (analyzeState.result?.metrics.treynor ?? 0).toFixed(2)
+                                                          : '--'}
+                                                      </div>
+                                                    </div>
+                                                    <div>
+                                                      <div className="stat-label">Beta</div>
+                                                      <div className="stat-value">
+                                                        {Number.isFinite(analyzeState.result?.metrics.beta ?? NaN)
+                                                          ? (analyzeState.result?.metrics.beta ?? 0).toFixed(2)
                                                           : '--'}
                                                       </div>
                                                     </div>
@@ -12488,6 +14160,7 @@ function App() {
                                             'Sharpe Ratio',
                                             'Sortino Ratio',
                                             'Treynor Ratio',
+                                            'Beta',
                                             'Volatility',
                                             'Win Rate',
                                           ] as const
