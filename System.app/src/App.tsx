@@ -56,8 +56,53 @@ type MetricChoice =
   | 'Standard Deviation of Price'
   | 'Cumulative Return'
   | 'SMA of Returns'
+  // Momentum indicators (no window - fixed lookbacks)
+  | 'Momentum (Weighted)'      // 13612W: 1/3/6/12 month weighted
+  | 'Momentum (Unweighted)'    // 13612U: 1/3/6/12 month unweighted
+  | 'Momentum (12-Month SMA)'  // SMA12: 12-month SMA based
+  // Additional indicators
+  | 'Ultimate Smoother'        // Ehlers filter
+  | 'Drawdown'                 // Current drawdown from ATH (no window)
+  | 'Aroon Up'                 // Days since high
+  | 'Aroon Down'               // Days since low
+  | 'Aroon Oscillator'         // Up - Down
+  | 'MACD Histogram'           // Fixed 12/26/9
+  | 'PPO Histogram'            // Percentage version of MACD
+  | 'Trend Clarity'            // R² of linear regression
 type RankChoice = 'Bottom' | 'Top'
 type ComparatorChoice = 'lt' | 'gt'
+
+// Indicators that don't require a window input (fixed lookback or uses all history)
+const WINDOWLESS_INDICATORS: MetricChoice[] = [
+  'Current Price',
+  'Momentum (Weighted)',      // Fixed 1/3/6/12 month
+  'Momentum (Unweighted)',    // Fixed 1/3/6/12 month
+  'Momentum (12-Month SMA)',  // Fixed 12 month
+  'Drawdown',                 // Uses all history from ATH
+  'MACD Histogram',           // Fixed 12/26/9
+  'PPO Histogram',            // Fixed 12/26/9
+]
+const isWindowlessIndicator = (metric: MetricChoice): boolean => WINDOWLESS_INDICATORS.includes(metric)
+
+// Get the actual lookback period needed for an indicator (for warm-up calculations)
+const getIndicatorLookback = (metric: MetricChoice, window: number): number => {
+  switch (metric) {
+    case 'Current Price':
+      return 0
+    case 'Momentum (Weighted)':
+    case 'Momentum (Unweighted)':
+      return 252 // 12 months of trading days
+    case 'Momentum (12-Month SMA)':
+      return 252 // 12 months
+    case 'Drawdown':
+      return 0 // Uses all history, no fixed lookback needed for warm-up
+    case 'MACD Histogram':
+    case 'PPO Histogram':
+      return 35 // 26 + 9 for signal line
+    default:
+      return Math.max(1, Math.floor(window || 0))
+  }
+}
 
 type WeightMode = 'equal' | 'defined' | 'inverse' | 'pro' | 'capped'
 
@@ -90,6 +135,7 @@ type ConditionLine = {
   rightWindow?: number
   rightMetric?: MetricChoice
   rightTicker?: PositionChoice
+  forDays?: number // Condition must be true for N consecutive days (default: 1)
 }
 
 const normalizeConditionType = (value: unknown, fallback: ConditionLine['type']): ConditionLine['type'] => {
@@ -1294,6 +1340,21 @@ const mapQuantMageIndicator = (type: string): MetricChoice => {
     'RelativeStrengthIndex': 'Relative Strength Index',
     'CumulativeReturn': 'Cumulative Return',
     'Volatility': 'Standard Deviation',
+    'MaxDrawdown': 'Max Drawdown',
+    // Momentum indicators
+    '13612wMomentum': 'Momentum (Weighted)',
+    '13612uMomentum': 'Momentum (Unweighted)',
+    'SMA12Momentum': 'Momentum (12-Month SMA)',
+    // Additional indicators
+    'UltimateSmoother': 'Ultimate Smoother',
+    'Drawdown': 'Drawdown',
+    'AroonUp': 'Aroon Up',
+    'AroonDown': 'Aroon Down',
+    'Aroon': 'Aroon Oscillator',
+    'MACD': 'MACD Histogram',
+    'PPO': 'PPO Histogram',
+    'TrendClarity': 'Trend Clarity',
+    'MovingAverageReturn': 'SMA of Returns',
   }
   return mapping[type] || 'Relative Strength Index'
 }
@@ -1325,6 +1386,7 @@ const parseQuantMageCondition = (
     const rhIndicator = condition.rh_indicator as { type: string; window: number } | undefined
     const compType = condition.type as string // 'IndicatorAndNumber' or 'BothIndicators'
     const greaterThan = condition.greater_than as boolean
+    const forDays = (condition.for_days as number) || 1
 
     const cond: ConditionLine = {
       id: idGen.condId(),
@@ -1335,6 +1397,7 @@ const parseQuantMageCondition = (
       comparator: greaterThan ? 'gt' : 'lt',
       threshold: 0,
       expanded: false,
+      forDays: forDays > 1 ? forDays : undefined, // Only store if > 1
     }
 
     if (compType === 'IndicatorAndNumber') {
@@ -1442,18 +1505,26 @@ const parseQuantMageIncantation = (
 
   // Weighted -> Basic
   if (incType === 'Weighted') {
-    const weightType = node.type as string // 'Equal' or 'InverseVolatility'
+    const weightType = node.type as string // 'Equal', 'InverseVolatility', or 'Custom'
     const incantations = (node.incantations as Record<string, unknown>[]) || []
-    // Note: node.weights exists but we can't transfer per-child weights to Atlas structure
-    // Default to 'equal' for now - user can adjust weights after import if needed
-    const weighting: WeightMode = weightType === 'InverseVolatility' ? 'inverse' : 'equal'
+    const customWeights = (node.weights as number[]) || []
+
+    // Determine weighting mode: Custom -> defined, InverseVolatility -> inverse, else equal
+    const weighting: WeightMode = weightType === 'Custom' ? 'defined'
+      : weightType === 'InverseVolatility' ? 'inverse'
+      : 'equal'
 
     const children = incantations
-      .map((inc) => parseQuantMageIncantation(inc, idGen))
+      .map((inc, idx) => {
+        const child = parseQuantMageIncantation(inc, idGen)
+        // For 'defined' weighting, store the weight in the child's window property
+        if (child && weighting === 'defined' && customWeights[idx] !== undefined) {
+          child.window = customWeights[idx]
+        }
+        return child
+      })
       .filter((c): c is FlowNode => c !== null)
 
-    // Note: 'defined' weighting requires per-child weight configuration in UI
-    // For now, import as 'defined' mode and user can set weights after import
     const result: FlowNode = {
       id: idGen.nodeId(),
       kind: 'basic',
@@ -1575,6 +1646,10 @@ const parseQuantMageIncantation = (
       weightingThen: 'equal',
       weightingElse: 'equal',
       conditions: [condition],
+      // Set scaling-specific fields (used by backtest evaluation)
+      scaleMetric: indicator ? mapQuantMageIndicator(indicator.type) : 'Relative Strength Index',
+      scaleWindow: indicator?.window || 14,
+      scaleTicker: tickerSymbol,
       scaleFrom: fromValue,
       scaleTo: toValue,
       children: {
@@ -5512,6 +5587,7 @@ type CardProps = {
       rightWindow?: number
       rightMetric?: MetricChoice
       rightTicker?: PositionChoice
+      forDays?: number
     }>,
     itemId?: string,
   ) => void
@@ -6085,7 +6161,7 @@ const NodeCard = ({
       <div className="flex items-center gap-2" key={cond.id}>
         <Badge variant="default" className="gap-1 py-1 px-2.5">
           {prefix}
-          {cond.metric === 'Current Price' ? null : (
+          {isWindowlessIndicator(cond.metric) ? null : (
             <>
               <Input
                 className="w-14 h-7 px-1.5 mx-1 inline-flex"
@@ -6110,6 +6186,17 @@ const NodeCard = ({
             <option value="Standard Deviation of Price">Standard Deviation of Price</option>
             <option value="Cumulative Return">Cumulative Return</option>
             <option value="SMA of Returns">SMA of Returns</option>
+            <option value="Momentum (Weighted)">Momentum (Weighted)</option>
+            <option value="Momentum (Unweighted)">Momentum (Unweighted)</option>
+            <option value="Momentum (12-Month SMA)">Momentum (12-Month SMA)</option>
+            <option value="Drawdown">Drawdown</option>
+            <option value="Aroon Up">Aroon Up</option>
+            <option value="Aroon Down">Aroon Down</option>
+            <option value="Aroon Oscillator">Aroon Oscillator</option>
+            <option value="MACD Histogram">MACD Histogram</option>
+            <option value="PPO Histogram">PPO Histogram</option>
+            <option value="Trend Clarity">Trend Clarity</option>
+            <option value="Ultimate Smoother">Ultimate Smoother</option>
           </Select>
           {' of '}
           <Select
@@ -6146,7 +6233,7 @@ const NodeCard = ({
             <>
               {' '}
               the{' '}
-              {cond.rightMetric === 'Current Price' ? null : (
+              {isWindowlessIndicator(cond.rightMetric ?? 'Relative Strength Index') ? null : (
                 <>
                   <Input
                     className="w-14 h-7 px-1.5 mx-1 inline-flex"
@@ -6171,6 +6258,17 @@ const NodeCard = ({
                 <option value="Standard Deviation of Price">Standard Deviation of Price</option>
                 <option value="Cumulative Return">Cumulative Return</option>
                 <option value="SMA of Returns">SMA of Returns</option>
+                <option value="Momentum (Weighted)">Momentum (Weighted)</option>
+                <option value="Momentum (Unweighted)">Momentum (Unweighted)</option>
+                <option value="Momentum (12-Month SMA)">Momentum (12-Month SMA)</option>
+                <option value="Drawdown">Drawdown</option>
+                <option value="Aroon Up">Aroon Up</option>
+                <option value="Aroon Down">Aroon Down</option>
+                <option value="Aroon Oscillator">Aroon Oscillator</option>
+                <option value="MACD Histogram">MACD Histogram</option>
+                <option value="PPO Histogram">PPO Histogram</option>
+                <option value="Trend Clarity">Trend Clarity</option>
+                <option value="Ultimate Smoother">Ultimate Smoother</option>
               </Select>{' '}
               of{' '}
               <Select
@@ -6188,6 +6286,19 @@ const NodeCard = ({
               </Select>{' '}
             </>
           ) : null}
+          {/* For X consecutive days input */}
+          {' '}for{' '}
+          <Input
+            className="w-12 h-7 px-1.5 mx-1 inline-flex text-center"
+            type="number"
+            min={1}
+            value={cond.forDays ?? 1}
+            onChange={(e) => {
+              const val = Math.max(1, Number(e.target.value) || 1)
+              onUpdateCondition(ownerId, cond.id, { forDays: val > 1 ? val : undefined }, itemId)
+            }}
+          />
+          {' '}day{(cond.forDays ?? 1) !== 1 ? 's' : ''}
           <Button
             variant="ghost"
             size="icon"
@@ -6411,7 +6522,7 @@ const NodeCard = ({
                       <div className="w-3.5 h-full border-l border-border" />
                       <Badge variant="default" className="gap-1 py-1 px-2.5">
                         {prefix}
-                        {cond.metric === 'Current Price' ? null : (
+                        {isWindowlessIndicator(cond.metric) ? null : (
                           <>
                             <Input
                               className="w-14 h-7 px-1.5 mx-1 inline-flex"
@@ -6438,6 +6549,17 @@ const NodeCard = ({
                           <option value="Standard Deviation of Price">Standard Deviation of Price</option>
                           <option value="Cumulative Return">Cumulative Return</option>
                           <option value="SMA of Returns">SMA of Returns</option>
+                          <option value="Momentum (Weighted)">Momentum (Weighted)</option>
+                          <option value="Momentum (Unweighted)">Momentum (Unweighted)</option>
+                          <option value="Momentum (12-Month SMA)">Momentum (12-Month SMA)</option>
+                          <option value="Drawdown">Drawdown</option>
+                          <option value="Aroon Up">Aroon Up</option>
+                          <option value="Aroon Down">Aroon Down</option>
+                          <option value="Aroon Oscillator">Aroon Oscillator</option>
+                          <option value="MACD Histogram">MACD Histogram</option>
+                          <option value="PPO Histogram">PPO Histogram</option>
+                          <option value="Trend Clarity">Trend Clarity</option>
+                          <option value="Ultimate Smoother">Ultimate Smoother</option>
                         </Select>
                         {' of '}
                         <Select
@@ -6476,7 +6598,7 @@ const NodeCard = ({
                           <>
                             {' '}
                             the{' '}
-                            {cond.rightMetric === 'Current Price' ? null : (
+                            {isWindowlessIndicator(cond.rightMetric ?? 'Relative Strength Index') ? null : (
                               <>
                                 <Input
                                   className="w-14 h-7 px-1.5 mx-1 inline-flex"
@@ -6505,6 +6627,17 @@ const NodeCard = ({
                               <option value="Standard Deviation of Price">Standard Deviation of Price</option>
                               <option value="Cumulative Return">Cumulative Return</option>
                               <option value="SMA of Returns">SMA of Returns</option>
+                              <option value="Momentum (Weighted)">Momentum (Weighted)</option>
+                              <option value="Momentum (Unweighted)">Momentum (Unweighted)</option>
+                              <option value="Momentum (12-Month SMA)">Momentum (12-Month SMA)</option>
+                              <option value="Drawdown">Drawdown</option>
+                              <option value="Aroon Up">Aroon Up</option>
+                              <option value="Aroon Down">Aroon Down</option>
+                              <option value="Aroon Oscillator">Aroon Oscillator</option>
+                              <option value="MACD Histogram">MACD Histogram</option>
+                              <option value="PPO Histogram">PPO Histogram</option>
+                              <option value="Trend Clarity">Trend Clarity</option>
+                              <option value="Ultimate Smoother">Ultimate Smoother</option>
                             </Select>{' '}
                             of{' '}
                             <Select
@@ -6525,6 +6658,19 @@ const NodeCard = ({
                             </Select>{' '}
                           </>
                         ) : null}
+                        {/* For X consecutive days input */}
+                        {' '}for{' '}
+                        <Input
+                          className="w-12 h-7 px-1.5 mx-1 inline-flex text-center"
+                          type="number"
+                          min={1}
+                          value={cond.forDays ?? 1}
+                          onChange={(e) => {
+                            const val = Math.max(1, Number(e.target.value) || 1)
+                            onUpdateCondition(node.id, cond.id, { forDays: val > 1 ? val : undefined })
+                          }}
+                        />
+                        {' '}day{(cond.forDays ?? 1) !== 1 ? 's' : ''}
                         <Button
                           variant="ghost"
                           size="icon"
@@ -6963,7 +7109,7 @@ const NodeCard = ({
                         <div className="w-3.5 h-full border-l border-border" />
                         <Badge variant="default" className="gap-1 py-1 px-2.5">
                           {prefix}
-                          {cond.metric === 'Current Price' ? null : (
+                          {isWindowlessIndicator(cond.metric) ? null : (
                             <>
                               <Input
                                 className="w-14 h-7 px-1.5 mx-1 inline-flex"
@@ -6988,6 +7134,17 @@ const NodeCard = ({
                             <option value="Standard Deviation of Price">Standard Deviation of Price</option>
                             <option value="Cumulative Return">Cumulative Return</option>
                             <option value="SMA of Returns">SMA of Returns</option>
+                            <option value="Momentum (Weighted)">Momentum (Weighted)</option>
+                            <option value="Momentum (Unweighted)">Momentum (Unweighted)</option>
+                            <option value="Momentum (12-Month SMA)">Momentum (12-Month SMA)</option>
+                            <option value="Drawdown">Drawdown</option>
+                            <option value="Aroon Up">Aroon Up</option>
+                            <option value="Aroon Down">Aroon Down</option>
+                            <option value="Aroon Oscillator">Aroon Oscillator</option>
+                            <option value="MACD Histogram">MACD Histogram</option>
+                            <option value="PPO Histogram">PPO Histogram</option>
+                            <option value="Trend Clarity">Trend Clarity</option>
+                            <option value="Ultimate Smoother">Ultimate Smoother</option>
                           </Select>
                           {' of '}
                           <Select
@@ -7019,7 +7176,7 @@ const NodeCard = ({
                           {cond.expanded ? (
                             <>
                               {' '}the{' '}
-                              {cond.rightMetric === 'Current Price' ? null : (
+                              {isWindowlessIndicator(cond.rightMetric ?? 'Relative Strength Index') ? null : (
                                 <>
                                   <Input
                                     className="w-14 h-7 px-1.5 mx-1 inline-flex"
@@ -7044,6 +7201,17 @@ const NodeCard = ({
                                 <option value="Standard Deviation of Price">Standard Deviation of Price</option>
                                 <option value="Cumulative Return">Cumulative Return</option>
                                 <option value="SMA of Returns">SMA of Returns</option>
+                                <option value="Momentum (Weighted)">Momentum (Weighted)</option>
+                                <option value="Momentum (Unweighted)">Momentum (Unweighted)</option>
+                                <option value="Momentum (12-Month SMA)">Momentum (12-Month SMA)</option>
+                                <option value="Drawdown">Drawdown</option>
+                                <option value="Aroon Up">Aroon Up</option>
+                                <option value="Aroon Down">Aroon Down</option>
+                                <option value="Aroon Oscillator">Aroon Oscillator</option>
+                                <option value="MACD Histogram">MACD Histogram</option>
+                                <option value="PPO Histogram">PPO Histogram</option>
+                                <option value="Trend Clarity">Trend Clarity</option>
+                                <option value="Ultimate Smoother">Ultimate Smoother</option>
                               </Select>{' '}
                               of{' '}
                               <Select
@@ -7153,7 +7321,7 @@ const NodeCard = ({
                         <div className="w-3.5 h-full border-l border-border" />
                         <Badge variant="default" className="gap-1 py-1 px-2.5">
                           {prefix}
-                          {cond.metric === 'Current Price' ? null : (
+                          {isWindowlessIndicator(cond.metric) ? null : (
                             <>
                               <Input
                                 className="w-14 h-7 px-1.5 mx-1 inline-flex"
@@ -7178,6 +7346,17 @@ const NodeCard = ({
                             <option value="Standard Deviation of Price">Standard Deviation of Price</option>
                             <option value="Cumulative Return">Cumulative Return</option>
                             <option value="SMA of Returns">SMA of Returns</option>
+                            <option value="Momentum (Weighted)">Momentum (Weighted)</option>
+                            <option value="Momentum (Unweighted)">Momentum (Unweighted)</option>
+                            <option value="Momentum (12-Month SMA)">Momentum (12-Month SMA)</option>
+                            <option value="Drawdown">Drawdown</option>
+                            <option value="Aroon Up">Aroon Up</option>
+                            <option value="Aroon Down">Aroon Down</option>
+                            <option value="Aroon Oscillator">Aroon Oscillator</option>
+                            <option value="MACD Histogram">MACD Histogram</option>
+                            <option value="PPO Histogram">PPO Histogram</option>
+                            <option value="Trend Clarity">Trend Clarity</option>
+                            <option value="Ultimate Smoother">Ultimate Smoother</option>
                           </Select>
                           {' of '}
                           <Select
@@ -7209,7 +7388,7 @@ const NodeCard = ({
                           {cond.expanded ? (
                             <>
                               {' '}the{' '}
-                              {cond.rightMetric === 'Current Price' ? null : (
+                              {isWindowlessIndicator(cond.rightMetric ?? 'Relative Strength Index') ? null : (
                                 <>
                                   <Input
                                     className="w-14 h-7 px-1.5 mx-1 inline-flex"
@@ -7234,6 +7413,17 @@ const NodeCard = ({
                                 <option value="Standard Deviation of Price">Standard Deviation of Price</option>
                                 <option value="Cumulative Return">Cumulative Return</option>
                                 <option value="SMA of Returns">SMA of Returns</option>
+                                <option value="Momentum (Weighted)">Momentum (Weighted)</option>
+                                <option value="Momentum (Unweighted)">Momentum (Unweighted)</option>
+                                <option value="Momentum (12-Month SMA)">Momentum (12-Month SMA)</option>
+                                <option value="Drawdown">Drawdown</option>
+                                <option value="Aroon Up">Aroon Up</option>
+                                <option value="Aroon Down">Aroon Down</option>
+                                <option value="Aroon Oscillator">Aroon Oscillator</option>
+                                <option value="MACD Histogram">MACD Histogram</option>
+                                <option value="PPO Histogram">PPO Histogram</option>
+                                <option value="Trend Clarity">Trend Clarity</option>
+                                <option value="Ultimate Smoother">Ultimate Smoother</option>
                               </Select>{' '}
                               of{' '}
                               <Select
@@ -7337,7 +7527,7 @@ const NodeCard = ({
                   <div className="indent with-line" style={{ width: 14 }} />
                   <Badge variant="default" className="gap-1.5 py-1 px-2.5">
                     Scale by{' '}
-                    {node.scaleMetric === 'Current Price' ? null : (
+                    {isWindowlessIndicator(node.scaleMetric ?? 'Relative Strength Index') ? null : (
                       <>
                         <Input
                           type="number"
@@ -7362,6 +7552,17 @@ const NodeCard = ({
                       <option value="Standard Deviation of Price">Standard Deviation of Price</option>
                       <option value="Cumulative Return">Cumulative Return</option>
                       <option value="SMA of Returns">SMA of Returns</option>
+                      <option value="Momentum (Weighted)">Momentum (Weighted)</option>
+                      <option value="Momentum (Unweighted)">Momentum (Unweighted)</option>
+                      <option value="Momentum (12-Month SMA)">Momentum (12-Month SMA)</option>
+                      <option value="Drawdown">Drawdown</option>
+                      <option value="Aroon Up">Aroon Up</option>
+                      <option value="Aroon Down">Aroon Down</option>
+                      <option value="Aroon Oscillator">Aroon Oscillator</option>
+                      <option value="MACD Histogram">MACD Histogram</option>
+                      <option value="PPO Histogram">PPO Histogram</option>
+                      <option value="Trend Clarity">Trend Clarity</option>
+                      <option value="Ultimate Smoother">Ultimate Smoother</option>
                     </Select>
                     {' of '}
                     <Select
@@ -7546,7 +7747,7 @@ const NodeCard = ({
                       ) : isFunctionDesc ? (
                         <Badge variant="default" className="gap-1.5 py-1 px-2.5">
                           Of the{' '}
-                          {node.metric === 'Current Price' ? null : (
+                          {isWindowlessIndicator(node.metric ?? 'Relative Strength Index') ? null : (
                             <>
                               <Input
                                 type="number"
@@ -7571,8 +7772,19 @@ const NodeCard = ({
                             <option value="Standard Deviation of Price">Standard Deviation of Price</option>
                             <option value="Cumulative Return">Cumulative Return</option>
                             <option value="SMA of Returns">SMA of Returns</option>
+                            <option value="Momentum (Weighted)">Momentum (Weighted)</option>
+                            <option value="Momentum (Unweighted)">Momentum (Unweighted)</option>
+                            <option value="Momentum (12-Month SMA)">Momentum (12-Month SMA)</option>
+                            <option value="Drawdown">Drawdown</option>
+                            <option value="Aroon Up">Aroon Up</option>
+                            <option value="Aroon Down">Aroon Down</option>
+                            <option value="Aroon Oscillator">Aroon Oscillator</option>
+                            <option value="MACD Histogram">MACD Histogram</option>
+                            <option value="PPO Histogram">PPO Histogram</option>
+                            <option value="Trend Clarity">Trend Clarity</option>
+                            <option value="Ultimate Smoother">Ultimate Smoother</option>
                           </Select>
-                          {node.metric === 'Current Price' ? ' pick the ' : 's pick the '}
+                          {isWindowlessIndicator(node.metric ?? 'Relative Strength Index') ? ' pick the ' : 's pick the '}
                           <Select
                             className="h-7 px-1.5 mx-1 inline-flex"
                             value={node.rank ?? 'Bottom'}
@@ -7620,41 +7832,6 @@ const weightLabel = (mode: WeightMode) => {
     case 'capped':
       return 'Capped'
   }
-}
-
-// Helper to abbreviate metric names for compact display
-const abbreviateMetric = (metric: string): string => {
-  const abbrevs: Record<string, string> = {
-    'Relative Strength Index': 'RSI',
-    'Simple Moving Average': 'SMA',
-    'Exponential Moving Average': 'EMA',
-    'Max Drawdown': 'MaxDD',
-    'Cumulative Return': 'Return',
-    'Standard Deviation': 'StdDev',
-    '13612W Momentum': 'Mom',
-  }
-  return abbrevs[metric] || metric.slice(0, 6)
-}
-
-// Helper to create compact condition summary for ladder mode
-const formatConditionSummary = (items: NumberedItem[]): string => {
-  const parts: string[] = []
-  for (const item of items) {
-    for (const cond of item.conditions) {
-      const ticker = cond.ticker || '?'
-      const metric = abbreviateMetric(cond.metric)
-      const window = cond.window || ''
-      const cmp = cond.comparator === 'gt' ? '>' : cond.comparator === 'lt' ? '<' : cond.comparator === 'gte' ? '≥' : '≤'
-      const threshold = typeof cond.threshold === 'number' ? (cond.threshold >= 1 ? cond.threshold.toFixed(0) : (cond.threshold * 100).toFixed(0) + '%') : cond.threshold
-      parts.push(`${ticker} ${metric}${window}${cmp}${threshold}`)
-    }
-  }
-  return parts.join(' · ')
-}
-
-// Count total conditions across all numbered items
-const countNumberedConditions = (items: NumberedItem[]): number => {
-  return items.reduce((sum, item) => sum + item.conditions.length, 0)
 }
 
 // Generate ladder slot labels for N conditions: "All (N)", "N-1 of N", ..., "None"
@@ -8025,12 +8202,6 @@ const normalizeChoice = (raw: PositionChoice): string => {
 
 const isEmptyChoice = (raw: PositionChoice) => normalizeChoice(raw) === 'Empty'
 
-// Check if ticker is a ratio (e.g., "JNK/XLP")
-const isRatioTicker = (ticker: string): boolean => {
-  const norm = normalizeChoice(ticker)
-  return norm.includes('/') && norm.split('/').length === 2
-}
-
 // Parse ratio ticker into component tickers
 const parseRatioTicker = (ticker: string): { numerator: string; denominator: string } | null => {
   const norm = normalizeChoice(ticker)
@@ -8089,6 +8260,18 @@ const isoFromUtcSeconds = (t: number) => {
   }
 }
 
+// Format date as M/D/YYYY (matching QuantMage display format)
+const mdyFromUtcSeconds = (t: number) => {
+  const ms = Number(t) * 1000
+  if (!Number.isFinite(ms)) return '1/1/1970'
+  try {
+    const d = new Date(ms)
+    return `${d.getUTCMonth() + 1}/${d.getUTCDate()}/${d.getUTCFullYear()}`
+  } catch {
+    return '1/1/1970'
+  }
+}
+
 type TickerRef = { nodeId: string; field: string }
 
 type BacktestInputs = {
@@ -8136,19 +8319,24 @@ const collectBacktestInputs = (root: FlowNode, callMap: Map<string, CallChain>):
     } else {
       addTicker(ticker, ownerId, `${baseField}.ticker`)
     }
-    if (cond.metric !== 'Current Price') {
+    // forDays adds extra lookback (we need to check N consecutive days)
+    const forDaysOffset = Math.max(0, (cond.forDays || 1) - 1)
+    if (cond.metric !== 'Current Price' && !isWindowlessIndicator(cond.metric)) {
       if (!Number.isFinite(cond.window) || cond.window < 1) addError(ownerId, `${baseField}.window`, 'Indicator window must be >= 1.')
-      maxLookback = Math.max(maxLookback, Math.floor(cond.window || 0))
     }
+    // Use actual indicator lookback (e.g., 252 for momentum indicators)
+    maxLookback = Math.max(maxLookback, getIndicatorLookback(cond.metric, cond.window || 0) + forDaysOffset)
     if (cond.expanded) {
       const rt = normalizeChoice(cond.rightTicker ?? '')
       if (rt === 'Empty') addError(ownerId, `${baseField}.rightTicker`, 'Right-side ticker is missing.')
       else addTicker(rt, ownerId, `${baseField}.rightTicker`)
       const rw = Number(cond.rightWindow ?? cond.window)
-      if ((cond.rightMetric ?? cond.metric) !== 'Current Price') {
+      const rightMetric = (cond.rightMetric ?? cond.metric) as MetricChoice
+      if (rightMetric !== 'Current Price' && !isWindowlessIndicator(rightMetric)) {
         if (!Number.isFinite(rw) || rw < 1) addError(ownerId, `${baseField}.rightWindow`, 'Right-side window must be >= 1.')
-        maxLookback = Math.max(maxLookback, Math.floor(rw || 0))
       }
+      // Use actual indicator lookback for right side
+      maxLookback = Math.max(maxLookback, getIndicatorLookback(rightMetric, rw || 0) + forDaysOffset)
     }
   }
 
@@ -8187,8 +8375,8 @@ const collectBacktestInputs = (root: FlowNode, callMap: Map<string, CallChain>):
 
     if (node.kind === 'function') {
       const metric = node.metric ?? 'Relative Strength Index'
-      const win = metric === 'Current Price' ? 0 : Math.floor(Number(node.window ?? 10))
-      if (metric !== 'Current Price' && (!(win >= 1) || !Number.isFinite(win))) {
+      const win = isWindowlessIndicator(metric) ? 0 : Math.floor(Number(node.window ?? 10))
+      if (!isWindowlessIndicator(metric) && (!(win >= 1) || !Number.isFinite(win))) {
         addError(node.id, 'window', 'Sort window must be >= 1.')
       }
       maxLookback = Math.max(maxLookback, win || 0)
@@ -8219,8 +8407,8 @@ const collectBacktestInputs = (root: FlowNode, callMap: Map<string, CallChain>):
         addTicker(scaleTicker, node.id, 'scaleTicker')
       }
       const scaleMetric = node.scaleMetric ?? 'Relative Strength Index'
-      const scaleWin = scaleMetric === 'Current Price' ? 0 : Math.floor(Number(node.scaleWindow ?? 14))
-      if (scaleMetric !== 'Current Price' && (!(scaleWin >= 1) || !Number.isFinite(scaleWin))) {
+      const scaleWin = isWindowlessIndicator(scaleMetric) ? 0 : Math.floor(Number(node.scaleWindow ?? 14))
+      if (!isWindowlessIndicator(scaleMetric) && (!(scaleWin >= 1) || !Number.isFinite(scaleWin))) {
         addError(node.id, 'scaleWindow', 'Scale window must be >= 1.')
       }
       maxLookback = Math.max(maxLookback, scaleWin || 0)
@@ -8299,10 +8487,87 @@ const collectPositionTickers = (root: FlowNode, callMap: Map<string, CallChain>)
   return Array.from(tickers).sort()
 }
 
+// Collect only indicator tickers (from conditions, function nodes, scaling nodes)
+// Excludes position tickers since those can have shorter history without affecting indicator calculations
+const collectIndicatorTickers = (root: FlowNode, callMap: Map<string, CallChain>): string[] => {
+  const tickers = new Set<string>()
+
+  const addTicker = (t: PositionChoice) => {
+    const norm = normalizeChoice(t)
+    if (norm === 'Empty') return
+    // For ratio tickers like "JNK/XLP", add both components
+    const components = expandTickerComponents(norm)
+    for (const c of components) tickers.add(c)
+  }
+
+  const collectFromCondition = (cond: ConditionLine) => {
+    const ticker = normalizeChoice(cond.ticker)
+    if (ticker !== 'Empty') addTicker(ticker)
+    if (cond.expanded) {
+      const rt = normalizeChoice(cond.rightTicker ?? '')
+      if (rt !== 'Empty') addTicker(rt)
+    }
+  }
+
+  const walk = (node: FlowNode, callStack: string[]) => {
+    if (node.kind === 'call') {
+      const callId = node.callRefId
+      if (!callId) return
+      if (callStack.includes(callId)) return
+      const target = callMap.get(callId)
+      if (!target) return
+      const cloned = ensureSlots(cloneNode(target.root))
+      walk(cloned, [...callStack, callId])
+      return
+    }
+
+    // Indicator nodes have conditions with tickers
+    if (node.kind === 'indicator' && node.conditions) {
+      node.conditions.forEach((c) => collectFromCondition(c))
+    }
+
+    // Numbered nodes have items with conditions
+    if (node.kind === 'numbered' && node.numbered) {
+      node.numbered.items.forEach((item) => {
+        item.conditions.forEach((c) => collectFromCondition(c))
+      })
+    }
+
+    // Alt Exit nodes have entry/exit conditions
+    if (node.kind === 'altExit') {
+      if (node.entryConditions) node.entryConditions.forEach((c) => collectFromCondition(c))
+      if (node.exitConditions) node.exitConditions.forEach((c) => collectFromCondition(c))
+    }
+
+    // Scaling nodes have a scale ticker
+    if (node.kind === 'scaling') {
+      const scaleTicker = normalizeChoice(node.scaleTicker ?? 'SPY')
+      if (scaleTicker !== 'Empty') addTicker(scaleTicker)
+    }
+
+    // Function nodes sort by a metric on their children (the children are usually positions)
+    // The function node itself may reference tickers in the metric context
+    // (but typically uses the children's tickers which are position tickers)
+    // We don't add function node tickers here since those are in the children
+
+    // Walk all children (including ladder slots)
+    for (const slot of getAllSlotsForNode(node)) {
+      const arr = node.children[slot] || []
+      for (const c of arr) if (c) walk(c, callStack)
+    }
+  }
+
+  walk(root, [])
+
+  return Array.from(tickers).sort()
+}
+
 type PriceDB = {
   dates: UTCTimestamp[]
   open: Record<string, Array<number | null>>
   close: Record<string, Array<number | null>>
+  high?: Record<string, Array<number | null>>   // For Aroon indicators
+  low?: Record<string, Array<number | null>>    // For Aroon indicators
   limitingTicker?: string // Ticker with fewest data points that limits the intersection
   tickerCounts?: Record<string, number> // Data point count for each ticker
 }
@@ -8316,6 +8581,18 @@ type IndicatorCache = {
   stdPrice: Map<string, Map<number, Array<number | null>>>
   cumRet: Map<string, Map<number, Array<number | null>>>
   smaRet: Map<string, Map<number, Array<number | null>>>
+  // New indicators
+  mom13612w: Map<string, Map<number, Array<number | null>>>
+  mom13612u: Map<string, Map<number, Array<number | null>>>
+  momsma12: Map<string, Map<number, Array<number | null>>>
+  drawdown: Map<string, Map<number, Array<number | null>>>
+  aroonUp: Map<string, Map<number, Array<number | null>>>
+  aroonDown: Map<string, Map<number, Array<number | null>>>
+  aroonOsc: Map<string, Map<number, Array<number | null>>>
+  macd: Map<string, Map<number, Array<number | null>>>
+  ppo: Map<string, Map<number, Array<number | null>>>
+  trendClarity: Map<string, Map<number, Array<number | null>>>
+  ultSmooth: Map<string, Map<number, Array<number | null>>>
   // Performance optimization: cache close and returns arrays to avoid rebuilding per-call
   closeArrays: Map<string, number[]>
   returnsArrays: Map<string, number[]>
@@ -8330,6 +8607,17 @@ const emptyCache = (): IndicatorCache => ({
   stdPrice: new Map(),
   cumRet: new Map(),
   smaRet: new Map(),
+  mom13612w: new Map(),
+  mom13612u: new Map(),
+  momsma12: new Map(),
+  drawdown: new Map(),
+  aroonUp: new Map(),
+  aroonDown: new Map(),
+  aroonOsc: new Map(),
+  macd: new Map(),
+  ppo: new Map(),
+  trendClarity: new Map(),
+  ultSmooth: new Map(),
   closeArrays: new Map(),
   returnsArrays: new Map(),
 })
@@ -8625,7 +8913,182 @@ const rollingStdDevOfPrices = (values: number[], period: number): Array<number |
   return rollingStdDev(values, period)
 }
 
-type IndicatorCacheSeriesKey = 'rsi' | 'sma' | 'ema' | 'std' | 'maxdd' | 'stdPrice' | 'cumRet' | 'smaRet'
+// 13612W Weighted Momentum (no window - fixed formula)
+// (12*(p0/p1-1) + 4*(p0/p3-1) + 2*(p0/p6-1) + (p0/p12-1)) / 19
+// Where pN = price N months ago (~21 trading days per month)
+const rolling13612W = (closes: number[]): Array<number | null> => {
+  const out: Array<number | null> = new Array(closes.length).fill(null)
+  const m1 = 21, m3 = 63, m6 = 126, m12 = 252
+  for (let i = m12; i < closes.length; i++) {
+    const p0 = closes[i]
+    const p1 = closes[i - m1]
+    const p3 = closes[i - m3]
+    const p6 = closes[i - m6]
+    const p12 = closes[i - m12]
+    if (p1 && p3 && p6 && p12 && !Number.isNaN(p0) && !Number.isNaN(p1) && !Number.isNaN(p3) && !Number.isNaN(p6) && !Number.isNaN(p12)) {
+      out[i] = (12 * (p0 / p1 - 1) + 4 * (p0 / p3 - 1) + 2 * (p0 / p6 - 1) + (p0 / p12 - 1)) / 19
+    }
+  }
+  return out
+}
+
+// 13612U Unweighted Momentum
+const rolling13612U = (closes: number[]): Array<number | null> => {
+  const out: Array<number | null> = new Array(closes.length).fill(null)
+  const m1 = 21, m3 = 63, m6 = 126, m12 = 252
+  for (let i = m12; i < closes.length; i++) {
+    const p0 = closes[i]
+    const p1 = closes[i - m1]
+    const p3 = closes[i - m3]
+    const p6 = closes[i - m6]
+    const p12 = closes[i - m12]
+    if (p1 && p3 && p6 && p12 && !Number.isNaN(p0) && !Number.isNaN(p1) && !Number.isNaN(p3) && !Number.isNaN(p6) && !Number.isNaN(p12)) {
+      out[i] = ((p0 / p1 - 1) + (p0 / p3 - 1) + (p0 / p6 - 1) + (p0 / p12 - 1)) / 4
+    }
+  }
+  return out
+}
+
+// SMA12 Momentum: 13*P0 / (P0+P1+...+P12) - 1
+const rollingSMA12Momentum = (closes: number[]): Array<number | null> => {
+  const out: Array<number | null> = new Array(closes.length).fill(null)
+  const m = 21 // monthly
+  for (let i = 12 * m; i < closes.length; i++) {
+    let sum = 0
+    let valid = true
+    for (let j = 0; j <= 12; j++) {
+      const v = closes[i - j * m]
+      if (Number.isNaN(v)) { valid = false; break }
+      sum += v
+    }
+    if (valid && sum !== 0) {
+      out[i] = 13 * closes[i] / sum - 1
+    }
+  }
+  return out
+}
+
+// Drawdown from ATH (no window - uses all history)
+const rollingDrawdown = (closes: number[]): Array<number | null> => {
+  const out: Array<number | null> = new Array(closes.length).fill(null)
+  let peak = closes[0] || 0
+  for (let i = 0; i < closes.length; i++) {
+    const v = closes[i]
+    if (Number.isNaN(v)) continue
+    if (v > peak) peak = v
+    out[i] = peak > 0 ? (peak - v) / peak : 0
+  }
+  return out
+}
+
+// Aroon Up: ((n - days since n-day high) / n) * 100
+const rollingAroonUp = (highs: Array<number | null>, period: number): Array<number | null> => {
+  const out: Array<number | null> = new Array(highs.length).fill(null)
+  for (let i = period; i < highs.length; i++) {
+    let maxIdx = i - period
+    let maxVal = highs[maxIdx] ?? -Infinity
+    for (let j = i - period; j <= i; j++) {
+      const v = highs[j]
+      if (v != null && !Number.isNaN(v) && v >= maxVal) {
+        maxVal = v
+        maxIdx = j
+      }
+    }
+    out[i] = ((period - (i - maxIdx)) / period) * 100
+  }
+  return out
+}
+
+// Aroon Down: ((n - days since n-day low) / n) * 100
+const rollingAroonDown = (lows: Array<number | null>, period: number): Array<number | null> => {
+  const out: Array<number | null> = new Array(lows.length).fill(null)
+  for (let i = period; i < lows.length; i++) {
+    let minIdx = i - period
+    let minVal = lows[minIdx] ?? Infinity
+    for (let j = i - period; j <= i; j++) {
+      const v = lows[j]
+      if (v != null && !Number.isNaN(v) && v <= minVal) {
+        minVal = v
+        minIdx = j
+      }
+    }
+    out[i] = ((period - (i - minIdx)) / period) * 100
+  }
+  return out
+}
+
+// Aroon Oscillator: Aroon Up - Aroon Down
+const rollingAroonOscillator = (highs: Array<number | null>, lows: Array<number | null>, period: number): Array<number | null> => {
+  const up = rollingAroonUp(highs, period)
+  const down = rollingAroonDown(lows, period)
+  return up.map((u, i) => (u != null && down[i] != null ? u - down[i]! : null))
+}
+
+// MACD Histogram (fixed 12/26/9)
+const rollingMACD = (closes: number[]): Array<number | null> => {
+  const ema12 = rollingEma(closes, 12)
+  const ema26 = rollingEma(closes, 26)
+  const macdLine = ema12.map((v, i) => v != null && ema26[i] != null ? v - ema26[i]! : null)
+  const macdFiltered = macdLine.map(v => v ?? NaN)
+  const signal = rollingEma(macdFiltered, 9)
+  return macdLine.map((v, i) => v != null && signal[i] != null ? v - signal[i]! : null)
+}
+
+// PPO Histogram (fixed 12/26/9) - percentage version
+const rollingPPO = (closes: number[]): Array<number | null> => {
+  const ema12 = rollingEma(closes, 12)
+  const ema26 = rollingEma(closes, 26)
+  const ppoLine = ema12.map((v, i) => v != null && ema26[i] != null && ema26[i]! !== 0
+    ? ((v - ema26[i]!) / ema26[i]!) * 100 : null)
+  const ppoFiltered = ppoLine.map(v => v ?? NaN)
+  const signal = rollingEma(ppoFiltered, 9)
+  return ppoLine.map((v, i) => v != null && signal[i] != null ? v - signal[i]! : null)
+}
+
+// Trend Clarity (R² of linear regression)
+const rollingTrendClarity = (values: number[], period: number): Array<number | null> => {
+  const out: Array<number | null> = new Array(values.length).fill(null)
+  for (let i = period - 1; i < values.length; i++) {
+    const slice = values.slice(i - period + 1, i + 1)
+    if (slice.some(v => Number.isNaN(v))) continue
+    // Calculate R² of linear regression
+    const n = slice.length
+    let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0, sumY2 = 0
+    for (let j = 0; j < n; j++) {
+      sumX += j
+      sumY += slice[j]
+      sumXY += j * slice[j]
+      sumX2 += j * j
+      sumY2 += slice[j] * slice[j]
+    }
+    const num = n * sumXY - sumX * sumY
+    const den = Math.sqrt((n * sumX2 - sumX * sumX) * (n * sumY2 - sumY * sumY))
+    const r = den === 0 ? 0 : num / den
+    out[i] = r * r * 100 // R² as percentage
+  }
+  return out
+}
+
+// Ultimate Smoother (Ehlers)
+const rollingUltimateSmoother = (values: number[], period: number): Array<number | null> => {
+  const out: Array<number | null> = new Array(values.length).fill(null)
+  const a = Math.exp(-1.414 * Math.PI / period)
+  const b = 2 * a * Math.cos(1.414 * Math.PI / period)
+  const c2 = b
+  const c3 = -a * a
+  const c1 = (1 + c2 - c3) / 4
+
+  for (let i = 2; i < values.length; i++) {
+    if (i < period) continue
+    if (Number.isNaN(values[i]) || Number.isNaN(values[i - 1]) || Number.isNaN(values[i - 2])) continue
+    out[i] = c1 * (values[i] + 2 * values[i - 1] + values[i - 2])
+           + c2 * (out[i - 1] ?? values[i - 1])
+           + c3 * (out[i - 2] ?? values[i - 2])
+  }
+  return out
+}
+
+type IndicatorCacheSeriesKey = 'rsi' | 'sma' | 'ema' | 'std' | 'maxdd' | 'stdPrice' | 'cumRet' | 'smaRet' | 'mom13612w' | 'mom13612u' | 'momsma12' | 'drawdown' | 'aroonUp' | 'aroonDown' | 'aroonOsc' | 'macd' | 'ppo' | 'trendClarity' | 'ultSmooth'
 
 const getCachedSeries = (cache: IndicatorCache, kind: IndicatorCacheSeriesKey, ticker: string, period: number, compute: () => Array<number | null>) => {
   const t = getSeriesKey(ticker)
@@ -8651,6 +9114,118 @@ type EvalCtx = {
   warnings: BacktestWarning[]
   resolveCall: (id: string) => FlowNode | null
   trace?: BacktestTraceCollector
+}
+
+// Evaluate metric at a specific index (for forDays consecutive day checks)
+const metricAtIndex = (ctx: EvalCtx, ticker: string, metric: MetricChoice, window: number, index: number): number | null => {
+  const t = getSeriesKey(ticker)
+  if (!t || t === 'Empty') return null
+
+  if (metric === 'Current Price') {
+    const arr = ctx.decisionPrice === 'open' ? ctx.db.open[t] : ctx.db.close[t]
+    const v = arr?.[index]
+    return v == null ? null : v
+  }
+
+  if (index < 0) return null
+  // Use cached close array to avoid rebuilding on every call
+  const closes = getCachedCloseArray(ctx.cache, ctx.db, t)
+  const w = Math.max(1, Math.floor(Number(window || 0)))
+
+  switch (metric) {
+    case 'Simple Moving Average': {
+      const series = getCachedSeries(ctx.cache, 'sma', t, w, () => rollingSma(closes, w))
+      return series[index] ?? null
+    }
+    case 'Exponential Moving Average': {
+      const series = getCachedSeries(ctx.cache, 'ema', t, w, () => rollingEma(closes, w))
+      return series[index] ?? null
+    }
+    case 'Relative Strength Index': {
+      const series = getCachedSeries(ctx.cache, 'rsi', t, w, () => rollingWilderRsi(closes, w))
+      return series[index] ?? null
+    }
+    case 'Standard Deviation': {
+      // Use cached returns array to avoid rebuilding on every call
+      const rets = getCachedReturnsArray(ctx.cache, ctx.db, t)
+      const series = getCachedSeries(ctx.cache, 'std', t, w, () => rollingStdDev(rets, w))
+      return series[index] ?? null
+    }
+    case 'Max Drawdown': {
+      const series = getCachedSeries(ctx.cache, 'maxdd', t, w, () => rollingMaxDrawdown(closes, w))
+      return series[index] ?? null
+    }
+    case 'Standard Deviation of Price': {
+      const series = getCachedSeries(ctx.cache, 'stdPrice', t, w, () => rollingStdDevOfPrices(closes, w))
+      return series[index] ?? null
+    }
+    case 'Cumulative Return': {
+      const series = getCachedSeries(ctx.cache, 'cumRet', t, w, () => rollingCumulativeReturn(closes, w))
+      return series[index] ?? null
+    }
+    case 'SMA of Returns': {
+      const series = getCachedSeries(ctx.cache, 'smaRet', t, w, () => rollingSmaOfReturns(closes, w))
+      return series[index] ?? null
+    }
+    // Momentum indicators (no window - fixed lookbacks)
+    case 'Momentum (Weighted)': {
+      const series = getCachedSeries(ctx.cache, 'mom13612w', t, 0, () => rolling13612W(closes))
+      return series[index] ?? null
+    }
+    case 'Momentum (Unweighted)': {
+      const series = getCachedSeries(ctx.cache, 'mom13612u', t, 0, () => rolling13612U(closes))
+      return series[index] ?? null
+    }
+    case 'Momentum (12-Month SMA)': {
+      const series = getCachedSeries(ctx.cache, 'momsma12', t, 0, () => rollingSMA12Momentum(closes))
+      return series[index] ?? null
+    }
+    // Drawdown from ATH (no window)
+    case 'Drawdown': {
+      const series = getCachedSeries(ctx.cache, 'drawdown', t, 0, () => rollingDrawdown(closes))
+      return series[index] ?? null
+    }
+    // Aroon indicators (need high/low prices)
+    case 'Aroon Up': {
+      const highs = ctx.db.high?.[t]
+      if (!highs) return null
+      const series = getCachedSeries(ctx.cache, 'aroonUp', t, w, () => rollingAroonUp(highs, w))
+      return series[index] ?? null
+    }
+    case 'Aroon Down': {
+      const lows = ctx.db.low?.[t]
+      if (!lows) return null
+      const series = getCachedSeries(ctx.cache, 'aroonDown', t, w, () => rollingAroonDown(lows, w))
+      return series[index] ?? null
+    }
+    case 'Aroon Oscillator': {
+      const highs = ctx.db.high?.[t]
+      const lows = ctx.db.low?.[t]
+      if (!highs || !lows) return null
+      const series = getCachedSeries(ctx.cache, 'aroonOsc', t, w, () => rollingAroonOscillator(highs, lows, w))
+      return series[index] ?? null
+    }
+    // MACD & PPO (fixed 12/26/9 periods)
+    case 'MACD Histogram': {
+      const series = getCachedSeries(ctx.cache, 'macd', t, 0, () => rollingMACD(closes))
+      return series[index] ?? null
+    }
+    case 'PPO Histogram': {
+      const series = getCachedSeries(ctx.cache, 'ppo', t, 0, () => rollingPPO(closes))
+      return series[index] ?? null
+    }
+    // Trend Clarity (R²)
+    case 'Trend Clarity': {
+      const series = getCachedSeries(ctx.cache, 'trendClarity', t, w, () => rollingTrendClarity(closes, w))
+      return series[index] ?? null
+    }
+    // Ultimate Smoother
+    case 'Ultimate Smoother': {
+      const series = getCachedSeries(ctx.cache, 'ultSmooth', t, w, () => rollingUltimateSmoother(closes, w))
+      return series[index] ?? null
+    }
+  }
+  return null
 }
 
 const metricAt = (ctx: EvalCtx, ticker: string, metric: MetricChoice, window: number): number | null => {
@@ -8704,21 +9279,80 @@ const metricAt = (ctx: EvalCtx, ticker: string, metric: MetricChoice, window: nu
       const series = getCachedSeries(ctx.cache, 'smaRet', t, w, () => rollingSmaOfReturns(closes, w))
       return series[i] ?? null
     }
+    // Momentum indicators (no window - fixed lookbacks)
+    case 'Momentum (Weighted)': {
+      const series = getCachedSeries(ctx.cache, 'mom13612w', t, 0, () => rolling13612W(closes))
+      return series[i] ?? null
+    }
+    case 'Momentum (Unweighted)': {
+      const series = getCachedSeries(ctx.cache, 'mom13612u', t, 0, () => rolling13612U(closes))
+      return series[i] ?? null
+    }
+    case 'Momentum (12-Month SMA)': {
+      const series = getCachedSeries(ctx.cache, 'momsma12', t, 0, () => rollingSMA12Momentum(closes))
+      return series[i] ?? null
+    }
+    // Drawdown from ATH (no window)
+    case 'Drawdown': {
+      const series = getCachedSeries(ctx.cache, 'drawdown', t, 0, () => rollingDrawdown(closes))
+      return series[i] ?? null
+    }
+    // Aroon indicators (need high/low prices)
+    case 'Aroon Up': {
+      const highs = ctx.db.high?.[t]
+      if (!highs) return null
+      const series = getCachedSeries(ctx.cache, 'aroonUp', t, w, () => rollingAroonUp(highs, w))
+      return series[i] ?? null
+    }
+    case 'Aroon Down': {
+      const lows = ctx.db.low?.[t]
+      if (!lows) return null
+      const series = getCachedSeries(ctx.cache, 'aroonDown', t, w, () => rollingAroonDown(lows, w))
+      return series[i] ?? null
+    }
+    case 'Aroon Oscillator': {
+      const highs = ctx.db.high?.[t]
+      const lows = ctx.db.low?.[t]
+      if (!highs || !lows) return null
+      const series = getCachedSeries(ctx.cache, 'aroonOsc', t, w, () => rollingAroonOscillator(highs, lows, w))
+      return series[i] ?? null
+    }
+    // MACD & PPO (fixed 12/26/9 periods)
+    case 'MACD Histogram': {
+      const series = getCachedSeries(ctx.cache, 'macd', t, 0, () => rollingMACD(closes))
+      return series[i] ?? null
+    }
+    case 'PPO Histogram': {
+      const series = getCachedSeries(ctx.cache, 'ppo', t, 0, () => rollingPPO(closes))
+      return series[i] ?? null
+    }
+    // Trend Clarity (R²)
+    case 'Trend Clarity': {
+      const series = getCachedSeries(ctx.cache, 'trendClarity', t, w, () => rollingTrendClarity(closes, w))
+      return series[i] ?? null
+    }
+    // Ultimate Smoother
+    case 'Ultimate Smoother': {
+      const series = getCachedSeries(ctx.cache, 'ultSmooth', t, w, () => rollingUltimateSmoother(closes, w))
+      return series[i] ?? null
+    }
   }
+  return null
 }
 
 const conditionExpr = (cond: ConditionLine): string => {
-  const leftPrefix = cond.metric === 'Current Price' ? '' : `${Math.floor(Number(cond.window || 0))}d `
+  const leftPrefix = isWindowlessIndicator(cond.metric) ? '' : `${Math.floor(Number(cond.window || 0))}d `
   const left = `${leftPrefix}${cond.metric} of ${normalizeChoice(cond.ticker)}`
   const cmp = normalizeComparatorChoice(cond.comparator) === 'lt' ? '<' : '>'
-  if (!cond.expanded) return `${left} ${cmp} ${String(cond.threshold)}`
+  const forDaysSuffix = cond.forDays && cond.forDays > 1 ? ` for ${cond.forDays} days` : ''
+  if (!cond.expanded) return `${left} ${cmp} ${String(cond.threshold)}${forDaysSuffix}`
 
   const rightMetric = cond.rightMetric ?? cond.metric
   const rightTicker = normalizeChoice(cond.rightTicker ?? cond.ticker)
   const rightWindow = Math.floor(Number((cond.rightWindow ?? cond.window) || 0))
-  const rightPrefix = rightMetric === 'Current Price' ? '' : `${rightWindow}d `
+  const rightPrefix = isWindowlessIndicator(rightMetric) ? '' : `${rightWindow}d `
   const right = `${rightPrefix}${rightMetric} of ${rightTicker}`
-  return `${left} ${cmp} ${right}`
+  return `${left} ${cmp} ${right}${forDaysSuffix}`
 }
 
 const createBacktestTraceCollector = (): BacktestTraceCollector => {
@@ -8796,8 +9430,61 @@ const createBacktestTraceCollector = (): BacktestTraceCollector => {
   return { recordBranch, recordCondition, toResult, getAltExitState, setAltExitState }
 }
 
-const evalCondition = (ctx: EvalCtx, ownerId: string, traceOwnerId: string, cond: ConditionLine): boolean => {
+// Evaluate a single condition at a specific index (for forDays support)
+const evalConditionAtIndex = (ctx: EvalCtx, cond: ConditionLine, index: number): boolean => {
   const cmp = normalizeComparatorChoice(cond.comparator)
+  const left = metricAtIndex(ctx, cond.ticker, cond.metric, cond.window, index)
+  if (cond.expanded) {
+    const rightMetric = cond.rightMetric ?? cond.metric
+    const rightTicker = cond.rightTicker ?? cond.ticker
+    const rightWindow = cond.rightWindow ?? cond.window
+    const right = metricAtIndex(ctx, rightTicker, rightMetric, rightWindow, index)
+    if (left == null || right == null) return false
+    return cmp === 'lt' ? left < right : left > right
+  }
+  if (left == null) return false
+  return cmp === 'lt' ? left < cond.threshold : left > cond.threshold
+}
+
+const evalCondition = (ctx: EvalCtx, ownerId: string, traceOwnerId: string, cond: ConditionLine): boolean => {
+  const forDays = cond.forDays || 1
+  const cmp = normalizeComparatorChoice(cond.comparator)
+
+  // For forDays > 1, check that the condition was true for the past N consecutive days
+  if (forDays > 1) {
+    for (let dayOffset = 0; dayOffset < forDays; dayOffset++) {
+      const checkIndex = ctx.indicatorIndex - dayOffset
+      if (checkIndex < 0) {
+        // Not enough history to check
+        ctx.trace?.recordCondition(traceOwnerId, cond, false, {
+          date: isoFromUtcSeconds(ctx.db.dates[ctx.decisionIndex]),
+          left: null,
+          threshold: cond.threshold,
+        })
+        return false
+      }
+      if (!evalConditionAtIndex(ctx, cond, checkIndex)) {
+        // Condition failed on one of the days
+        const left = metricAtIndex(ctx, cond.ticker, cond.metric, cond.window, ctx.indicatorIndex)
+        ctx.trace?.recordCondition(traceOwnerId, cond, false, {
+          date: isoFromUtcSeconds(ctx.db.dates[ctx.decisionIndex]),
+          left,
+          threshold: cond.threshold,
+        })
+        return false
+      }
+    }
+    // All days passed
+    const left = metricAtIndex(ctx, cond.ticker, cond.metric, cond.window, ctx.indicatorIndex)
+    ctx.trace?.recordCondition(traceOwnerId, cond, true, {
+      date: isoFromUtcSeconds(ctx.db.dates[ctx.decisionIndex]),
+      left,
+      threshold: cond.threshold,
+    })
+    return true
+  }
+
+  // Standard single-day evaluation (forDays = 1)
   const left = metricAt(ctx, cond.ticker, cond.metric, cond.window)
   if (cond.expanded) {
     const rightMetric = cond.rightMetric ?? cond.metric
@@ -9071,7 +9758,7 @@ const evaluateNode = (ctx: EvalCtx, node: FlowNode, callStack: string[] = []): A
         .filter((x) => Object.keys(x.alloc).length > 0)
 
       const metric = node.metric ?? 'Relative Strength Index'
-      const win = metric === 'Current Price' ? 1 : Math.floor(Number(node.window ?? 10))
+      const win = isWindowlessIndicator(metric) ? 1 : Math.floor(Number(node.window ?? 10))
       const pickN = Math.max(1, Math.floor(Number(node.bottom ?? 1)))
       const rank = node.rank ?? 'Bottom'
 
@@ -9359,12 +10046,24 @@ const fetchOhlcSeries = async (ticker: string, limit: number): Promise<Array<{ t
   return candles.map((c) => ({ time: c.time as UTCTimestamp, open: Number(c.open), close: Number(c.close) }))
 }
 
-const buildPriceDb = (series: Array<{ ticker: string; bars: Array<{ time: UTCTimestamp; open: number; close: number }> }>): PriceDB => {
+// Build price database from series data
+// dateIntersectionTickers: if provided, only these tickers are used to calculate the date intersection
+// This allows indicator tickers (with longer history) to set the date range, while position tickers
+// (which may have shorter history) just get null values for dates before their data starts
+const buildPriceDb = (
+  series: Array<{ ticker: string; bars: Array<{ time: UTCTimestamp; open: number; close: number }> }>,
+  dateIntersectionTickers?: string[]
+): PriceDB => {
   const byTicker = new Map<string, Map<number, { open: number; close: number }>>()
   const tickerCounts: Record<string, number> = {}
   let overlapStart = 0
   let overlapEnd = Number.POSITIVE_INFINITY
   let limitingTicker: string | undefined
+
+  // Build the set of tickers to use for date intersection
+  const intersectionSet = dateIntersectionTickers
+    ? new Set(dateIntersectionTickers.map((t) => getSeriesKey(t)))
+    : null
 
   for (const s of series) {
     const t = getSeriesKey(s.ticker)
@@ -9372,6 +10071,9 @@ const buildPriceDb = (series: Array<{ ticker: string; bars: Array<{ time: UTCTim
     for (const b of s.bars) map.set(Number(b.time), { open: Number(b.open), close: Number(b.close) })
     byTicker.set(t, map)
     tickerCounts[t] = s.bars.length
+
+    // Only use tickers in intersectionSet (if provided) for date range calculation
+    if (intersectionSet && !intersectionSet.has(t)) continue
 
     const times = s.bars.map((b) => Number(b.time)).sort((a, b) => a - b)
     if (times.length === 0) continue
@@ -9386,8 +10088,12 @@ const buildPriceDb = (series: Array<{ ticker: string; bars: Array<{ time: UTCTim
 
   if (!(overlapEnd >= overlapStart)) return { dates: [], open: {}, close: {}, tickerCounts }
 
+  // Build date intersection using only the intersection tickers (if provided)
   let intersection: Set<number> | null = null
-  for (const [, map] of byTicker) {
+  for (const [ticker, map] of byTicker) {
+    // Only use tickers in intersectionSet for building the date intersection
+    if (intersectionSet && !intersectionSet.has(ticker)) continue
+
     const set = new Set<number>()
     for (const time of map.keys()) {
       if (time >= overlapStart && time <= overlapEnd) set.add(time)
@@ -9402,6 +10108,8 @@ const buildPriceDb = (series: Array<{ ticker: string; bars: Array<{ time: UTCTim
   }
   const dates = Array.from(intersection ?? new Set<number>()).sort((a, b) => a - b) as UTCTimestamp[]
 
+  // Build price arrays for ALL tickers (not just intersection tickers)
+  // Non-intersection tickers may have nulls for dates before their data starts
   const open: Record<string, Array<number | null>> = {}
   const close: Record<string, Array<number | null>> = {}
   for (const [ticker, map] of byTicker) {
@@ -11012,7 +11720,13 @@ function App() {
       const benchSettled = benchPromise ? await Promise.allSettled([benchPromise]) : []
       const spySettled = spyPromise ? await Promise.allSettled([spyPromise]) : []
 
-      const db = buildPriceDb(loaded)
+      // Collect indicator tickers (for date intersection) vs position tickers (can start later)
+      const indicatorTickers = collectIndicatorTickers(prepared, callChainsById)
+      const positionTickers = collectPositionTickers(prepared, callChainsById)
+
+      // Build price DB using only indicator tickers for date intersection
+      // This allows position tickers with shorter history (like UVXY) to not limit the date range
+      const db = buildPriceDb(loaded, indicatorTickers.length > 0 ? indicatorTickers : undefined)
       if (db.dates.length < 3) {
         throw makeValidationError([{ nodeId: prepared.id, field: 'data', message: 'Not enough overlapping price data to run a backtest.' }])
       }
@@ -11061,9 +11775,32 @@ function App() {
         for (const b of spyBars) spyMap.set(Number(b.time), { open: b.open, close: b.close })
       }
 
+      // Find first index where all position tickers have valid close prices
+      // This prevents allocating to tickers before their data starts
+      let firstValidPosIndex = 0
+      if (positionTickers.length > 0) {
+        for (let i = 0; i < db.dates.length; i++) {
+          let allValid = true
+          for (const ticker of positionTickers) {
+            const t = getSeriesKey(ticker)
+            const closeVal = db.close[t]?.[i]
+            if (closeVal == null) {
+              allValid = false
+              break
+            }
+          }
+          if (allValid) {
+            firstValidPosIndex = i
+            break
+          }
+        }
+      }
+
       const allocationsAt: Allocation[] = Array.from({ length: db.dates.length }, () => ({}))
       const lookback = Math.max(0, Math.floor(Number(inputs.maxLookback || 0)))
-      const startEvalIndex = decisionPrice === 'open' ? (lookback > 0 ? lookback + 1 : 0) : lookback
+      const baseLookbackIndex = decisionPrice === 'open' ? (lookback > 0 ? lookback + 1 : 0) : lookback
+      // Start evaluation at the later of: lookback requirement OR first valid position ticker date
+      const startEvalIndex = Math.max(baseLookbackIndex, firstValidPosIndex)
 
       // Check if we have enough data for the lookback period
       if (startEvalIndex >= db.dates.length) {
@@ -11183,7 +11920,7 @@ function App() {
         returns.push(net)
 
         allocations.push({
-          date: isoFromUtcSeconds(db.dates[end]),
+          date: mdyFromUtcSeconds(db.dates[end]), // Show holding date in M/D/YYYY format, matching QuantMage
           entries: allocEntries(alloc),
         })
 

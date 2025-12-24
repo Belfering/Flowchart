@@ -17,10 +17,10 @@ interface ConditionLine {
   comparator: ComparatorChoice
   threshold: number
   expanded?: boolean
-  rhsType?: 'number' | 'indicator'
-  rhsTicker?: PositionChoice
-  rhsMetric?: MetricChoice
-  rhsWindow?: number
+  rightTicker?: PositionChoice
+  rightMetric?: MetricChoice
+  rightWindow?: number
+  forDays?: number // Condition must be true for N consecutive days
 }
 
 interface NumberedItem {
@@ -49,6 +49,10 @@ interface FlowNode {
   window?: number
   rank?: 'Top' | 'Bottom'
   bottom?: number
+  // Scaling node properties
+  scaleMetric?: MetricChoice
+  scaleWindow?: number
+  scaleTicker?: string
   scaleFrom?: number
   scaleTo?: number
   numbered?: NumberedConfig
@@ -80,13 +84,28 @@ const createIdGenerator = () => {
 // Map QuantMage indicator types to Atlas metric names
 const mapIndicator = (type: string): MetricChoice => {
   const mapping: Record<string, MetricChoice> = {
-    'RelativeStrengthIndex': 'Relative Strength Index',
+    'CurrentPrice': 'Current Price',
+    'MovingAverage': 'Simple Moving Average',
     'SimpleMovingAverage': 'Simple Moving Average',
     'ExponentialMovingAverage': 'Exponential Moving Average',
-    'MaxDrawdown': 'Max Drawdown',
-    '13612wMomentum': '13612W Momentum',
+    'RelativeStrengthIndex': 'Relative Strength Index',
     'CumulativeReturn': 'Cumulative Return',
     'Volatility': 'Standard Deviation',
+    'MaxDrawdown': 'Max Drawdown',
+    // Momentum indicators
+    '13612wMomentum': 'Momentum (Weighted)',
+    '13612uMomentum': 'Momentum (Unweighted)',
+    'SMA12Momentum': 'Momentum (12-Month SMA)',
+    // Additional indicators
+    'UltimateSmoother': 'Ultimate Smoother',
+    'Drawdown': 'Drawdown',
+    'AroonUp': 'Aroon Up',
+    'AroonDown': 'Aroon Down',
+    'Aroon': 'Aroon Oscillator',
+    'MACD': 'MACD Histogram',
+    'PPO': 'PPO Histogram',
+    'TrendClarity': 'Trend Clarity',
+    'MovingAverageReturn': 'SMA of Returns',
   }
   return mapping[type] || 'Relative Strength Index'
 }
@@ -102,6 +121,7 @@ const parseCondition = (
     const lhIndicator = cond.lh_indicator as { type: string; window: number } | undefined
     const rhIndicator = cond.rh_indicator as { type: string; window: number } | undefined
     const type = cond.type as string
+    const forDays = (cond.for_days as number) || 1
 
     const base: ConditionLine = {
       id: idGen.condId(),
@@ -112,13 +132,14 @@ const parseCondition = (
       comparator: (cond.greater_than as boolean) ? 'gt' : 'lt',
       threshold: (cond.rh_value as number) ?? 50,
       expanded: false,
+      forDays: forDays > 1 ? forDays : undefined, // Only store if > 1
     }
 
     if (type === 'IndicatorAndIndicator' && rhIndicator) {
-      base.rhsType = 'indicator'
-      base.rhsTicker = (cond.rh_ticker_symbol as string) || 'SPY'
-      base.rhsMetric = mapIndicator(rhIndicator.type)
-      base.rhsWindow = rhIndicator.window || 14
+      base.expanded = true
+      base.rightTicker = (cond.rh_ticker_symbol as string) || 'SPY'
+      base.rightMetric = mapIndicator(rhIndicator.type)
+      base.rightWindow = rhIndicator.window || 14
     }
 
     return [base]
@@ -347,10 +368,22 @@ const parseIncantation = (
   if (incType === 'Weighted') {
     const weightType = node.type as string
     const incantations = (node.incantations as Record<string, unknown>[]) || []
-    const weighting: WeightMode = weightType === 'InverseVolatility' ? 'inverse' : 'equal'
+    const customWeights = (node.weights as number[]) || []
+
+    // Determine weighting mode: Custom -> defined, InverseVolatility -> inverse, else equal
+    const weighting: WeightMode = weightType === 'Custom' ? 'defined'
+      : weightType === 'InverseVolatility' ? 'inverse'
+      : 'equal'
 
     const children = incantations
-      .map((inc) => parseIncantation(inc, idGen))
+      .map((inc, idx) => {
+        const child = parseIncantation(inc, idGen)
+        // For 'defined' weighting, store the weight in the child's window property
+        if (child && weighting === 'defined' && customWeights[idx] !== undefined) {
+          child.window = customWeights[idx]
+        }
+        return child
+      })
       .filter((c): c is FlowNode => c !== null)
 
     return {
@@ -396,7 +429,7 @@ const parseIncantation = (
 
     if (isLadderPattern) {
       // Create a numbered node with ladder quantifier
-      const items: NumberedItem[] = conditions.map((cond, idx) => ({
+      const items: NumberedItem[] = conditions.map((cond, _idx) => ({
         id: idGen.condId(),
         conditions: cond ? parseCondition(cond, idGen) : [{
           id: idGen.condId(),
@@ -507,6 +540,10 @@ const parseIncantation = (
         threshold: 0,
         expanded: false,
       }],
+      // Set scaling-specific fields (used by backtest evaluation)
+      scaleMetric: indicator ? mapIndicator(indicator.type) : 'Relative Strength Index',
+      scaleWindow: indicator?.window || 14,
+      scaleTicker: tickerSymbol,
       scaleFrom: fromValue,
       scaleTo: toValue,
       children: {
