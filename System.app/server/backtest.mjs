@@ -204,26 +204,41 @@ const rollingStdDev = (values, period) => {
   return out
 }
 
+// Rolling max drawdown using close prices only
+// Calculates the largest peak-to-trough decline within the window using daily closes
+// Returns POSITIVE values (e.g., 0.05 for 5% drawdown)
+// "Max Drawdown < 0.01" means "drawdown is less than 1%"
 const rollingMaxDrawdown = (values, period) => {
-  const out = new Array(values.length).fill(null)
-  for (let i = 0; i < values.length; i++) {
-    if (i < period - 1) continue
+  const n = values.length
+  const out = new Array(n).fill(null)
+  if (period <= 0 || n === 0) return out
+
+  for (let i = period - 1; i < n; i++) {
+    const windowStart = i - period + 1
+    let valid = true
     let peak = -Infinity
     let maxDd = 0
-    for (let j = i - period + 1; j <= i; j++) {
+
+    // Check each close price in the window
+    for (let j = windowStart; j <= i && valid; j++) {
       const v = values[j]
       if (Number.isNaN(v)) {
-        peak = -Infinity
-        maxDd = 0
-        continue
+        valid = false
+        break
       }
+
+      // Track peak close and max drawdown from peak
       if (v > peak) peak = v
       if (peak > 0) {
-        const dd = v / peak - 1
+        const dd = v / peak - 1 // negative when below peak
         if (dd < maxDd) maxDd = dd
       }
     }
-    out[i] = maxDd
+
+    if (valid) {
+      // Return max drawdown as POSITIVE value (e.g., 0.05 for 5% drawdown)
+      out[i] = Math.abs(maxDd)
+    }
   }
   return out
 }
@@ -462,6 +477,10 @@ const evaluateCondition = (ctx, cond) => {
     const threshold = Number(cond.threshold)
     if (!Number.isFinite(threshold)) return null
     const cmp = normalizeComparatorChoice(cond.comparator)
+    // Debug Max Drawdown specifically
+    if (cond.metric === 'Max Drawdown' && ctx.indicatorIndex < 5) {
+      console.log(`[MaxDD Debug] ${leftTicker} ${cond.window}d: value=${leftVal}, threshold=${threshold}, cmp=${cmp}, result=${cmp === 'gt' ? leftVal > threshold : leftVal < threshold}`)
+    }
     return cmp === 'gt' ? leftVal > threshold : leftVal < threshold
   }
 
@@ -545,6 +564,84 @@ const evaluateNode = (ctx, node) => {
   if (node.kind === 'basic') {
     const children = (node.children?.next || []).filter(Boolean)
     return evaluateChildren(ctx, node, 'next', children)
+  }
+
+  if (node.kind === 'numbered') {
+    const items = node.numbered?.items || []
+    console.log(`[Numbered] Evaluating node "${node.title}" with ${items.length} items, quantifier=${node.numbered?.quantifier}`)
+    // Evaluate each item's conditions
+    const itemTruth = items.map((item, idx) => {
+      const conditions = item.conditions || []
+      if (conditions.length === 0) {
+        console.log(`  Item ${idx}: no conditions → false`)
+        return false
+      }
+      // Evaluate using standard boolean precedence: AND binds tighter than OR
+      let currentAnd = null
+      const orTerms = []
+      for (const c of conditions) {
+        const v = evaluateCondition(ctx, c)
+        console.log(`  Item ${idx} cond: ${c.ticker} ${c.metric} ${c.comparator} ${c.threshold} → ${v}`)
+        if (v == null) {
+          console.log(`  Item ${idx}: missing data → false`)
+          return false // Missing data = false
+        }
+        const t = c.type === 'or' ? 'or' : c.type === 'and' ? 'and' : 'if'
+        if (t === 'if') {
+          if (currentAnd !== null) orTerms.push(currentAnd)
+          currentAnd = v
+          continue
+        }
+        if (currentAnd === null) {
+          currentAnd = v
+          continue
+        }
+        if (t === 'and') {
+          currentAnd = currentAnd && v
+          continue
+        }
+        if (t === 'or') {
+          orTerms.push(currentAnd)
+          currentAnd = v
+          continue
+        }
+        currentAnd = v
+      }
+      if (currentAnd !== null) orTerms.push(currentAnd)
+      const result = orTerms.some(Boolean)
+      console.log(`  Item ${idx} result: ${result}`)
+      return result
+    })
+
+    const nTrue = itemTruth.filter(Boolean).length
+    const q = node.numbered?.quantifier ?? 'all'
+    const n = Math.max(0, Math.floor(Number(node.numbered?.n ?? 0)))
+
+    // Handle ladder mode: select ladder-N slot based on how many conditions are true
+    if (q === 'ladder') {
+      const slotKey = `ladder-${nTrue}`
+      console.log(`[Numbered] Ladder mode: nTrue=${nTrue}/${items.length} → slot=${slotKey}`)
+      const children = (node.children?.[slotKey] || []).filter(Boolean)
+      return evaluateChildren(ctx, node, slotKey, children)
+    }
+
+    const ok =
+      q === 'any'
+        ? nTrue >= 1
+        : q === 'all'
+          ? nTrue === items.length
+          : q === 'none'
+            ? nTrue === 0
+            : q === 'exactly'
+              ? nTrue === n
+              : q === 'atLeast'
+                ? nTrue >= n
+                : nTrue <= n // atMost
+
+    console.log(`[Numbered] nTrue=${nTrue}/${items.length}, quantifier=${q}, n=${n}, ok=${ok} → branch=${ok ? 'then' : 'else'}`)
+    const branch = ok ? 'then' : 'else'
+    const children = (node.children?.[branch] || []).filter(Boolean)
+    return evaluateChildren(ctx, node, branch, children)
   }
 
   return {}

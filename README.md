@@ -13,9 +13,13 @@ Atlas Engine enables users to visually design trading strategies by connecting d
   - **Basic**: Simple weighted allocation nodes
   - **Function**: Filter/ranking functions (e.g., "Pick bottom 2 by 10d RSI")
   - **Indicator**: Conditional branching with then/else paths for decision logic
+  - **Numbered**: Signal ladder with quantifiers (Any, All, None, Exactly, At Least, At Most, Ladder)
+  - **Alt Exit**: Entry/exit condition pairs with scaling options
   - **Position**: Leaf nodes holding actual ticker positions (BIL, SPY, or Empty)
+- **Strategy Import**: Import strategies from QuantMage and Composer JSON files
 - **Market Data Integration**: Download and query historical ticker data from Yahoo Finance
-- **Backtesting**: Run backtests with comprehensive metrics (CAGR, Sharpe, Sortino, Max Drawdown, etc.)
+- **Backtesting**: Run backtests with comprehensive metrics (CAGR, Sharpe, Sortino, Treynor, Calmar, Max Drawdown, etc.)
+- **Rich Indicator Library**: RSI, SMA, EMA, ROC, Volatility, Drawdown, Cumulative Return, and more
 - **Undo/Redo**: Full history-based state management
 - **Copy/Paste**: Clone node subtrees with a single click
 - **Live Data Visualization**: View candlestick charts for tickers using DuckDB-powered queries

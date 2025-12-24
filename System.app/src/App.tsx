@@ -44,7 +44,7 @@ import {
 } from 'lightweight-charts'
 
 type BlockKind = 'basic' | 'function' | 'indicator' | 'numbered' | 'position' | 'call' | 'altExit' | 'scaling'
-type SlotId = 'next' | 'then' | 'else'
+type SlotId = 'next' | 'then' | 'else' | `ladder-${number}`
 type PositionChoice = string
 type MetricChoice =
   | 'Current Price'
@@ -149,14 +149,23 @@ const normalizeNodeForBacktest = (node: FlowNode): FlowNode => {
     exitConditions: normalizeConditions(node.exitConditions),
     children: { ...node.children },
   }
-  for (const slot of SLOT_ORDER[node.kind]) {
+  // Get slots including ladder slots for numbered nodes
+  const slots = [...SLOT_ORDER[node.kind]]
+  if (node.kind === 'numbered' && node.numbered?.quantifier === 'ladder') {
+    Object.keys(node.children).forEach((key) => {
+      if (key.startsWith('ladder-') && !slots.includes(key as SlotId)) {
+        slots.push(key as SlotId)
+      }
+    })
+  }
+  for (const slot of slots) {
     const arr = node.children[slot] ?? [null]
     next.children[slot] = arr.map((c) => (c ? normalizeNodeForBacktest(c) : c))
   }
   return next
 }
 
-type NumberedQuantifier = 'all' | 'none' | 'exactly' | 'atLeast' | 'atMost'
+type NumberedQuantifier = 'any' | 'all' | 'none' | 'exactly' | 'atLeast' | 'atMost' | 'ladder'
 
 type NumberedItem = {
   id: string
@@ -961,6 +970,19 @@ const SLOT_ORDER: Record<BlockKind, SlotId[]> = {
   scaling: ['then', 'else'],
 }
 
+// Helper to get all slots for a node, including dynamic ladder slots for numbered nodes
+const getAllSlotsForNode = (node: FlowNode): SlotId[] => {
+  const slots = [...SLOT_ORDER[node.kind]]
+  if (node.kind === 'numbered' && node.numbered?.quantifier === 'ladder') {
+    Object.keys(node.children).forEach((key) => {
+      if (key.startsWith('ladder-') && !slots.includes(key as SlotId)) {
+        slots.push(key as SlotId)
+      }
+    })
+  }
+  return slots
+}
+
 // ============================================
 // COMPOSER IMPORT PARSER (FRD-019)
 // ============================================
@@ -1276,6 +1298,9 @@ const mapQuantMageIndicator = (type: string): MetricChoice => {
   return mapping[type] || 'Relative Strength Index'
 }
 
+// Async helper: yields to main thread to keep UI responsive during heavy processing
+const yieldToMain = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
+
 // ID generator for QuantMage imports (performance optimized)
 const createQuantMageIdGenerator = () => {
   let nodeCounter = 0
@@ -1564,44 +1589,6 @@ const parseQuantMageIncantation = (
   return null
 }
 
-// Main entry point: parse entire QuantMage strategy JSON
-const parseQuantMageStrategy = (data: Record<string, unknown>): FlowNode => {
-  const idGen = createQuantMageIdGenerator()
-  const name = (data.name as string) || 'Imported System'
-  const incantation = data.incantation as Record<string, unknown> | undefined
-
-  if (!incantation) {
-    return {
-      id: idGen.nodeId(),
-      kind: 'basic',
-      title: name,
-      collapsed: false,
-      weighting: 'equal',
-      children: { next: [null] },
-    }
-  }
-
-  const parsed = parseQuantMageIncantation(incantation, idGen)
-
-  if (!parsed) {
-    return {
-      id: idGen.nodeId(),
-      kind: 'basic',
-      title: name,
-      collapsed: false,
-      weighting: 'equal',
-      children: { next: [null] },
-    }
-  }
-
-  // Override title with the strategy name if it's the root
-  if (parsed.kind === 'basic' && name) {
-    parsed.title = name
-  }
-
-  return parsed
-}
-
 // ============================================
 // END QUANTMAGE IMPORT PARSER
 // ============================================
@@ -1756,20 +1743,44 @@ const ensureSlots = (node: FlowNode): FlowNode => {
     const arr = node.children[slot] ?? [null]
     children[slot] = arr.map((c) => (c ? ensureSlots(c) : c))
   })
+  // Preserve ladder slots for numbered nodes in ladder mode
+  if (node.kind === 'numbered' && node.numbered?.quantifier === 'ladder') {
+    Object.keys(node.children).forEach((key) => {
+      if (key.startsWith('ladder-')) {
+        const slotKey = key as SlotId
+        const arr = node.children[slotKey] ?? [null]
+        children[slotKey] = arr.map((c) => (c ? ensureSlots(c) : c))
+      }
+    })
+  }
   return { ...node, children }
 }
 
 // Performance optimization: Single-pass import normalization
 // Combines hasLegacyIdsOrDuplicates + ensureSlots + regenerateIds into one traversal
+// Also collapses all nodes except root for performance with large imports
 const normalizeForImport = (node: FlowNode): FlowNode => {
   const seen = new Set<string>()
   let needsNewIds = false
+
+  // Helper to get all slot keys for a node (including ladder slots)
+  const getAllSlots = (n: FlowNode): SlotId[] => {
+    const slots = [...SLOT_ORDER[n.kind]]
+    if (n.kind === 'numbered' && n.numbered?.quantifier === 'ladder') {
+      Object.keys(n.children).forEach((key) => {
+        if (key.startsWith('ladder-') && !slots.includes(key as SlotId)) {
+          slots.push(key as SlotId)
+        }
+      })
+    }
+    return slots
+  }
 
   // First pass: detect if we need to regenerate IDs
   const detectLegacy = (n: FlowNode) => {
     if (/^node-\d+$/.test(n.id) || seen.has(n.id)) needsNewIds = true
     seen.add(n.id)
-    SLOT_ORDER[n.kind].forEach((slot) => {
+    getAllSlots(n).forEach((slot) => {
       n.children[slot]?.forEach((c) => {
         if (c) detectLegacy(c)
       })
@@ -1777,28 +1788,46 @@ const normalizeForImport = (node: FlowNode): FlowNode => {
   }
   detectLegacy(node)
 
-  // Second pass: normalize and optionally regenerate IDs
+  // Second pass: normalize, optionally regenerate IDs, and collapse all nodes
   const walk = (n: FlowNode): FlowNode => {
     const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
-    SLOT_ORDER[n.kind].forEach((slot) => {
+    const slots = getAllSlots(n)
+    slots.forEach((slot) => {
       const arr = n.children[slot] ?? [null]
       children[slot] = arr.map((c) => (c ? walk(c) : c))
     })
     return {
       ...n,
       id: needsNewIds ? newId() : n.id,
+      collapsed: true, // Collapse all nodes for performance
       children,
     }
   }
-  return walk(node)
+  const result = walk(node)
+  // Root node should be expanded so user can see the tree structure
+  result.collapsed = false
+  return result
 }
 
 // Performance optimization: Single-pass clone + normalize + regenerate for paste operations
 // Always generates new IDs (used for paste/duplicate where we always need new IDs)
 const cloneAndNormalize = (node: FlowNode): FlowNode => {
+  // Helper to get all slot keys for a node (including ladder slots)
+  const getAllSlots = (n: FlowNode): SlotId[] => {
+    const slots = [...SLOT_ORDER[n.kind]]
+    if (n.kind === 'numbered' && n.numbered?.quantifier === 'ladder') {
+      Object.keys(n.children).forEach((key) => {
+        if (key.startsWith('ladder-') && !slots.includes(key as SlotId)) {
+          slots.push(key as SlotId)
+        }
+      })
+    }
+    return slots
+  }
+
   const walk = (n: FlowNode): FlowNode => {
     const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
-    SLOT_ORDER[n.kind].forEach((slot) => {
+    getAllSlots(n).forEach((slot) => {
       const arr = n.children[slot] ?? [null]
       children[slot] = arr.map((c) => (c ? walk(c) : c))
     })
@@ -2234,6 +2263,7 @@ function EquityChart({
   const lastCursorTimeRef = useRef<UTCTimestamp | null>(null)
   const segRafRef = useRef<number | null>(null)
   const segKeyRef = useRef<string>('')
+  const isUpdatingSegRef = useRef<boolean>(false)
 
   const chartHeight = heightPx ?? 520
 
@@ -2295,12 +2325,14 @@ function EquityChart({
     const seg = cursorSegRef.current
     const pts = pointsRef.current
     if (!seg || !pts || pts.length < 2) return
+    if (isUpdatingSegRef.current) return // Prevent infinite recursion
 
     const vr = visibleRangeRef.current
     const startTime = vr?.from ?? pts[0].time
     const endTime = cursorTime
     if (!(Number(startTime) <= Number(endTime))) {
-      seg.setData([])
+      isUpdatingSegRef.current = true
+      try { seg.setData([]) } finally { isUpdatingSegRef.current = false }
       return
     }
 
@@ -2311,6 +2343,7 @@ function EquityChart({
     if (segRafRef.current != null) cancelAnimationFrame(segRafRef.current)
     segRafRef.current = requestAnimationFrame(() => {
       segRafRef.current = null
+      if (isUpdatingSegRef.current) return
 
       let startIdx = 0
       while (startIdx < pts.length && Number(pts[startIdx].time) < Number(startTime)) startIdx++
@@ -2318,11 +2351,13 @@ function EquityChart({
       while (endIdx < pts.length && Number(pts[endIdx].time) <= Number(endTime)) endIdx++
       endIdx = Math.max(startIdx, endIdx - 1)
       if (endIdx <= startIdx) {
-        seg.setData([])
+        isUpdatingSegRef.current = true
+        try { seg.setData([]) } finally { isUpdatingSegRef.current = false }
         return
       }
 
-      seg.setData(pts.slice(startIdx, endIdx + 1) as unknown as LineData<Time>[])
+      isUpdatingSegRef.current = true
+      try { seg.setData(pts.slice(startIdx, endIdx + 1) as unknown as LineData<Time>[]) } finally { isUpdatingSegRef.current = false }
     })
   }, [])
 
@@ -2409,6 +2444,7 @@ function EquityChart({
 
     chart.subscribeCrosshairMove((param: MouseEventParams<Time>) => {
       if (!showCursorStats) return
+      if (isUpdatingSegRef.current) return // Prevent infinite recursion
       const overlay = overlayRef.current
       if (!overlay) return
       const time = toUtcSeconds(param.time)
@@ -2416,7 +2452,8 @@ function EquityChart({
         // Keep overlay visible but show placeholder when not hovering
         lastCursorTimeRef.current = null
         segKeyRef.current = ''
-        cursorSeg.setData([])
+        isUpdatingSegRef.current = true
+        try { cursorSeg.setData([]) } finally { isUpdatingSegRef.current = false }
         return
       }
       lastCursorTimeRef.current = time
@@ -2459,27 +2496,28 @@ function EquityChart({
 
     return () => {
       ro.disconnect()
+      if (segRafRef.current != null) cancelAnimationFrame(segRafRef.current)
+      segRafRef.current = null
       try {
         overlayRef.current?.remove()
       } catch {
         // ignore
       }
-      chart.timeScale().unsubscribeVisibleTimeRangeChange(handleVisibleRangeChange)
-      chart.remove()
-      chartRef.current = null
-      seriesRef.current = null
-      benchRef.current = null
-      cursorSegRef.current = null
+      // Detach markers BEFORE removing chart to avoid "Object is disposed" error
       try {
         markersRef.current?.detach()
       } catch {
         // ignore
       }
       markersRef.current = null
+      chart.timeScale().unsubscribeVisibleTimeRangeChange(handleVisibleRangeChange)
+      chart.remove()
+      chartRef.current = null
+      seriesRef.current = null
+      benchRef.current = null
+      cursorSegRef.current = null
       overlayRef.current = null
       baseLineRef.current = null
-      if (segRafRef.current != null) cancelAnimationFrame(segRafRef.current)
-      segRafRef.current = null
     }
   }, [computeWindowStats, formatReturnFromBase, logScale, showCursorStats, chartHeight, updateCursorSegment])
 
@@ -2534,11 +2572,11 @@ function EquityChart({
     }
     const chart = chartRef.current
     if (!chart) return
-    if (visibleRange) {
+    if (visibleRange && visibleRange.from && visibleRange.to) {
       chart.timeScale().setVisibleRange(visibleRange)
       return
     }
-    if (main.length > 1) {
+    if (main.length > 1 && main[0]?.time && main[main.length - 1]?.time) {
       chart.timeScale().setVisibleRange({ from: main[0].time, to: main[main.length - 1].time })
       return
     }
@@ -2679,11 +2717,11 @@ function DrawdownChart({
     seriesRef.current.setData(dd)
     const chart = chartRef.current
     if (!chart) return
-    if (visibleRange) {
+    if (visibleRange && visibleRange.from && visibleRange.to) {
       chart.timeScale().setVisibleRange(visibleRange)
       return
     }
-    if (dd.length > 1) {
+    if (dd.length > 1 && dd[0]?.time && dd[dd.length - 1]?.time) {
       chart.timeScale().setVisibleRange({ from: dd[0].time, to: dd[dd.length - 1].time })
       return
     }
@@ -2750,9 +2788,13 @@ function RangeNavigator({
     const shadeR = shadeRightRef.current
     if (!chart || !el || !win || !shadeL || !shadeR) return
 
+    const rangeFrom = rangeRef.current?.from
+    const rangeTo = rangeRef.current?.to
+    if (!rangeFrom || !rangeTo) return
+
     const rect = el.getBoundingClientRect()
-    const fromCoord = chart.timeScale().timeToCoordinate(rangeRef.current.from)
-    const toCoord = chart.timeScale().timeToCoordinate(rangeRef.current.to)
+    const fromCoord = chart.timeScale().timeToCoordinate(rangeFrom)
+    const toCoord = chart.timeScale().timeToCoordinate(rangeTo)
     if (fromCoord == null || toCoord == null) return
     const fromX = Number(fromCoord)
     const toX = Number(toCoord)
@@ -3045,7 +3087,7 @@ function AllocationChart({
       seriesRefs.current.push(line)
     }
 
-    if (visibleRange) {
+    if (visibleRange && visibleRange.from && visibleRange.to) {
       chart.timeScale().setVisibleRange(visibleRange)
     } else {
       chart.timeScale().fitContent()
@@ -4629,9 +4671,25 @@ const replaceSlot = (node: FlowNode, parentId: string, slot: SlotId, index: numb
     return { ...node, children: { ...node.children, [slot]: next } }
   }
   const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
-  SLOT_ORDER[node.kind].forEach((s) => {
+  getAllSlotsForNode(node).forEach((s) => {
     const arr = node.children[s]
     children[s] = arr ? arr.map((c) => (c ? replaceSlot(c, parentId, slot, index, child) : c)) : arr
+  })
+  return { ...node, children }
+}
+
+// Insert a node at a specific index (shifts existing nodes down, doesn't replace)
+const insertAtSlot = (node: FlowNode, parentId: string, slot: SlotId, index: number, child: FlowNode): FlowNode => {
+  if (node.id === parentId) {
+    const arr = node.children[slot] ?? [null]
+    const next = arr.slice()
+    next.splice(index, 0, child)
+    return { ...node, children: { ...node.children, [slot]: next } }
+  }
+  const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
+  getAllSlotsForNode(node).forEach((s) => {
+    const arr = node.children[s]
+    children[s] = arr ? arr.map((c) => (c ? insertAtSlot(c, parentId, slot, index, child) : c)) : arr
   })
   return { ...node, children }
 }
@@ -4642,7 +4700,7 @@ const appendPlaceholder = (node: FlowNode, targetId: string, slot: SlotId): Flow
     return { ...node, children: { ...node.children, [slot]: [...arr, null] } }
   }
   const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
-  SLOT_ORDER[node.kind].forEach((s) => {
+  getAllSlotsForNode(node).forEach((s) => {
     const arr = node.children[s]
     children[s] = arr ? arr.map((c) => (c ? appendPlaceholder(c, targetId, slot) : c)) : arr
   })
@@ -4651,7 +4709,7 @@ const appendPlaceholder = (node: FlowNode, targetId: string, slot: SlotId): Flow
 
 const deleteNode = (node: FlowNode, targetId: string): FlowNode => {
   const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
-  SLOT_ORDER[node.kind].forEach((s) => {
+  getAllSlotsForNode(node).forEach((s) => {
     const arr = node.children[s]
     if (!arr) return
     const filtered = arr
@@ -4665,7 +4723,7 @@ const deleteNode = (node: FlowNode, targetId: string): FlowNode => {
 const updateTitle = (node: FlowNode, id: string, title: string): FlowNode => {
   if (node.id === id) return { ...node, title }
   const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
-  SLOT_ORDER[node.kind].forEach((s) => {
+  getAllSlotsForNode(node).forEach((s) => {
     const arr = node.children[s]
     children[s] = arr ? arr.map((c) => (c ? updateTitle(c, id, title) : c)) : arr
   })
@@ -4692,7 +4750,7 @@ const updateWeight = (node: FlowNode, id: string, weighting: WeightMode, branch?
     return next
   }
   const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
-  SLOT_ORDER[node.kind].forEach((s) => {
+  getAllSlotsForNode(node).forEach((s) => {
     const arr = node.children[s]
     children[s] = arr ? arr.map((c) => (c ? updateWeight(c, id, weighting, branch) : c)) : arr
   })
@@ -4706,7 +4764,7 @@ const updateCappedFallback = (node: FlowNode, id: string, choice: PositionChoice
     return { ...node, cappedFallback: choice }
   }
   const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
-  SLOT_ORDER[node.kind].forEach((s) => {
+  getAllSlotsForNode(node).forEach((s) => {
     const arr = node.children[s]
     children[s] = arr ? arr.map((c) => (c ? updateCappedFallback(c, id, choice, branch) : c)) : arr
   })
@@ -4721,7 +4779,7 @@ const updateVolWindow = (node: FlowNode, id: string, days: number, branch?: 'the
     return { ...node, volWindow: nextDays }
   }
   const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
-  SLOT_ORDER[node.kind].forEach((s) => {
+  getAllSlotsForNode(node).forEach((s) => {
     const arr = node.children[s]
     children[s] = arr ? arr.map((c) => (c ? updateVolWindow(c, id, days, branch) : c)) : arr
   })
@@ -4734,7 +4792,7 @@ const updateFunctionWindow = (node: FlowNode, id: string, value: number): FlowNo
     return { ...node, window: value }
   }
   const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
-  SLOT_ORDER[node.kind].forEach((s) => {
+  getAllSlotsForNode(node).forEach((s) => {
     const arr = node.children[s]
     children[s] = arr ? arr.map((c) => (c ? updateFunctionWindow(c, id, value) : c)) : arr
   })
@@ -4744,7 +4802,7 @@ const updateFunctionWindow = (node: FlowNode, id: string, value: number): FlowNo
 const updateFunctionBottom = (node: FlowNode, id: string, value: number): FlowNode => {
   if (node.id === id && node.kind === 'function') return { ...node, bottom: value }
   const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
-  SLOT_ORDER[node.kind].forEach((s) => {
+  getAllSlotsForNode(node).forEach((s) => {
     const arr = node.children[s]
     children[s] = arr ? arr.map((c) => (c ? updateFunctionBottom(c, id, value) : c)) : arr
   })
@@ -4754,7 +4812,7 @@ const updateFunctionBottom = (node: FlowNode, id: string, value: number): FlowNo
 const updateFunctionMetric = (node: FlowNode, id: string, metric: MetricChoice): FlowNode => {
   if (node.id === id && node.kind === 'function') return { ...node, metric }
   const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
-  SLOT_ORDER[node.kind].forEach((s) => {
+  getAllSlotsForNode(node).forEach((s) => {
     const arr = node.children[s]
     children[s] = arr ? arr.map((c) => (c ? updateFunctionMetric(c, id, metric) : c)) : arr
   })
@@ -4764,7 +4822,7 @@ const updateFunctionMetric = (node: FlowNode, id: string, metric: MetricChoice):
 const updateFunctionRank = (node: FlowNode, id: string, rank: RankChoice): FlowNode => {
   if (node.id === id && node.kind === 'function') return { ...node, rank }
   const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
-  SLOT_ORDER[node.kind].forEach((s) => {
+  getAllSlotsForNode(node).forEach((s) => {
     const arr = node.children[s]
     children[s] = arr ? arr.map((c) => (c ? updateFunctionRank(c, id, rank) : c)) : arr
   })
@@ -4774,17 +4832,42 @@ const updateFunctionRank = (node: FlowNode, id: string, rank: RankChoice): FlowN
 const updateCollapse = (node: FlowNode, id: string, collapsed: boolean): FlowNode => {
   if (node.id === id) return { ...node, collapsed }
   const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
-  SLOT_ORDER[node.kind].forEach((s) => {
+  getAllSlotsForNode(node).forEach((s) => {
     const arr = node.children[s]
     children[s] = arr ? arr.map((c) => (c ? updateCollapse(c, id, collapsed) : c)) : arr
   })
   return { ...node, children }
 }
 
+// Set collapsed state for all nodes in the tree
+const setAllCollapsed = (node: FlowNode, collapsed: boolean): FlowNode => {
+  const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
+  getAllSlotsForNode(node).forEach((s) => {
+    const arr = node.children[s]
+    children[s] = arr ? arr.map((c) => (c ? setAllCollapsed(c, collapsed) : c)) : arr
+  })
+  return { ...node, collapsed, children }
+}
+
+// Set collapsed state for a specific node and all its descendants
+const setCollapsedBelow = (root: FlowNode, targetId: string, collapsed: boolean): FlowNode => {
+  if (root.id === targetId) {
+    // Found the target - collapse/expand it and all descendants
+    return setAllCollapsed(root, collapsed)
+  }
+  // Not the target - recurse to find it
+  const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
+  getAllSlotsForNode(root).forEach((s) => {
+    const arr = root.children[s]
+    children[s] = arr ? arr.map((c) => (c ? setCollapsedBelow(c, targetId, collapsed) : c)) : arr
+  })
+  return { ...root, children }
+}
+
 const updateColor = (node: FlowNode, id: string, color?: string): FlowNode => {
   if (node.id === id) return { ...node, bgColor: color }
   const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
-  SLOT_ORDER[node.kind].forEach((s) => {
+  getAllSlotsForNode(node).forEach((s) => {
     const arr = node.children[s]
     children[s] = arr ? arr.map((c) => (c ? updateColor(c, id, color) : c)) : arr
   })
@@ -4796,7 +4879,7 @@ const updateCallReference = (node: FlowNode, id: string, callId: string | null):
     return { ...node, callRefId: callId || undefined }
   }
   const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
-  SLOT_ORDER[node.kind].forEach((s) => {
+  getAllSlotsForNode(node).forEach((s) => {
     const arr = node.children[s]
     children[s] = arr ? arr.map((c) => (c ? updateCallReference(c, id, callId) : c)) : arr
   })
@@ -4808,7 +4891,7 @@ const addPositionRow = (node: FlowNode, id: string): FlowNode => {
     return { ...node, positions: [...node.positions, 'Empty'] }
   }
   const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
-  SLOT_ORDER[node.kind].forEach((s) => {
+  getAllSlotsForNode(node).forEach((s) => {
     const arr = node.children[s]
     children[s] = arr ? arr.map((c) => (c ? addPositionRow(c, id) : c)) : arr
   })
@@ -4822,7 +4905,7 @@ const removePositionRow = (node: FlowNode, id: string, index: number): FlowNode 
     return { ...node, positions: next.length ? next : ['Empty'] }
   }
   const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
-  SLOT_ORDER[node.kind].forEach((s) => {
+  getAllSlotsForNode(node).forEach((s) => {
     const arr = node.children[s]
     children[s] = arr ? arr.map((c) => (c ? removePositionRow(c, id, index) : c)) : arr
   })
@@ -4837,7 +4920,7 @@ const removeSlotEntry = (node: FlowNode, targetId: string, slot: SlotId, index: 
     return { ...node, children: { ...node.children, [slot]: next.length ? next : [null] } }
   }
   const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
-  SLOT_ORDER[node.kind].forEach((s) => {
+  getAllSlotsForNode(node).forEach((s) => {
     const arr = node.children[s]
     children[s] = arr ? arr.map((c) => (c ? removeSlotEntry(c, targetId, slot, index) : c)) : arr
   })
@@ -4892,7 +4975,7 @@ const addConditionLine = (node: FlowNode, id: string, type: 'and' | 'or', itemId
     return { ...node, numbered: { ...node.numbered, items: nextItems } }
   }
   const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
-  SLOT_ORDER[node.kind].forEach((s) => {
+  getAllSlotsForNode(node).forEach((s) => {
     const arr = node.children[s]
     children[s] = arr ? arr.map((c) => (c ? addConditionLine(c, id, type, itemId) : c)) : arr
   })
@@ -4913,7 +4996,7 @@ const deleteConditionLine = (node: FlowNode, id: string, condId: string, itemId?
     return { ...node, numbered: { ...node.numbered, items: nextItems } }
   }
   const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
-  SLOT_ORDER[node.kind].forEach((s) => {
+  getAllSlotsForNode(node).forEach((s) => {
     const arr = node.children[s]
     children[s] = arr ? arr.map((c) => (c ? deleteConditionLine(c, id, condId, itemId) : c)) : arr
   })
@@ -4950,7 +5033,7 @@ const updateConditionFields = (
     return { ...node, numbered: { ...node.numbered, items: nextItems } }
   }
   const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
-  SLOT_ORDER[node.kind].forEach((s) => {
+  getAllSlotsForNode(node).forEach((s) => {
     const arr = node.children[s]
     children[s] = arr ? arr.map((c) => (c ? updateConditionFields(c, id, condId, updates, itemId) : c)) : arr
   })
@@ -4983,7 +5066,7 @@ const addEntryCondition = (node: FlowNode, id: string, type: 'and' | 'or'): Flow
     return { ...node, entryConditions: next }
   }
   const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
-  SLOT_ORDER[node.kind].forEach((s) => {
+  getAllSlotsForNode(node).forEach((s) => {
     const arr = node.children[s]
     children[s] = arr ? arr.map((c) => (c ? addEntryCondition(c, id, type) : c)) : arr
   })
@@ -5012,7 +5095,7 @@ const addExitCondition = (node: FlowNode, id: string, type: 'and' | 'or'): FlowN
     return { ...node, exitConditions: next }
   }
   const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
-  SLOT_ORDER[node.kind].forEach((s) => {
+  getAllSlotsForNode(node).forEach((s) => {
     const arr = node.children[s]
     children[s] = arr ? arr.map((c) => (c ? addExitCondition(c, id, type) : c)) : arr
   })
@@ -5025,7 +5108,7 @@ const deleteEntryCondition = (node: FlowNode, id: string, condId: string): FlowN
     return { ...node, entryConditions: keep.length ? keep : node.entryConditions }
   }
   const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
-  SLOT_ORDER[node.kind].forEach((s) => {
+  getAllSlotsForNode(node).forEach((s) => {
     const arr = node.children[s]
     children[s] = arr ? arr.map((c) => (c ? deleteEntryCondition(c, id, condId) : c)) : arr
   })
@@ -5038,7 +5121,7 @@ const deleteExitCondition = (node: FlowNode, id: string, condId: string): FlowNo
     return { ...node, exitConditions: keep.length ? keep : node.exitConditions }
   }
   const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
-  SLOT_ORDER[node.kind].forEach((s) => {
+  getAllSlotsForNode(node).forEach((s) => {
     const arr = node.children[s]
     children[s] = arr ? arr.map((c) => (c ? deleteExitCondition(c, id, condId) : c)) : arr
   })
@@ -5066,7 +5149,7 @@ const updateEntryConditionFields = (
     return { ...node, entryConditions: next }
   }
   const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
-  SLOT_ORDER[node.kind].forEach((s) => {
+  getAllSlotsForNode(node).forEach((s) => {
     const arr = node.children[s]
     children[s] = arr ? arr.map((c) => (c ? updateEntryConditionFields(c, id, condId, updates) : c)) : arr
   })
@@ -5094,7 +5177,7 @@ const updateExitConditionFields = (
     return { ...node, exitConditions: next }
   }
   const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
-  SLOT_ORDER[node.kind].forEach((s) => {
+  getAllSlotsForNode(node).forEach((s) => {
     const arr = node.children[s]
     children[s] = arr ? arr.map((c) => (c ? updateExitConditionFields(c, id, condId, updates) : c)) : arr
   })
@@ -5120,7 +5203,7 @@ const updateScalingFields = (
     return { ...node, ...updates }
   }
   const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
-  SLOT_ORDER[node.kind].forEach((s) => {
+  getAllSlotsForNode(node).forEach((s) => {
     const arr = node.children[s]
     children[s] = arr ? arr.map((c) => (c ? updateScalingFields(c, id, updates) : c)) : arr
   })
@@ -5132,7 +5215,7 @@ const updateNumberedQuantifier = (node: FlowNode, id: string, quantifier: Number
     return { ...node, numbered: { ...node.numbered, quantifier } }
   }
   const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
-  SLOT_ORDER[node.kind].forEach((s) => {
+  getAllSlotsForNode(node).forEach((s) => {
     const arr = node.children[s]
     children[s] = arr ? arr.map((c) => (c ? updateNumberedQuantifier(c, id, quantifier) : c)) : arr
   })
@@ -5145,7 +5228,7 @@ const updateNumberedN = (node: FlowNode, id: string, n: number): FlowNode => {
     return { ...node, numbered: { ...node.numbered, n: next } }
   }
   const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
-  SLOT_ORDER[node.kind].forEach((s) => {
+  getAllSlotsForNode(node).forEach((s) => {
     const arr = node.children[s]
     children[s] = arr ? arr.map((c) => (c ? updateNumberedN(c, id, n) : c)) : arr
   })
@@ -5177,7 +5260,7 @@ const addNumberedItem = (node: FlowNode, id: string): FlowNode => {
     return { ...node, numbered: { ...node.numbered, items: [...node.numbered.items, newItem] } }
   }
   const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
-  SLOT_ORDER[node.kind].forEach((s) => {
+  getAllSlotsForNode(node).forEach((s) => {
     const arr = node.children[s]
     children[s] = arr ? arr.map((c) => (c ? addNumberedItem(c, id) : c)) : arr
   })
@@ -5190,7 +5273,7 @@ const deleteNumberedItem = (node: FlowNode, id: string, itemId: string): FlowNod
     return { ...node, numbered: { ...node.numbered, items: nextItems.length ? nextItems : node.numbered.items } }
   }
   const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
-  SLOT_ORDER[node.kind].forEach((s) => {
+  getAllSlotsForNode(node).forEach((s) => {
     const arr = node.children[s]
     children[s] = arr ? arr.map((c) => (c ? deleteNumberedItem(c, id, itemId) : c)) : arr
   })
@@ -5203,7 +5286,7 @@ const choosePosition = (node: FlowNode, id: string, index: number, choice: Posit
     return { ...node, positions: next }
   }
   const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
-  SLOT_ORDER[node.kind].forEach((s) => {
+  getAllSlotsForNode(node).forEach((s) => {
     const arr = node.children[s]
     children[s] = arr ? arr.map((c) => (c ? choosePosition(c, id, index, choice) : c)) : arr
   })
@@ -5251,7 +5334,7 @@ const cloneNode = (node: FlowNode): FlowNode => {
     scaleFrom: node.scaleFrom,
     scaleTo: node.scaleTo,
   }
-  SLOT_ORDER[node.kind].forEach((slot) => {
+  getAllSlotsForNode(node).forEach((slot) => {
     const arr = node.children[slot]
     cloned.children[slot] = arr ? arr.map((c) => (c ? cloneNode(c) : null)) : [null]
   })
@@ -5260,7 +5343,7 @@ const cloneNode = (node: FlowNode): FlowNode => {
 
 const findNode = (node: FlowNode, id: string): FlowNode | null => {
   if (node.id === id) return node
-  for (const slot of SLOT_ORDER[node.kind]) {
+  for (const slot of getAllSlotsForNode(node)) {
     const arr = node.children[slot]
     if (!arr) continue
     for (const child of arr) {
@@ -5329,9 +5412,64 @@ const buildLines = (node: FlowNode): LineView[] => {
   }
 }
 
+// Insert menu for adding sibling nodes
+const InsertMenu = ({
+  parentId,
+  parentSlot,
+  index,
+  onAdd,
+  onPaste,
+  clipboard,
+  onClose,
+}: {
+  parentId: string
+  parentSlot: SlotId
+  index: number
+  onAdd: (parentId: string, slot: SlotId, index: number, kind: BlockKind) => void
+  onPaste: (parentId: string, slot: SlotId, index: number, child: FlowNode) => void
+  clipboard: FlowNode | null
+  onClose: () => void
+}) => (
+  <div className="insert-menu" onClick={(e) => e.stopPropagation()}>
+    <button onClick={() => { onAdd(parentId, parentSlot, index, 'position'); onClose() }}>
+      Ticker
+    </button>
+    <button onClick={() => { onAdd(parentId, parentSlot, index, 'basic'); onClose() }}>
+      Weighted
+    </button>
+    <button onClick={() => { onAdd(parentId, parentSlot, index, 'function'); onClose() }}>
+      Filtered
+    </button>
+    <button onClick={() => { onAdd(parentId, parentSlot, index, 'indicator'); onClose() }}>
+      If/Else
+    </button>
+    <button onClick={() => { onAdd(parentId, parentSlot, index, 'numbered'); onClose() }}>
+      Numbered
+    </button>
+    <button onClick={() => { onAdd(parentId, parentSlot, index, 'call'); onClose() }}>
+      Call Reference
+    </button>
+    <button onClick={() => { onAdd(parentId, parentSlot, index, 'altExit'); onClose() }}>
+      Enter/Exit
+    </button>
+    <button onClick={() => { onAdd(parentId, parentSlot, index, 'scaling'); onClose() }}>
+      Mixed
+    </button>
+    {clipboard && (
+      <button onClick={() => { onPaste(parentId, parentSlot, index, clipboard); onClose() }}>
+        Paste
+      </button>
+    )}
+  </div>
+)
+
 type CardProps = {
   node: FlowNode
   depth: number
+  // Parent context for sibling insertion
+  parentId: string | null
+  parentSlot: SlotId | null
+  myIndex: number
   inheritedWeight?: number
   weightMode?: WeightMode
   isSortChild?: boolean
@@ -5350,6 +5488,7 @@ type CardProps = {
   onUpdateVolWindow: (id: string, days: number, branch?: 'then' | 'else') => void
   onColorChange: (id: string, color?: string) => void
   onToggleCollapse: (id: string, collapsed: boolean) => void
+  onExpandAllBelow: (id: string, collapsed: boolean) => void
   onNumberedQuantifier: (id: string, quantifier: NumberedQuantifier) => void
   onNumberedN: (id: string, n: number) => void
   onAddNumberedItem: (id: string) => void
@@ -5380,6 +5519,7 @@ type CardProps = {
   onRemovePosition: (id: string, index: number) => void
   onChoosePosition: (id: string, index: number, choice: PositionChoice) => void
   clipboard: FlowNode | null
+  copiedNodeId: string | null
   callChains: CallChain[]
   onUpdateCallRef: (id: string, callId: string | null) => void
   // Alt Exit handlers
@@ -5430,9 +5570,29 @@ type CardProps = {
   ) => void
 }
 
+// Check if all descendants of a node are collapsed
+const areAllDescendantsCollapsed = (node: FlowNode): boolean => {
+  const slots = getAllSlotsForNode(node)
+  for (const slot of slots) {
+    const children = node.children[slot]
+    if (!children) continue
+    for (const child of children) {
+      if (!child) continue
+      // If any child is expanded, return false
+      if (!child.collapsed) return false
+      // Recursively check children
+      if (!areAllDescendantsCollapsed(child)) return false
+    }
+  }
+  return true
+}
+
 const NodeCard = ({
   node,
   depth,
+  parentId: _parentId,
+  parentSlot: _parentSlot,
+  myIndex: _myIndex,
   inheritedWeight,
   weightMode,
   isSortChild,
@@ -5451,6 +5611,7 @@ const NodeCard = ({
   onUpdateVolWindow,
   onColorChange,
   onToggleCollapse,
+  onExpandAllBelow,
   onNumberedQuantifier,
   onNumberedN,
   onAddNumberedItem,
@@ -5466,6 +5627,7 @@ const NodeCard = ({
   onRemovePosition,
   onChoosePosition,
   clipboard,
+  copiedNodeId,
   callChains,
   onUpdateCallRef,
   onAddEntryCondition,
@@ -5484,6 +5646,7 @@ const NodeCard = ({
   const [weightThenOpen, setWeightThenOpen] = useState(false)
   const [weightElseOpen, setWeightElseOpen] = useState(false)
   const [colorOpen, setColorOpen] = useState(false)
+  const [expandedLadderRows, setExpandedLadderRows] = useState<Set<string>>(() => new Set())
 
   const lines = useMemo(() => buildLines(node), [node])
   const palette = useMemo(
@@ -5527,125 +5690,37 @@ const NodeCard = ({
     const autoShare = slotWeighting === 'equal' ? Number((100 / targetCount).toFixed(2)) : undefined
     if (childCount === 0) {
       const key = `${slot}-empty`
+      const indentWidth = depthPx * 1 + 14 + (slot === 'then' || slot === 'else' ? 14 : 0)
       return (
         <div className="slot-block" key={`${node.id}-${slot}`}>
-          <div className="line">
+          <div className="line insert-empty-line">
             <div
-              className="indent with-line"
-              style={{ width: depthPx * 1 + 14 + (slot === 'then' || slot === 'else' ? 14 : 0) }}
-            />
-            <div className="flex gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  setAddRowOpen((v) => (v === key ? null : key))
-                }}
-              >
-                + insert Node here
-              </Button>
-              {addRowOpen === key ? (
-                <div
-                  className="absolute top-full mt-1 left-0 flex flex-col bg-surface border border-border rounded-lg shadow-lg z-10 min-w-[180px]"
+              className="indent with-line insert-line-anchor"
+              style={{ width: indentWidth }}
+            >
+              <div className="insert-empty-container" style={{ left: indentWidth }}>
+                <button
+                  className="insert-btn"
                   onClick={(e) => {
                     e.stopPropagation()
+                    setAddRowOpen((v) => (v === key ? null : key))
                   }}
+                  title="Insert node"
                 >
-                  <Button
-                    variant="ghost"
-                    className="justify-start rounded-none first:rounded-t-lg"
-                    onClick={() => {
-                      onAdd(node.id, slot, 0, 'basic')
-                      setAddRowOpen(null)
-                    }}
-                  >
-                    Add Basic
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    className="justify-start rounded-none"
-                    onClick={() => {
-                      onAdd(node.id, slot, 0, 'function')
-                      setAddRowOpen(null)
-                    }}
-                  >
-                    Add Sort
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    className="justify-start rounded-none"
-                    onClick={() => {
-                      onAdd(node.id, slot, 0, 'indicator')
-                      setAddRowOpen(null)
-                    }}
-                  >
-                    Add Indicator
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    className="justify-start rounded-none"
-                    onClick={() => {
-                      onAdd(node.id, slot, 0, 'numbered')
-                      setAddRowOpen(null)
-                    }}
-                  >
-                    Add Numbered
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    className="justify-start rounded-none"
-                    onClick={() => {
-                      onAdd(node.id, slot, 0, 'position')
-                      setAddRowOpen(null)
-                    }}
-                  >
-                    Add Position
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    className="justify-start rounded-none"
-                    onClick={() => {
-                      onAdd(node.id, slot, 0, 'call')
-                      setAddRowOpen(null)
-                    }}
-                  >
-                    Add Call Reference
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    className="justify-start rounded-none"
-                    onClick={() => {
-                      onAdd(node.id, slot, 0, 'altExit')
-                      setAddRowOpen(null)
-                    }}
-                  >
-                    Add Alt Exit
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    className="justify-start rounded-none"
-                    onClick={() => {
-                      onAdd(node.id, slot, 0, 'scaling')
-                      setAddRowOpen(null)
-                    }}
-                  >
-                    Add Scaling
-                  </Button>
-                  {clipboard && (
-                    <Button
-                      variant="ghost"
-                      className="justify-start rounded-none"
-                      onClick={() => {
-                        onPaste(node.id, slot, 0, clipboard)
-                        setAddRowOpen(null)
-                      }}
-                    >
-                      Paste
-                    </Button>
-                  )}
-                </div>
-              ) : null}
+                  +
+                </button>
+                {addRowOpen === key && (
+                  <InsertMenu
+                    parentId={node.id}
+                    parentSlot={slot}
+                    index={0}
+                    onAdd={onAdd}
+                    onPaste={onPaste}
+                    clipboard={clipboard}
+                    onClose={() => setAddRowOpen(null)}
+                  />
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -5653,19 +5728,51 @@ const NodeCard = ({
     }
     return (
       <div className="slot-block" key={`${node.id}-${slot}`}>
-        {indexedChildren.map(({ c: child, i: originalIndex }, index) => (
+        {indexedChildren.map(({ c: child, i: originalIndex }, index) => {
+          // Fixed indent width so all cards align at the same horizontal position
+          const fixedIndentWidth = 15
+          const connectorWidth = 170
+          return (
           <div key={`${slot}-${originalIndex}`}>
-            <div className="line">
+            {/* Node card line with Insert Above button on the horizontal connector */}
+            <div className="line node-line">
+              <div className="connector-h-line" style={{ left: fixedIndentWidth, width: connectorWidth }} />
               <div
-                className="indent with-line"
-                style={{
-                  width: (depth + 1) * 14 + 8,
-                }}
-              />
+                className="indent with-line insert-line-anchor"
+                style={{ width: fixedIndentWidth }}
+              >
+                <div className="insert-above-container" style={{ left: fixedIndentWidth }}>
+                  <button
+                    className="insert-btn"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      const key = `${slot}-above-${originalIndex}`
+                      setAddRowOpen((v) => (v === key ? null : key))
+                    }}
+                    title="Insert node above"
+                  >
+                    +
+                  </button>
+                  {addRowOpen === `${slot}-above-${originalIndex}` && (
+                    <InsertMenu
+                      parentId={node.id}
+                      parentSlot={slot}
+                      index={originalIndex}
+                      onAdd={onAdd}
+                      onPaste={onPaste}
+                      clipboard={clipboard}
+                      onClose={() => setAddRowOpen(null)}
+                    />
+                  )}
+                </div>
+              </div>
               <div className="slot-body">
                 <NodeCard
                   node={child}
                   depth={depth + 1}
+                  parentId={node.id}
+                  parentSlot={slot}
+                  myIndex={originalIndex}
                     inheritedWeight={autoShare}
                     weightMode={slotWeighting}
                     isSortChild={node.kind === 'function' && slot === 'next'}
@@ -5684,6 +5791,7 @@ const NodeCard = ({
                     onUpdateVolWindow={onUpdateVolWindow}
                     onColorChange={onColorChange}
                     onToggleCollapse={onToggleCollapse}
+                    onExpandAllBelow={onExpandAllBelow}
                     onNumberedQuantifier={onNumberedQuantifier}
                     onNumberedN={onNumberedN}
                     onAddNumberedItem={onAddNumberedItem}
@@ -5699,6 +5807,7 @@ const NodeCard = ({
                     onRemovePosition={onRemovePosition}
                   onChoosePosition={onChoosePosition}
                   clipboard={clipboard}
+                  copiedNodeId={copiedNodeId}
                   callChains={callChains}
                   onUpdateCallRef={onUpdateCallRef}
                   onAddEntryCondition={onAddEntryCondition}
@@ -5716,113 +5825,43 @@ const NodeCard = ({
                 ) : null}
               </div>
             </div>
-            {!(node.kind === 'function' && slot === 'next' && index < indexedChildren.length - 1) ? (
-              <div className="line">
+            {/* Insert Below - only show after the last node in the slot */}
+            {index === indexedChildren.length - 1 && (
+              <div className="line insert-below-line">
+                <div className="connector-h-line" style={{ left: fixedIndentWidth, width: connectorWidth }} />
                 <div
-                  className="indent with-line"
-                  style={{
-                    width: (depth + 1) * 14 + 8,
-                  }}
-                />
-                <div className="add-row">
-                  <button
-                    className="add-more"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      const key = `${slot}-ins-${originalIndex}`
-                      setAddRowOpen((v) => (v === key ? null : key))
-                    }}
-                  >
-                    + insert Node here
-                  </button>
-                  {addRowOpen === `${slot}-ins-${originalIndex}` ? (
-                    <div
-                      className="menu"
+                  className="indent with-line insert-line-anchor"
+                  style={{ width: fixedIndentWidth }}
+                >
+                  <div className="insert-below-container" style={{ left: fixedIndentWidth }}>
+                    <button
+                      className="insert-btn"
                       onClick={(e) => {
                         e.stopPropagation()
+                        const key = `${slot}-below-${originalIndex}`
+                        setAddRowOpen((v) => (v === key ? null : key))
                       }}
+                      title="Insert node below"
                     >
-                      <button
-                        onClick={() => {
-                          onAdd(node.id, slot, originalIndex + 1, 'basic')
-                          setAddRowOpen(null)
-                        }}
-                      >
-                        Add Basic
-                      </button>
-                      <button
-                        onClick={() => {
-                          onAdd(node.id, slot, originalIndex + 1, 'function')
-                          setAddRowOpen(null)
-                        }}
-                      >
-                      Add Sort
-                      </button>
-                      <button
-                        onClick={() => {
-                          onAdd(node.id, slot, originalIndex + 1, 'indicator')
-                          setAddRowOpen(null)
-                        }}
-                      >
-                        Add Indicator
-                      </button>
-                      <button
-                        onClick={() => {
-                          onAdd(node.id, slot, originalIndex + 1, 'numbered')
-                          setAddRowOpen(null)
-                        }}
-                      >
-                        Add Numbered
-                      </button>
-                      <button
-                        onClick={() => {
-                          onAdd(node.id, slot, originalIndex + 1, 'position')
-                          setAddRowOpen(null)
-                        }}
-                      >
-                        Add Position
-                      </button>
-                      <button
-                        onClick={() => {
-                          onAdd(node.id, slot, originalIndex + 1, 'call')
-                          setAddRowOpen(null)
-                        }}
-                      >
-                        Add Call Reference
-                      </button>
-                      <button
-                        onClick={() => {
-                          onAdd(node.id, slot, originalIndex + 1, 'altExit')
-                          setAddRowOpen(null)
-                        }}
-                      >
-                        Add Alt Exit
-                      </button>
-                      <button
-                        onClick={() => {
-                          onAdd(node.id, slot, originalIndex + 1, 'scaling')
-                          setAddRowOpen(null)
-                        }}
-                      >
-                        Add Scaling
-                      </button>
-                      {clipboard && (
-                        <button
-                          onClick={() => {
-                            onPaste(node.id, slot, originalIndex + 1, clipboard)
-                            setAddRowOpen(null)
-                          }}
-                        >
-                          Paste
-                        </button>
-                      )}
-                    </div>
-                  ) : null}
+                      +
+                    </button>
+                    {addRowOpen === `${slot}-below-${originalIndex}` && (
+                      <InsertMenu
+                        parentId={node.id}
+                        parentSlot={slot}
+                        index={originalIndex + 1}
+                        onAdd={onAdd}
+                        onPaste={onPaste}
+                        clipboard={clipboard}
+                        onClose={() => setAddRowOpen(null)}
+                      />
+                    )}
+                  </div>
                 </div>
               </div>
-            ) : null}
+            )}
           </div>
-        ))}
+        )})}
       </div>
     )
   }
@@ -6189,9 +6228,101 @@ const NodeCard = ({
     <div
       id={`node-${node.id}`}
       className={`node-card${hasBacktestError ? ' backtest-error' : ''}${hasBacktestFocus ? ' backtest-focus' : ''}`}
-      style={{ marginLeft: depth * 18, background: node.bgColor || undefined }}
+      style={{ background: node.bgColor || undefined }}
     >
-      <div className="node-head">
+      <div className="node-head" onClick={() => onToggleCollapse(node.id, !collapsed)}>
+        {/* Action buttons - left aligned */}
+        <div className="flex items-center gap-1.5">
+          {/* Delete button - bold red X */}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-red-600 font-bold hover:text-red-700 hover:bg-red-100"
+            onClick={(e) => {
+              e.stopPropagation()
+              onDelete(node.id)
+            }}
+            title="Delete this node"
+          >
+            ✕
+          </Button>
+          {/* Collapse/Expand All descendants */}
+          {node.kind !== 'position' && node.kind !== 'call' && (() => {
+            // "All" is active only when this node AND all descendants are collapsed
+            const allCollapsed = collapsed && areAllDescendantsCollapsed(node)
+            return (
+              <Button
+                variant={allCollapsed ? 'accent' : 'ghost'}
+                size="sm"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onExpandAllBelow(node.id, allCollapsed)
+                }}
+                title={allCollapsed ? 'Expand this node and all descendants' : 'Collapse this node and all descendants'}
+              >
+                {allCollapsed ? '⊞' : '⊟'}
+              </Button>
+            )
+          })()}
+          {/* Copy button - filled when this node is copied */}
+          <Button
+            variant={copiedNodeId === node.id ? 'accent' : 'ghost'}
+            size="sm"
+            onClick={(e) => {
+              e.stopPropagation()
+              onCopy(node.id)
+            }}
+            title={copiedNodeId === node.id ? 'This node is copied' : 'Copy this node'}
+          >
+            ⧉
+          </Button>
+          {/* Color picker button - filled when color is set */}
+          <div className="relative">
+            <Button
+              variant={node.bgColor ? 'accent' : 'ghost'}
+              size="sm"
+              onClick={(e) => {
+                e.stopPropagation()
+                setColorOpen((v) => !v)
+              }}
+              title={node.bgColor ? 'Change color (color is set)' : 'Set color'}
+            >
+              ◐
+            </Button>
+            {colorOpen ? (
+              <div
+                className="absolute top-full mt-1 left-0 flex gap-1 p-2 bg-surface border border-border rounded-lg shadow-lg z-10"
+                onClick={(e) => {
+                  e.stopPropagation()
+                }}
+              >
+                {palette.map((c) => (
+                  <button
+                    key={c}
+                    className="w-6 h-6 rounded border border-border hover:scale-110 transition-transform"
+                    style={{ background: c }}
+                    onClick={() => {
+                      onColorChange(node.id, c)
+                      setColorOpen(false)
+                    }}
+                    aria-label={`Select color ${c}`}
+                  />
+                ))}
+                <button
+                  className="w-6 h-6 rounded border border-border hover:scale-110 transition-transform bg-surface text-muted flex items-center justify-center text-xs"
+                  onClick={() => {
+                    onColorChange(node.id, undefined)
+                    setColorOpen(false)
+                  }}
+                  aria-label="Reset color"
+                >
+                  ⨯
+                </button>
+              </div>
+            ) : null}
+          </div>
+        </div>
+        {/* Title and weight - after buttons */}
         {editing ? (
           <input
             className="title-input"
@@ -6264,81 +6395,6 @@ const NodeCard = ({
             )}
           </div>
         )}
-        <div className="flex items-center gap-1.5">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={(e) => {
-              e.stopPropagation()
-              onCopy(node.id)
-            }}
-          >
-            Copy
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={(e) => {
-              e.stopPropagation()
-              onToggleCollapse(node.id, !collapsed)
-            }}
-          >
-            {collapsed ? 'Expand' : 'Collapse'}
-          </Button>
-          <div className="relative">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={(e) => {
-                e.stopPropagation()
-                setColorOpen((v) => !v)
-              }}
-            >
-              Color
-            </Button>
-            {colorOpen ? (
-              <div
-                className="absolute top-full mt-1 right-0 flex gap-1 p-2 bg-surface border border-border rounded-lg shadow-lg z-10"
-                onClick={(e) => {
-                  e.stopPropagation()
-                }}
-              >
-                {palette.map((c) => (
-                  <button
-                    key={c}
-                    className="w-6 h-6 rounded border border-border hover:scale-110 transition-transform"
-                    style={{ background: c }}
-                    onClick={() => {
-                      onColorChange(node.id, c)
-                      setColorOpen(false)
-                    }}
-                    aria-label={`Select color ${c}`}
-                  />
-                ))}
-                <button
-                  className="w-6 h-6 rounded border border-border hover:scale-110 transition-transform bg-surface text-muted flex items-center justify-center text-xs"
-                  onClick={() => {
-                    onColorChange(node.id, undefined)
-                    setColorOpen(false)
-                  }}
-                  aria-label="Reset color"
-                >
-                  ⨯
-                </button>
-              </div>
-            ) : null}
-          </div>
-          <Button
-            variant="destructive"
-            size="sm"
-            onClick={(e) => {
-              e.stopPropagation()
-              onDelete(node.id)
-            }}
-          >
-            Delete
-          </Button>
-        </div>
       </div>
 
       {!collapsed && (
@@ -6613,11 +6669,13 @@ const NodeCard = ({
                       value={node.numbered?.quantifier ?? 'all'}
                       onChange={(e) => onNumberedQuantifier(node.id, e.target.value as NumberedQuantifier)}
                     >
+                      <option value="any">Any</option>
                       <option value="all">All</option>
                       <option value="none">None</option>
                       <option value="exactly">Exactly</option>
                       <option value="atLeast">At Least</option>
                       <option value="atMost">At Most</option>
+                      <option value="ladder">Ladder</option>
                     </Select>{' '}
                     {node.numbered?.quantifier === 'exactly' ||
                     node.numbered?.quantifier === 'atLeast' ||
@@ -6635,7 +6693,106 @@ const NodeCard = ({
                   </Badge>
                 </div>
 
-                {(node.numbered?.items ?? []).map((item, idx) => (
+                {node.numbered?.quantifier === 'ladder' ? (
+                  <>
+                    {/* Ladder mode: full condition editing (same as original) */}
+                    {(node.numbered?.items ?? []).map((item, idx) => (
+                      <div key={item.id}>
+                        <div className="flex items-center gap-2">
+                          <div className="indent with-line" style={{ width: 14 }} />
+                          <div className="text-sm font-extrabold">Indicator</div>
+                        </div>
+                        <div className="line condition-block">
+                          <div className="indent with-line" style={{ width: 2 * 14 }} />
+                          <div className="condition-bubble">
+                            {item.conditions.map((cond, condIdx) =>
+                              renderConditionRow(node.id, cond, condIdx, item.conditions.length, item.id, idx > 0),
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className="indent with-line" style={{ width: 2 * 14 }} />
+                          <div className="flex gap-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                onAddCondition(node.id, 'and', item.id)
+                              }}
+                            >
+                              And If
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                onAddCondition(node.id, 'or', item.id)
+                              }}
+                            >
+                              Or If
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+
+                    <div className="flex items-center gap-2">
+                      <div className="indent with-line" style={{ width: 14 }} />
+                      <div className="flex gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            onAddNumberedItem(node.id)
+                          }}
+                        >
+                          Add Indicator
+                        </Button>
+                      </div>
+                    </div>
+
+                    {/* Ladder rows: All (N), N-1, ..., None */}
+                    {(() => {
+                      const totalConds = (node.numbered?.items ?? []).length
+                      const rows = []
+                      for (let i = totalConds; i >= 0; i--) {
+                        const slotKey = `ladder-${i}` as SlotId
+                        const label = getLadderSlotLabel(i, totalConds)
+                        const isExpanded = expandedLadderRows.has(slotKey)
+                        rows.push(
+                          <div key={slotKey}>
+                            <div
+                              className="flex items-center gap-2 cursor-pointer hover:bg-accent/50 rounded px-1 py-0.5"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setExpandedLadderRows((prev) => {
+                                  const next = new Set(prev)
+                                  if (next.has(slotKey)) {
+                                    next.delete(slotKey)
+                                  } else {
+                                    next.add(slotKey)
+                                  }
+                                  return next
+                                })
+                              }}
+                            >
+                              <div className="indent with-line" style={{ width: 14 }} />
+                              <span className="text-sm font-extrabold">{isExpanded ? '▼' : '▶'} {label}</span>
+                            </div>
+                            {isExpanded && renderSlot(slotKey, 2 * 14)}
+                          </div>,
+                        )
+                      }
+                      return rows
+                    })()}
+                  </>
+                ) : (
+                  <>
+                    {/* Original mode: full conditions + Then/Else */}
+                    {(node.numbered?.items ?? []).map((item, idx) => (
                   <div key={item.id}>
                     <div className="flex items-center gap-2">
                       <div className="indent with-line" style={{ width: 14 }} />
@@ -6791,7 +6948,9 @@ const NodeCard = ({
                     ) : null}
                   </div>
                 </div>
-                {renderSlot('else', 3 * 14)}
+                    {renderSlot('else', 3 * 14)}
+                  </>
+                )}
               </>
             ) : node.kind === 'altExit' ? (
               <>
@@ -7463,6 +7622,48 @@ const weightLabel = (mode: WeightMode) => {
   }
 }
 
+// Helper to abbreviate metric names for compact display
+const abbreviateMetric = (metric: string): string => {
+  const abbrevs: Record<string, string> = {
+    'Relative Strength Index': 'RSI',
+    'Simple Moving Average': 'SMA',
+    'Exponential Moving Average': 'EMA',
+    'Max Drawdown': 'MaxDD',
+    'Cumulative Return': 'Return',
+    'Standard Deviation': 'StdDev',
+    '13612W Momentum': 'Mom',
+  }
+  return abbrevs[metric] || metric.slice(0, 6)
+}
+
+// Helper to create compact condition summary for ladder mode
+const formatConditionSummary = (items: NumberedItem[]): string => {
+  const parts: string[] = []
+  for (const item of items) {
+    for (const cond of item.conditions) {
+      const ticker = cond.ticker || '?'
+      const metric = abbreviateMetric(cond.metric)
+      const window = cond.window || ''
+      const cmp = cond.comparator === 'gt' ? '>' : cond.comparator === 'lt' ? '<' : cond.comparator === 'gte' ? '≥' : '≤'
+      const threshold = typeof cond.threshold === 'number' ? (cond.threshold >= 1 ? cond.threshold.toFixed(0) : (cond.threshold * 100).toFixed(0) + '%') : cond.threshold
+      parts.push(`${ticker} ${metric}${window}${cmp}${threshold}`)
+    }
+  }
+  return parts.join(' · ')
+}
+
+// Count total conditions across all numbered items
+const countNumberedConditions = (items: NumberedItem[]): number => {
+  return items.reduce((sum, item) => sum + item.conditions.length, 0)
+}
+
+// Generate ladder slot labels for N conditions: "All (N)", "N-1 of N", ..., "None"
+const getLadderSlotLabel = (matchCount: number, totalConditions: number): string => {
+  if (matchCount === totalConditions) return `All (${totalConditions})`
+  if (matchCount === 0) return 'None'
+  return `${matchCount} of ${totalConditions}`
+}
+
 type BacktestMode = 'CC' | 'OO' | 'OC' | 'CO'
 
 type BacktestError = {
@@ -7824,6 +8025,31 @@ const normalizeChoice = (raw: PositionChoice): string => {
 
 const isEmptyChoice = (raw: PositionChoice) => normalizeChoice(raw) === 'Empty'
 
+// Check if ticker is a ratio (e.g., "JNK/XLP")
+const isRatioTicker = (ticker: string): boolean => {
+  const norm = normalizeChoice(ticker)
+  return norm.includes('/') && norm.split('/').length === 2
+}
+
+// Parse ratio ticker into component tickers
+const parseRatioTicker = (ticker: string): { numerator: string; denominator: string } | null => {
+  const norm = normalizeChoice(ticker)
+  const parts = norm.split('/')
+  if (parts.length !== 2) return null
+  const [numerator, denominator] = parts.map((p) => p.trim())
+  if (!numerator || !denominator) return null
+  return { numerator, denominator }
+}
+
+// Expand ticker to all component tickers needed for fetching
+// For "JNK/XLP" returns ["JNK", "XLP"], for "SPY" returns ["SPY"]
+const expandTickerComponents = (ticker: string): string[] => {
+  const ratio = parseRatioTicker(ticker)
+  if (ratio) return [ratio.numerator, ratio.denominator]
+  const norm = normalizeChoice(ticker)
+  return norm === 'Empty' ? [] : [norm]
+}
+
 type Allocation = Record<string, number>
 
 const allocEntries = (alloc: Allocation): Array<{ ticker: string; weight: number }> => {
@@ -7892,8 +8118,12 @@ const collectBacktestInputs = (root: FlowNode, callMap: Map<string, CallChain>):
   const addTicker = (t: PositionChoice, nodeId: string, field: string) => {
     const norm = normalizeChoice(t)
     if (norm === 'Empty') return
-    tickers.add(norm)
-    if (!tickerRefs.has(norm)) tickerRefs.set(norm, { nodeId, field })
+    // For ratio tickers like "JNK/XLP", add both components for fetching
+    const components = expandTickerComponents(norm)
+    for (const c of components) {
+      tickers.add(c)
+      if (!tickerRefs.has(c)) tickerRefs.set(c, { nodeId, field })
+    }
   }
 
   const addError = (nodeId: string, field: string, message: string) => errors.push({ nodeId, field, message })
@@ -8022,7 +8252,7 @@ const collectBacktestInputs = (root: FlowNode, callMap: Map<string, CallChain>):
       }
     }
 
-    for (const slot of SLOT_ORDER[node.kind]) {
+    for (const slot of getAllSlotsForNode(node)) {
       const arr = node.children[slot] || []
       for (const c of arr) if (c) walk(c, callStack)
     }
@@ -8058,7 +8288,7 @@ const collectPositionTickers = (root: FlowNode, callMap: Map<string, CallChain>)
       for (const p of node.positions || []) addTicker(p)
     }
 
-    for (const slot of SLOT_ORDER[node.kind]) {
+    for (const slot of getAllSlotsForNode(node)) {
       const arr = node.children[slot] || []
       for (const c of arr) if (c) walk(c, callStack)
     }
@@ -8073,6 +8303,8 @@ type PriceDB = {
   dates: UTCTimestamp[]
   open: Record<string, Array<number | null>>
   close: Record<string, Array<number | null>>
+  limitingTicker?: string // Ticker with fewest data points that limits the intersection
+  tickerCounts?: Record<string, number> // Data point count for each ticker
 }
 
 type IndicatorCache = {
@@ -8105,10 +8337,32 @@ const emptyCache = (): IndicatorCache => ({
 const getSeriesKey = (ticker: string) => normalizeChoice(ticker)
 
 // Cached version - avoids rebuilding array on every metricAt() call
+// Handles ratio tickers like "JNK/XLP" by computing numerator / denominator prices
 const getCachedCloseArray = (cache: IndicatorCache, db: PriceDB, ticker: string): number[] => {
   const t = getSeriesKey(ticker)
   const existing = cache.closeArrays.get(t)
   if (existing) return existing
+
+  // Check if this is a ratio ticker
+  const ratio = parseRatioTicker(t)
+  if (ratio) {
+    // Compute ratio prices from component tickers
+    const numClose = db.close[ratio.numerator] || []
+    const denClose = db.close[ratio.denominator] || []
+    const len = Math.max(numClose.length, denClose.length)
+    const arr = new Array(len).fill(NaN)
+    for (let i = 0; i < len; i++) {
+      const num = numClose[i]
+      const den = denClose[i]
+      if (num != null && den != null && den !== 0) {
+        arr[i] = num / den
+      }
+    }
+    cache.closeArrays.set(t, arr)
+    return arr
+  }
+
+  // Regular ticker
   const arr = (db.close[t] || []).map((v) => (v == null ? NaN : v))
   cache.closeArrays.set(t, arr)
   return arr
@@ -8250,26 +8504,89 @@ const rollingStdDev = (values: number[], period: number): Array<number | null> =
   return out
 }
 
+// Optimized rolling max drawdown - avoid O(n*period) by tracking window state
 const rollingMaxDrawdown = (values: number[], period: number): Array<number | null> => {
-  const out: Array<number | null> = new Array(values.length).fill(null)
-  for (let i = 0; i < values.length; i++) {
-    if (i < period - 1) continue
-    let peak = -Infinity
-    let maxDd = 0
-    for (let j = i - period + 1; j <= i; j++) {
-      const v = values[j]
-      if (Number.isNaN(v)) {
-        peak = -Infinity
-        maxDd = 0
-        continue
+  const n = values.length
+  const out: Array<number | null> = new Array(n).fill(null)
+  if (period <= 0 || n === 0) return out
+
+  // For small periods or short arrays, use simple approach
+  if (period <= 50 || n < period * 2) {
+    for (let i = period - 1; i < n; i++) {
+      let peak = -Infinity
+      let maxDd = 0
+      let valid = true
+      for (let j = i - period + 1; j <= i && valid; j++) {
+        const v = values[j]
+        if (Number.isNaN(v)) {
+          valid = false
+          break
+        }
+        if (v > peak) peak = v
+        if (peak > 0) {
+          const dd = v / peak - 1
+          if (dd < maxDd) maxDd = dd
+        }
       }
-      if (v > peak) peak = v
-      if (peak > 0) {
-        const dd = v / peak - 1
-        if (dd < maxDd) maxDd = dd
+      if (valid) out[i] = Math.abs(maxDd) // Return positive value
+    }
+    return out
+  }
+
+  // For larger periods, use incremental approach with periodic recalculation
+  // Recalculate from scratch every `period` steps to avoid drift
+  const recalcInterval = Math.max(period, 100)
+  let cachedPeak = -Infinity
+  let cachedMaxDd = 0
+  let lastRecalc = -1
+
+  for (let i = period - 1; i < n; i++) {
+    const windowStart = i - period + 1
+
+    // Check if window contains NaN (quick scan for recent values)
+    let hasNan = false
+    for (let j = Math.max(windowStart, lastRecalc + 1); j <= i; j++) {
+      if (Number.isNaN(values[j])) {
+        hasNan = true
+        break
       }
     }
-    out[i] = maxDd
+
+    if (hasNan || i - lastRecalc >= recalcInterval || lastRecalc < windowStart) {
+      // Full recalculation
+      let peak = -Infinity
+      let maxDd = 0
+      let valid = true
+      for (let j = windowStart; j <= i; j++) {
+        const v = values[j]
+        if (Number.isNaN(v)) {
+          valid = false
+          break
+        }
+        if (v > peak) peak = v
+        if (peak > 0) {
+          const dd = v / peak - 1
+          if (dd < maxDd) maxDd = dd
+        }
+      }
+      if (valid) {
+        out[i] = Math.abs(maxDd) // Return positive value
+        cachedPeak = peak
+        cachedMaxDd = maxDd
+        lastRecalc = i
+      }
+    } else {
+      // Incremental update: just check new value
+      const v = values[i]
+      if (!Number.isNaN(v)) {
+        if (v > cachedPeak) cachedPeak = v
+        if (cachedPeak > 0) {
+          const dd = v / cachedPeak - 1
+          if (dd < cachedMaxDd) cachedMaxDd = dd
+        }
+        out[i] = Math.abs(cachedMaxDd) // Return positive value
+      }
+    }
   }
   return out
 }
@@ -8712,16 +9029,31 @@ const evaluateNode = (ctx: EvalCtx, node: FlowNode, callStack: string[] = []): A
       const nTrue = itemTruth.filter(Boolean).length
       const q = node.numbered?.quantifier ?? 'all'
       const n = Math.max(0, Math.floor(Number(node.numbered?.n ?? 0)))
+
+      // Handle ladder mode: select ladder-N slot based on how many conditions are true
+      if (q === 'ladder') {
+        const slotKey = `ladder-${nTrue}` as SlotId
+        ctx.trace?.recordBranch(node.id, 'numbered', nTrue > 0)
+        const children = (node.children[slotKey] || []).filter((c): c is FlowNode => Boolean(c))
+        const childAllocs = children.map((c) => evaluateNode(ctx, c, callStack))
+        const weighted = weightChildren(ctx, node, slotKey, children, childAllocs)
+        const out: Allocation = {}
+        for (const w of weighted) mergeAlloc(out, w.alloc, w.share)
+        return normalizeAlloc(out)
+      }
+
       const ok =
-        q === 'all'
-          ? nTrue === items.length
-          : q === 'none'
-            ? nTrue === 0
-            : q === 'exactly'
-              ? nTrue === n
-              : q === 'atLeast'
-                ? nTrue >= n
-                : nTrue <= n
+        q === 'any'
+          ? nTrue >= 1
+          : q === 'all'
+            ? nTrue === items.length
+            : q === 'none'
+              ? nTrue === 0
+              : q === 'exactly'
+                ? nTrue === n
+                : q === 'atLeast'
+                  ? nTrue >= n
+                  : nTrue <= n
       ctx.trace?.recordBranch(node.id, 'numbered', ok)
       const slot: SlotId = ok ? 'then' : 'else'
       const children = (node.children[slot] || []).filter((c): c is FlowNode => Boolean(c))
@@ -9029,22 +9361,30 @@ const fetchOhlcSeries = async (ticker: string, limit: number): Promise<Array<{ t
 
 const buildPriceDb = (series: Array<{ ticker: string; bars: Array<{ time: UTCTimestamp; open: number; close: number }> }>): PriceDB => {
   const byTicker = new Map<string, Map<number, { open: number; close: number }>>()
+  const tickerCounts: Record<string, number> = {}
   let overlapStart = 0
   let overlapEnd = Number.POSITIVE_INFINITY
+  let limitingTicker: string | undefined
 
   for (const s of series) {
     const t = getSeriesKey(s.ticker)
     const map = new Map<number, { open: number; close: number }>()
     for (const b of s.bars) map.set(Number(b.time), { open: Number(b.open), close: Number(b.close) })
     byTicker.set(t, map)
+    tickerCounts[t] = s.bars.length
 
     const times = s.bars.map((b) => Number(b.time)).sort((a, b) => a - b)
     if (times.length === 0) continue
-    overlapStart = Math.max(overlapStart, times[0])
+
+    // Track which ticker is setting the overlap start (newest first date = limiting ticker)
+    if (times[0] > overlapStart) {
+      overlapStart = times[0]
+      limitingTicker = t
+    }
     overlapEnd = Math.min(overlapEnd, times[times.length - 1])
   }
 
-  if (!(overlapEnd >= overlapStart)) return { dates: [], open: {}, close: {} }
+  if (!(overlapEnd >= overlapStart)) return { dates: [], open: {}, close: {}, tickerCounts }
 
   let intersection: Set<number> | null = null
   for (const [, map] of byTicker) {
@@ -9069,7 +9409,7 @@ const buildPriceDb = (series: Array<{ ticker: string; bars: Array<{ time: UTCTim
     close[ticker] = dates.map((d) => (map.get(Number(d))?.close ?? null))
   }
 
-  return { dates, open, close }
+  return { dates, open, close, limitingTicker, tickerCounts }
 }
 
 const expandToNode = (node: FlowNode, targetId: string): { next: FlowNode; found: boolean } => {
@@ -9078,7 +9418,7 @@ const expandToNode = (node: FlowNode, targetId: string): { next: FlowNode; found
   }
   let found = false
   const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
-  for (const slot of SLOT_ORDER[node.kind]) {
+  for (const slot of getAllSlotsForNode(node)) {
     const arr = node.children[slot] ?? [null]
     children[slot] = arr.map((c) => {
       if (!c) return c
@@ -10003,6 +10343,8 @@ function App() {
   const [bots, setBots] = useState<BotSession[]>(() => [initialBot])
   const [activeBotId, setActiveBotId] = useState<string>(() => initialBot.id)
   const [clipboard, setClipboard] = useState<FlowNode | null>(null)
+  const [copiedNodeId, setCopiedNodeId] = useState<string | null>(null) // Track original node ID that was copied
+  const [isImporting, setIsImporting] = useState(false)
   const [tab, setTab] = useState<'Dashboard' | 'Community Nexus' | 'Analyze' | 'Build' | 'Help/Support' | 'Admin' | 'Databases'>('Build')
   const [dashboardSubtab, setDashboardSubtab] = useState<'Portfolio' | 'Partner Program'>('Portfolio')
   const [analyzeSubtab, setAnalyzeSubtab] = useState<'Systems' | 'Correlation Tool'>('Systems')
@@ -10470,7 +10812,7 @@ function App() {
 
   const handleAdd = useCallback(
     (parentId: string, slot: SlotId, index: number, kind: BlockKind) => {
-      const next = replaceSlot(current, parentId, slot, index, ensureSlots(createNode(kind)))
+      const next = insertAtSlot(current, parentId, slot, index, ensureSlots(createNode(kind)))
       push(next)
     },
     [current, push],
@@ -10500,11 +10842,13 @@ function App() {
           const nb = createBotSession('Algo Name Here')
           setActiveBotId(nb.id)
           setClipboard(null)
+          setCopiedNodeId(null)
           return [nb]
         }
         if (botId === activeBotId) {
           setActiveBotId(filtered[0].id)
           setClipboard(null)
+          setCopiedNodeId(null)
         }
         return filtered
       })
@@ -10529,6 +10873,7 @@ function App() {
       const found = findNode(current, id)
       if (!found) return
       setClipboard(cloneNode(found))
+      setCopiedNodeId(id) // Track the original node ID
     },
     [current],
   )
@@ -10536,7 +10881,7 @@ function App() {
   const handlePaste = useCallback(
     (parentId: string, slot: SlotId, index: number, child: FlowNode) => {
       // Use single-pass clone + normalize for better performance
-      const next = replaceSlot(current, parentId, slot, index, cloneAndNormalize(child))
+      const next = insertAtSlot(current, parentId, slot, index, cloneAndNormalize(child))
       push(next)
     },
     [current, push],
@@ -10719,6 +11064,18 @@ function App() {
       const allocationsAt: Allocation[] = Array.from({ length: db.dates.length }, () => ({}))
       const lookback = Math.max(0, Math.floor(Number(inputs.maxLookback || 0)))
       const startEvalIndex = decisionPrice === 'open' ? (lookback > 0 ? lookback + 1 : 0) : lookback
+
+      // Check if we have enough data for the lookback period
+      if (startEvalIndex >= db.dates.length) {
+        const limitingInfo = db.limitingTicker
+          ? ` ${db.limitingTicker} has only ${db.tickerCounts?.[db.limitingTicker] ?? 0} days of data and is limiting the overlap.`
+          : ''
+        throw new Error(
+          `Not enough historical data: strategy requires ${lookback} days of lookback, ` +
+            `but only ${db.dates.length} days of overlapping data available.${limitingInfo} ` +
+            `Need at least ${startEvalIndex + 1} days.`
+        )
+      }
 
       const callNodeCache = new Map<string, FlowNode>()
       const resolveCallNode = (id: string) => {
@@ -10948,6 +11305,7 @@ function App() {
     setBots((prev) => [...prev, bot])
     setActiveBotId(bot.id)
     setClipboard(null)
+    setCopiedNodeId(null)
   }
 
   const handleExport = useCallback(() => {
@@ -11603,13 +11961,32 @@ function App() {
     input.onchange = async () => {
       const file = input.files?.[0]
       if (!file) return
+
       try {
+        // Show loading state for large files
+        setIsImporting(true)
+        // Yield to let React render the loading state
+        await yieldToMain()
+
         const text = await file.text()
         const parsed = JSON.parse(text) as unknown
 
         // Detect import format (Atlas, Composer, QuantMage)
         const format = detectImportFormat(parsed)
         console.log(`[Import] Detected format: ${format}`)
+
+        // Apply format-specific file size limits
+        // Composer files are much larger due to verbose JSON structure (UUIDs, nested weights, etc.)
+        const MAX_COMPOSER_SIZE = 20 * 1024 * 1024 // 20MB for Composer
+        const MAX_OTHER_SIZE = 1 * 1024 * 1024 // 1MB for Atlas/QuantMage
+        const maxSize = format === 'composer' ? MAX_COMPOSER_SIZE : MAX_OTHER_SIZE
+        const maxSizeLabel = format === 'composer' ? '20MB' : '1MB'
+
+        if (file.size > maxSize) {
+          setIsImporting(false)
+          alert(`File too large (${(file.size / 1024 / 1024).toFixed(2)}MB). Maximum allowed size for ${format} format is ${maxSizeLabel}.`)
+          return
+        }
 
         let root0: FlowNode
 
@@ -11618,9 +11995,25 @@ function App() {
           root0 = parseComposerSymphony(parsed as Record<string, unknown>)
           console.log('[Import] Parsed Composer Symphony:', root0)
         } else if (format === 'quantmage') {
-          // Parse QuantMage strategy format
-          root0 = parseQuantMageStrategy(parsed as Record<string, unknown>)
-          console.log('[Import] Parsed QuantMage Strategy:', root0)
+          // Use Web Worker for large QuantMage files to prevent UI freeze
+          const workerResult = await new Promise<FlowNode>((resolve, reject) => {
+            const worker = new Worker(new URL('./importWorker.ts', import.meta.url), { type: 'module' })
+            worker.onmessage = (e) => {
+              worker.terminate()
+              if (e.data.type === 'success') {
+                resolve(e.data.result as FlowNode)
+              } else {
+                reject(new Error(e.data.error || 'Worker parsing failed'))
+              }
+            }
+            worker.onerror = (err) => {
+              worker.terminate()
+              reject(err)
+            }
+            worker.postMessage({ type: 'parse', data: parsed, format: 'quantmage', filename: file.name })
+          })
+          root0 = workerResult
+          console.log('[Import] Parsed QuantMage Strategy via Worker:', root0)
         } else if (format === 'atlas') {
           // Atlas native format - use existing extraction logic
           const isFlowNodeLike = (v: unknown): v is FlowNode => {
@@ -11643,22 +12036,40 @@ function App() {
           }
           root0 = extractRoot(parsed)
         } else {
+          setIsImporting(false)
           alert('Unknown import format. Please use Atlas, Composer, or QuantMage JSON files.')
           return
         }
 
-        const inferredTitle = file.name.replace(/\.json$/i, '').replace(/_/g, ' ').trim()
-        const hasTitle = Boolean(root0.title?.trim())
-        const shouldInfer = !hasTitle || (root0.title.trim() === 'Algo Name Here' && inferredTitle && inferredTitle !== 'Algo Name Here')
-        const root1 = shouldInfer ? { ...root0, title: inferredTitle || 'Imported System' } : root0
-        // Use single-pass normalization for better performance
-        const ensured = normalizeForImport(root1)
+        // For non-worker imports, still need to normalize
+        let ensured: FlowNode
+        if (format === 'quantmage') {
+          // Worker already normalized
+          ensured = root0
+        } else {
+          const inferredTitle = file.name.replace(/\.json$/i, '').replace(/_/g, ' ').trim()
+          const hasTitle = Boolean(root0.title?.trim())
+          const shouldInfer = !hasTitle || (root0.title.trim() === 'Algo Name Here' && inferredTitle && inferredTitle !== 'Algo Name Here')
+          const root1 = shouldInfer ? { ...root0, title: inferredTitle || 'Imported System' } : root0
+          ensured = normalizeForImport(root1)
+        }
+
+        // Add imported tree to history (preserving previous state for undo)
         setBots((prev) =>
-          prev.map((b) => (b.id === activeBot.id ? { ...b, history: [ensured], historyIndex: 0 } : b)),
+          prev.map((b) => {
+            if (b.id !== activeBot.id) return b
+            // Truncate any redo history and append the imported tree
+            const newHistory = [...b.history.slice(0, b.historyIndex + 1), ensured]
+            return { ...b, history: newHistory, historyIndex: newHistory.length - 1 }
+          }),
         )
         setClipboard(null)
+        setCopiedNodeId(null)
+        setBacktestResult(null) // Clear previous backtest results when importing new algo
+        setIsImporting(false)
         console.log(`[Import] Successfully imported ${format} format as: ${ensured.title}`)
       } catch (err) {
+        setIsImporting(false)
         console.error('[Import] Error:', err)
         alert('Failed to Import due to an error in the JSON')
       }
@@ -11902,6 +12313,16 @@ function App() {
 
   return (
     <div className={cn('app h-screen flex flex-col bg-bg text-text font-sans', `theme-${colorTheme}`, theme === 'dark' && 'theme-dark dark')}>
+      {/* Import loading overlay */}
+      {isImporting && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center">
+          <div className="bg-surface rounded-lg p-6 shadow-xl flex flex-col items-center gap-3">
+            <div className="w-8 h-8 border-4 border-accent-border border-t-transparent rounded-full animate-spin" />
+            <div className="text-lg font-medium">Importing large file...</div>
+            <div className="text-sm text-muted">This may take a few seconds</div>
+          </div>
+        </div>
+      )}
       <header className="flex items-center justify-between px-4 py-3.5 border-b border-border bg-surface shrink-0 z-10">
         <div>
           <div className="text-xs tracking-widest uppercase text-muted mb-1">System</div>
@@ -11992,7 +12413,9 @@ function App() {
                 ) : null}
               </div>
               <Button onClick={() => setTab('Analyze')}>Open</Button>
-              <Button onClick={handleImport}>Import</Button>
+              <Button onClick={handleImport} disabled={isImporting}>
+                {isImporting ? 'Importing...' : 'Import'}
+              </Button>
               <Button onClick={handleExport}>Export</Button>
             </div>
           )}
@@ -12191,9 +12614,12 @@ function App() {
                               <NodeCard
                                 node={c.root}
                                 depth={0}
+                                parentId={null}
+                                parentSlot={null}
+                                myIndex={0}
                                 tickerOptions={tickerOptions}
                                 onAdd={(parentId, slot, index, kind) => {
-                                  const next = replaceSlot(c.root, parentId, slot, index, ensureSlots(createNode(kind)))
+                                  const next = insertAtSlot(c.root, parentId, slot, index, ensureSlots(createNode(kind)))
                                   pushCallChain(c.id, next)
                                 }}
                                 onAppend={(parentId, slot) => {
@@ -12215,7 +12641,7 @@ function App() {
                                 }}
                                 onPaste={(parentId, slot, index, child) => {
                                   // Use single-pass clone + normalize for better performance
-                                  const next = replaceSlot(c.root, parentId, slot, index, cloneAndNormalize(child))
+                                  const next = insertAtSlot(c.root, parentId, slot, index, cloneAndNormalize(child))
                                   pushCallChain(c.id, next)
                                 }}
                                 onRename={(id, title) => {
@@ -12299,6 +12725,7 @@ function App() {
                                   pushCallChain(c.id, next)
                                 }}
                                 clipboard={clipboard}
+                                copiedNodeId={copiedNodeId}
                                 callChains={callChains}
                                 onUpdateCallRef={(id, callId) => {
                                   const next = updateCallReference(c.root, id, callId)
@@ -12332,6 +12759,10 @@ function App() {
                                   const next = updateScalingFields(c.root, id, updates)
                                   pushCallChain(c.id, next)
                                 }}
+                                onExpandAllBelow={(id, currentlyCollapsed) => {
+                                  const next = setCollapsedBelow(c.root, id, !currentlyCollapsed)
+                                  pushCallChain(c.id, next)
+                                }}
                               />
                             </div>
                           ) : null}
@@ -12357,6 +12788,9 @@ function App() {
                   <NodeCard
                     node={current}
                     depth={0}
+                    parentId={null}
+                    parentSlot={null}
+                    myIndex={0}
                     errorNodeIds={backtestErrorNodeIds}
                     focusNodeId={backtestFocusNodeId}
                     tickerOptions={tickerOptions}
@@ -12390,6 +12824,7 @@ function App() {
                     onRemovePosition={handleRemovePos}
                     onChoosePosition={handleChoosePos}
                     clipboard={clipboard}
+                    copiedNodeId={copiedNodeId}
                     callChains={callChains}
                     onUpdateCallRef={handleUpdateCallRef}
                     onAddEntryCondition={handleAddEntryCondition}
@@ -12399,6 +12834,10 @@ function App() {
                     onUpdateEntryCondition={handleUpdateEntryCondition}
                     onUpdateExitCondition={handleUpdateExitCondition}
                     onUpdateScaling={handleUpdateScaling}
+                    onExpandAllBelow={(id, currentlyCollapsed) => {
+                      const next = setCollapsedBelow(current, id, !currentlyCollapsed)
+                      push(next)
+                    }}
                   />
                   </div>
                 </div>

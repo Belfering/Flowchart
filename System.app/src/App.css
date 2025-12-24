@@ -822,8 +822,19 @@ h1 {
 .node-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
+  gap: 8px;
   margin-bottom: 8px;
+  background: var(--color-surface-2);
+  border-radius: 10px;
+  padding: 6px 10px;
+  margin: -4px -6px 8px -6px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.node-head:hover {
+  background: var(--color-surface);
 }
 
 .node-title {
@@ -1030,6 +1041,21 @@ h1 {
 .slot-body {
   display: flex;
   align-items: center;
+  position: relative;
+  z-index: 2;
+  margin-left: 50px;
+}
+
+/* Vertical tree line on left side of slot-body, runs full height */
+.slot-body::before {
+  content: '';
+  position: absolute;
+  left: -57px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--color-border);
+  pointer-events: none;
 }
 
 .add-row {
@@ -1046,6 +1072,171 @@ h1 {
   border-radius: 10px;
   cursor: pointer;
   font-weight: 700;
+}
+
+/* Insert node buttons on tree lines */
+.node-line,
+.insert-below-line,
+.insert-empty-line {
+  position: relative;
+}
+
+/* Horizontal connector line - sits behind cards */
+.connector-h-line {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 1px;
+  background: var(--color-border);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.insert-below-line,
+.insert-empty-line {
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  position: relative;
+}
+
+/* The indent element that contains the button */
+.insert-line-anchor {
+  position: relative;
+}
+
+.insert-btn {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  border: 1px solid var(--color-accent);
+  background: var(--color-surface);
+  color: var(--color-accent);
+  font-size: 16px;
+  font-weight: 900;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.1s;
+  z-index: 15;
+  flex-shrink: 0;
+  padding: 0;
+  line-height: 1;
+}
+
+.insert-btn:hover {
+  background: var(--color-accent);
+  color: white;
+  border-color: var(--color-accent);
+  transform: scale(1.1);
+}
+
+.dark .insert-btn:hover {
+  color: #0f172a;
+}
+
+/* Insert Above - on the horizontal connector line, same row as node card */
+.insert-above-container {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 10;
+}
+
+/* Horizontal connector line going RIGHT from button to node */
+.insert-above-container .connector-right {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 1px;
+  background: var(--color-border);
+  pointer-events: none;
+  z-index: -10;
+}
+
+/* Horizontal connector line going LEFT from button to tree line */
+.insert-above-container .connector-left {
+  position: absolute;
+  right: 50%;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 1px;
+  background: var(--color-border);
+  pointer-events: none;
+  z-index: -10;
+}
+
+/* Insert Below / Empty - on vertical line below node */
+.insert-below-container,
+.insert-empty-container {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 10;
+}
+
+/* Horizontal connector line going RIGHT from insert below button */
+.insert-below-container .connector-right,
+.insert-empty-container .connector-right {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 1px;
+  background: var(--color-border);
+  pointer-events: none;
+  z-index: -10;
+}
+
+/* Horizontal connector line going LEFT from insert below button */
+.insert-below-container .connector-left,
+.insert-empty-container .connector-left {
+  position: absolute;
+  right: 50%;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 1px;
+  background: var(--color-border);
+  pointer-events: none;
+  z-index: -10;
+}
+
+/* Insert menu dropdown */
+.insert-menu {
+  position: absolute;
+  top: 0;
+  left: calc(100% + 4px);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  z-index: 100;
+  min-width: 150px;
+  padding: 4px 0;
+}
+
+.insert-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--color-text);
+  text-align: left;
+}
+
+.insert-menu button:hover {
+  background: var(--color-surface-2);
+}
+
+.dark .insert-menu {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
 }
 
 .capped-chip {
