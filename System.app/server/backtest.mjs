@@ -915,6 +915,7 @@ const SLOT_ORDER = {
   function: ['next'],
   indicator: ['then', 'else'],
   numbered: ['then', 'else'],
+  scaling: ['then', 'else'],
   position: [],
   call: [],
 }
@@ -1003,11 +1004,50 @@ const evaluateCondition = (ctx, cond) => {
   return cmp === 'gt' ? leftVal > rightVal : leftVal < rightVal
 }
 
+const normalizeConditionType = (t, fallback = 'and') => {
+  if (t === 'if' || t === 'and' || t === 'or') return t
+  return fallback
+}
+
 const evaluateConditions = (ctx, conditions, logic) => {
-  if (!conditions || conditions.length === 0) return true
-  const results = conditions.map((c) => evaluateCondition(ctx, c))
-  if (results.some((r) => r == null)) return null
-  return logic === 'or' ? results.some((r) => r === true) : results.every((r) => r === true)
+  if (!conditions || conditions.length === 0) return false
+
+  // Standard boolean precedence: AND binds tighter than OR.
+  // Example: `A or B and C` => `A || (B && C)`.
+  let currentAnd = null
+  const orTerms = []
+
+  for (const c of conditions) {
+    const v = evaluateCondition(ctx, c)
+    if (v == null) return null // null propagates
+    const t = normalizeConditionType(c.type, 'and')
+    if (t === 'if') {
+      if (currentAnd !== null) orTerms.push(currentAnd)
+      currentAnd = v
+      continue
+    }
+
+    if (currentAnd === null) {
+      currentAnd = v
+      continue
+    }
+
+    if (t === 'and') {
+      currentAnd = currentAnd && v
+      continue
+    }
+
+    if (t === 'or') {
+      orTerms.push(currentAnd)
+      currentAnd = v
+      continue
+    }
+
+    currentAnd = v
+  }
+
+  if (currentAnd !== null) orTerms.push(currentAnd)
+  return orTerms.some(Boolean)
 }
 
 // ============================================
@@ -1099,6 +1139,15 @@ const evaluateNode = (ctx, node) => {
       const t = normalizeChoice(p)
       alloc[t] = (alloc[t] || 0) + weight
     }
+
+    // DEBUG: Log which position node is hit on Dec 12
+    const dateStrPos = new Date(ctx.db.dates[ctx.indicatorIndex] * 1000).toISOString().slice(0, 10)
+    if (dateStrPos === '2025-12-12') {
+      const idParts = node.id?.split('-') || []
+      const counter = idParts.length >= 3 ? idParts[idParts.length - 2] : '?'
+      console.log(`[SERVER DEBUG] POSITION #${counter} hit: ${JSON.stringify(positions)}`)
+    }
+
     return alloc
   }
 
@@ -1107,6 +1156,40 @@ const evaluateNode = (ctx, node) => {
     const logic = node.conditionLogic || 'and'
     const result = evaluateConditions(ctx, conditions, logic)
     const branch = result === true ? 'then' : 'else'
+
+    // DEBUG: Log indicator evaluation for Medium Term Momentum on Dec 12
+    const dateStr = new Date(ctx.db.dates[ctx.indicatorIndex] * 1000).toISOString().slice(0, 10)
+    if (dateStr === '2025-12-12' && (node.title?.includes('Medium') || node.title?.includes('Momentum'))) {
+      console.log(`[SERVER DEBUG] INDICATOR "${node.title}" on ${dateStr}`)
+      console.log(`[SERVER DEBUG]   indicatorIndex=${ctx.indicatorIndex}, decisionIndex=${ctx.decisionIndex}`)
+      console.log(`[SERVER DEBUG]   conditions:`, JSON.stringify(conditions.map(c => ({
+        ticker: c.ticker,
+        metric: c.metric,
+        window: c.window,
+        comparator: c.comparator,
+        threshold: c.threshold,
+        expanded: c.expanded,
+        rightTicker: c.rightTicker,
+        rightMetric: c.rightMetric,
+        rightWindow: c.rightWindow
+      }))))
+      conditions.forEach((cond, i) => {
+        const leftTicker = normalizeChoice(cond.ticker)
+        const leftVal = metricAt(ctx, leftTicker, cond.metric, cond.window)
+        if (cond.expanded) {
+          const rightTicker = normalizeChoice(cond.rightTicker ?? cond.ticker)
+          const rightMetric = cond.rightMetric ?? cond.metric
+          const rightWindow = cond.rightWindow ?? cond.window
+          const rightVal = metricAt(ctx, rightTicker, rightMetric, rightWindow)
+          console.log(`[SERVER DEBUG]   cond[${i}]: ${leftVal?.toFixed(4)} ${cond.comparator} ${rightVal?.toFixed(4)} = ${cond.comparator === 'gt' ? leftVal > rightVal : leftVal < rightVal}`)
+        } else {
+          console.log(`[SERVER DEBUG]   cond[${i}]: ${leftVal?.toFixed(4)} ${cond.comparator} ${cond.threshold} = ${cond.comparator === 'gt' ? leftVal > cond.threshold : leftVal < cond.threshold}`)
+        }
+      })
+      console.log(`[SERVER DEBUG]   evaluateConditions result: ${result}`)
+      console.log(`[SERVER DEBUG]   branch: ${branch}`)
+    }
+
     const children = (node.children?.[branch] || []).filter(Boolean)
     return evaluateChildren(ctx, node, branch, children)
   }
@@ -1144,7 +1227,74 @@ const evaluateNode = (ctx, node) => {
 
   if (node.kind === 'basic') {
     const children = (node.children?.next || []).filter(Boolean)
-    return evaluateChildren(ctx, node, 'next', children)
+    const result = evaluateChildren(ctx, node, 'next', children)
+
+    // DEBUG: Log basic node result on Dec 12
+    const dateStrBasic = new Date(ctx.db.dates[ctx.indicatorIndex] * 1000).toISOString().slice(0, 10)
+    if (dateStrBasic === '2025-12-12' && node.title?.includes('GLD')) {
+      console.log(`[SERVER DEBUG] BASIC "${node.title}" result: ${JSON.stringify(result)}`)
+    }
+
+    return result
+  }
+
+  if (node.kind === 'scaling') {
+    // Scaling nodes blend between then/else based on an indicator value in a range
+    const scaleTicker = normalizeChoice(node.scaleTicker || 'SPY')
+    const scaleMetric = node.scaleMetric || 'Relative Strength Index'
+    const scaleWindow = node.scaleWindow || 14
+    const scaleFrom = Number(node.scaleFrom ?? 0)
+    const scaleTo = Number(node.scaleTo ?? 100)
+
+    const val = metricAt(ctx, scaleTicker, scaleMetric, scaleWindow)
+
+    // Calculate blend factor: 0 = all "then", 1 = all "else"
+    // If val is below scaleFrom, blend = 0 (100% then)
+    // If val is above scaleTo, blend = 1 (100% else)
+    // Otherwise, linear interpolation
+    let blend = 0
+    if (val != null && scaleFrom !== scaleTo) {
+      if (scaleFrom < scaleTo) {
+        // Normal range: scaleFrom < scaleTo (e.g., 70 to 90)
+        blend = Math.max(0, Math.min(1, (val - scaleFrom) / (scaleTo - scaleFrom)))
+      } else {
+        // Inverted range: scaleFrom > scaleTo (e.g., 20 to 10)
+        blend = Math.max(0, Math.min(1, (scaleFrom - val) / (scaleFrom - scaleTo)))
+      }
+    }
+
+    const thenChildren = (node.children?.then || []).filter(Boolean)
+    const elseChildren = (node.children?.else || []).filter(Boolean)
+
+    const thenAlloc = evaluateChildren(ctx, node, 'then', thenChildren)
+    const elseAlloc = evaluateChildren(ctx, node, 'else', elseChildren)
+
+    // DEBUG: Log scaling node on Dec 12
+    const dateStrScale = new Date(ctx.db.dates[ctx.indicatorIndex] * 1000).toISOString().slice(0, 10)
+    if (dateStrScale === '2025-12-12') {
+      console.log(`[SERVER DEBUG] SCALING "${node.title}" on ${dateStrScale}`)
+      console.log(`[SERVER DEBUG]   ${scaleWindow}d ${scaleMetric} of ${scaleTicker} = ${val?.toFixed(2)}`)
+      console.log(`[SERVER DEBUG]   range: ${scaleFrom} to ${scaleTo}`)
+      console.log(`[SERVER DEBUG]   blend = ${blend.toFixed(4)} (0=100%then, 1=100%else)`)
+      console.log(`[SERVER DEBUG]   thenAlloc: ${JSON.stringify(thenAlloc)}`)
+      console.log(`[SERVER DEBUG]   elseAlloc: ${JSON.stringify(elseAlloc)}`)
+    }
+
+    // Blend allocations: (1 - blend) * then + blend * else
+    const alloc = {}
+    for (const [ticker, weight] of Object.entries(thenAlloc)) {
+      alloc[ticker] = (alloc[ticker] || 0) + weight * (1 - blend)
+    }
+    for (const [ticker, weight] of Object.entries(elseAlloc)) {
+      alloc[ticker] = (alloc[ticker] || 0) + weight * blend
+    }
+
+    // DEBUG: Log result
+    if (dateStrScale === '2025-12-12') {
+      console.log(`[SERVER DEBUG]   result: ${JSON.stringify(alloc)}`)
+    }
+
+    return alloc
   }
 
   if (node.kind === 'numbered') {
@@ -1237,7 +1387,7 @@ const evaluateChildren = (ctx, node, slot, children) => {
       const tickers = Object.keys(alloc)
       if (tickers.length === 0) return null
       const avgVol = tickers.reduce((sum, t) => {
-        const closes = buildCloseArray(ctx.db, t)
+        const closes = getCachedCloseArray(ctx.cache, ctx.db, t)
         const rets = closes.map((v, idx) => {
           if (idx === 0) return NaN
           const prev = closes[idx - 1]
@@ -1587,6 +1737,12 @@ export async function runBacktest(payload, options = {}) {
       warnings: [],
     }
     allocationsAt[i] = evaluateNode(ctx, node)
+
+    // DEBUG: Check allocation stored for Dec 11 and Dec 12
+    const dateStrAlloc = new Date(db.dates[i] * 1000).toISOString().slice(0, 10)
+    if (dateStrAlloc === '2025-12-11' || dateStrAlloc === '2025-12-12') {
+      console.log(`[SERVER DEBUG] allocationsAt[${i}] for ${dateStrAlloc} = ${JSON.stringify(allocationsAt[i])}`)
+    }
   }
 
   // Calculate equity curve

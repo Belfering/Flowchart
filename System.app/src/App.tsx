@@ -216,6 +216,7 @@ type NumberedQuantifier = 'any' | 'all' | 'none' | 'exactly' | 'atLeast' | 'atMo
 type NumberedItem = {
   id: string
   conditions: ConditionLine[]
+  groupLogic?: 'and' | 'or'  // How conditions within this item combine (for AnyOf/AllOf imports)
 }
 
 // Dashboard types
@@ -6506,6 +6507,8 @@ const NodeCard = ({
             )}
           </div>
         )}
+        {/* Node ID badge - top right */}
+        <span className="node-id-badge">{shortNodeId(node.id)}</span>
       </div>
 
       {!collapsed && (
@@ -6847,6 +6850,12 @@ const NodeCard = ({
                         <div className="flex items-center gap-2">
                           <div className="indent with-line" style={{ width: 14 }} />
                           <div className="text-sm font-extrabold">Indicator</div>
+                          {item.groupLogic === 'or' && item.conditions.length > 1 && (
+                            <span className="text-xs text-muted-foreground italic">(any)</span>
+                          )}
+                          {item.groupLogic === 'and' && item.conditions.length > 1 && (
+                            <span className="text-xs text-muted-foreground italic">(all)</span>
+                          )}
                         </div>
                         <div className="line condition-block">
                           <div className="indent with-line" style={{ width: 2 * 14 }} />
@@ -6943,6 +6952,12 @@ const NodeCard = ({
                     <div className="flex items-center gap-2">
                       <div className="indent with-line" style={{ width: 14 }} />
                       <div className="text-sm font-extrabold">Indicator</div>
+                      {item.groupLogic === 'or' && item.conditions.length > 1 && (
+                        <span className="text-xs text-muted-foreground italic">(any)</span>
+                      )}
+                      {item.groupLogic === 'and' && item.conditions.length > 1 && (
+                        <span className="text-xs text-muted-foreground italic">(all)</span>
+                      )}
                     </div>
                     <div className="line condition-block">
                       <div className="indent with-line" style={{ width: 2 * 14 }} />
@@ -7878,6 +7893,7 @@ type BacktestDayRow = {
   turnover: number
   cost: number
   holdings: Array<{ ticker: string; weight: number }>
+  endNodes?: Array<{ nodeId: string; title: string; weight: number }>
 }
 
 type BacktestTraceSample = {
@@ -7958,6 +7974,23 @@ type TickerContributionState = {
 }
 
 const formatPct = (v: number) => (Number.isFinite(v) ? `${(v * 100).toFixed(2)}%` : '—')
+
+// Extract short node ID for display (e.g., "node-5" → "#5", "qm-1766627075188-151-epw4uzff" → "#151")
+const shortNodeId = (id: string): string => {
+  if (id.startsWith('node-')) {
+    return '#' + id.slice(5)
+  }
+  // Import IDs are like "qm-timestamp-counter-random", extract the counter (index 2)
+  const parts = id.split('-')
+  if (parts.length >= 3 && (parts[0] === 'qm' || parts[0] === 'qmc')) {
+    return '#' + parts[2]
+  }
+  // Fallback for other formats
+  if (parts.length >= 2) {
+    return '#' + parts[1]
+  }
+  return '#' + id.slice(0, 6)
+}
 
 const formatUsd = (v: number, options?: Intl.NumberFormatOptions) => {
   if (!Number.isFinite(v)) return '—'
@@ -9493,6 +9526,16 @@ const evalCondition = (ctx: EvalCtx, ownerId: string, traceOwnerId: string, cond
     const rightTicker = cond.rightTicker ?? cond.ticker
     const rightWindow = cond.rightWindow ?? cond.window
     const right = metricAt(ctx, rightTicker, rightMetric, rightWindow)
+
+    // DEBUG: Log SMA comparisons for Dec 12
+    const debugDate = isoFromUtcSeconds(ctx.db.dates[ctx.decisionIndex])
+    if (debugDate === '2025-12-12' && cond.metric === 'Simple Moving Average') {
+      console.log(`[DEBUG ${debugDate}] ${cond.window}d ${cond.metric} of ${cond.ticker} = ${left?.toFixed(4)}`)
+      console.log(`[DEBUG ${debugDate}] ${rightWindow}d ${rightMetric} of ${rightTicker} = ${right?.toFixed(4)}`)
+      console.log(`[DEBUG ${debugDate}] ${left?.toFixed(4)} ${cmp === 'lt' ? '<' : '>'} ${right?.toFixed(4)} = ${left != null && right != null ? (cmp === 'lt' ? left < right : left > right) : 'null'}`)
+      console.log(`[DEBUG ${debugDate}] indicatorIndex=${ctx.indicatorIndex}, decisionIndex=${ctx.decisionIndex}`)
+    }
+
     if (left == null || right == null) {
       ctx.warnings.push({
         time: ctx.db.dates[ctx.decisionIndex],
@@ -9514,6 +9557,12 @@ const evalCondition = (ctx: EvalCtx, ownerId: string, traceOwnerId: string, cond
     })
     return ok
   }
+  // DEBUG: Log RSI comparisons for Dec 12
+  const debugDate2 = isoFromUtcSeconds(ctx.db.dates[ctx.decisionIndex])
+  if (debugDate2 === '2025-12-12' && cond.metric === 'Relative Strength Index') {
+    console.log(`[DEBUG ${debugDate2}] ${cond.window}d RSI of ${cond.ticker} = ${left?.toFixed(2)} ${cmp === 'lt' ? '<' : '>'} ${cond.threshold} = ${left != null ? (cmp === 'lt' ? left < cond.threshold : left > cond.threshold) : 'null'}`)
+  }
+
   if (left == null) {
     ctx.warnings.push({
       time: ctx.db.dates[ctx.decisionIndex],
@@ -9669,6 +9718,15 @@ const evaluateNode = (ctx: EvalCtx, node: FlowNode, callStack: string[] = []): A
       const share = 1 / unique.length
       const alloc: Allocation = {}
       for (const t of unique) alloc[t] = (alloc[t] || 0) + share
+
+      // DEBUG: Log which position nodes are hit on Dec 11 and Dec 12
+      const debugDatePos = isoFromUtcSeconds(ctx.db.dates[ctx.decisionIndex])
+      const idPartsPos = node.id?.split('-') || []
+      const counterPos = idPartsPos.length >= 3 ? idPartsPos[idPartsPos.length - 2] : '?'
+      if (debugDatePos === '2025-12-11' || debugDatePos === '2025-12-12') {
+        console.log(`[DEBUG ${debugDatePos}] POSITION #${counterPos} hit: ${JSON.stringify(unique)}`)
+      }
+
       return alloc
     }
     case 'call': {
@@ -9705,6 +9763,19 @@ const evaluateNode = (ctx: EvalCtx, node: FlowNode, callStack: string[] = []): A
       const ok = evalConditions(ctx, node.id, node.conditions)
       ctx.trace?.recordBranch(node.id, 'indicator', ok)
       const slot: SlotId = ok ? 'then' : 'else'
+
+      // DEBUG: Log ALL indicator branch decisions for Dec 11 and Dec 12
+      const debugDateInd = isoFromUtcSeconds(ctx.db.dates[ctx.decisionIndex])
+      const idPartsInd = node.id?.split('-') || []
+      const counterInd = idPartsInd.length >= 3 ? idPartsInd[idPartsInd.length - 2] : '?'
+      if (debugDateInd === '2025-12-11' || debugDateInd === '2025-12-12') {
+        console.log(`[DEBUG ${debugDateInd}] INDICATOR #${counterInd} "${node.title}" → ${ok ? 'THEN' : 'ELSE'}`)
+        if (counterInd === '99' || counterInd === '198') {
+          // Extra detail for the momentum indicators
+          console.log(`[DEBUG ${debugDateInd}]   Conditions:`, JSON.stringify(node.conditions?.map(c => ({ metric: c.metric, window: c.window, ticker: c.ticker, comparator: c.comparator, threshold: c.threshold, expanded: c.expanded, rightTicker: c.rightTicker, rightWindow: c.rightWindow }))))
+        }
+      }
+
       const children = (node.children[slot] || []).filter((c): c is FlowNode => Boolean(c))
       const childAllocs = children.map((c) => evaluateNode(ctx, c, callStack))
       const weighted = weightChildren(ctx, node, slot, children, childAllocs)
@@ -9718,6 +9789,16 @@ const evaluateNode = (ctx: EvalCtx, node: FlowNode, callStack: string[] = []): A
       const nTrue = itemTruth.filter(Boolean).length
       const q = node.numbered?.quantifier ?? 'all'
       const n = Math.max(0, Math.floor(Number(node.numbered?.n ?? 0)))
+
+      // DEBUG: Log numbered node evaluation for Dec 11 and Dec 12
+      const debugDateNum = isoFromUtcSeconds(ctx.db.dates[ctx.decisionIndex])
+      if (debugDateNum === '2025-12-11' || debugDateNum === '2025-12-12') {
+        const okDebug = q === 'any' ? nTrue >= 1 : q === 'all' ? nTrue === items.length : q === 'none' ? nTrue === 0 : q === 'exactly' ? nTrue === n : q === 'atLeast' ? nTrue >= n : nTrue <= n
+        console.log(`[DEBUG ${debugDateNum}] NUMBERED "${node.title}" (${node.id})`)
+        console.log(`[DEBUG ${debugDateNum}]   quantifier: "${q}", n: ${n}`)
+        console.log(`[DEBUG ${debugDateNum}]   itemTruth: [${itemTruth.join(', ')}], nTrue: ${nTrue}`)
+        console.log(`[DEBUG ${debugDateNum}]   result: ${okDebug} → branch: ${okDebug ? 'then' : 'else'}`)
+      }
 
       // Handle ladder mode: select ladder-N slot based on how many conditions are true
       if (q === 'ladder') {
@@ -9874,6 +9955,208 @@ const evaluateNode = (ctx: EvalCtx, node: FlowNode, callStack: string[] = []): A
       for (const w of elseWeighted) mergeAlloc(out, w.alloc, w.share * elseWeight)
       return normalizeAlloc(out)
     }
+  }
+}
+
+// Trace which position nodes contributed to an allocation
+// Returns array of { nodeId, title, weight } for each contributing position node
+type PositionContribution = { nodeId: string; title: string; weight: number }
+
+const tracePositionContributions = (
+  ctx: EvalCtx,
+  node: FlowNode,
+  parentWeight: number = 1,
+  callStack: string[] = [],
+): PositionContribution[] => {
+  if (parentWeight < 0.0001) return []
+
+  switch (node.kind) {
+    case 'position': {
+      const tickers = (node.positions || []).map(normalizeChoice).filter((t) => t !== 'Empty')
+      if (tickers.length === 0) return []
+      return [{
+        nodeId: node.id,
+        title: node.title || tickers.join(', '),
+        weight: parentWeight,
+      }]
+    }
+    case 'call': {
+      const callId = node.callRefId
+      if (!callId || callStack.includes(callId)) return []
+      const resolved = ctx.resolveCall(callId)
+      if (!resolved) return []
+      return tracePositionContributions(ctx, resolved, parentWeight, [...callStack, callId])
+    }
+    case 'basic': {
+      const children = (node.children.next || []).filter((c): c is FlowNode => Boolean(c))
+      const childAllocs = children.map((c) => evaluateNode(ctx, c, callStack))
+      const weighted = weightChildren(ctx, node, 'next', children, childAllocs)
+      const result: PositionContribution[] = []
+      for (const w of weighted) {
+        const childIdx = children.indexOf(w.child)
+        if (childIdx >= 0) {
+          result.push(...tracePositionContributions(ctx, w.child, parentWeight * w.share, callStack))
+        }
+      }
+      return result
+    }
+    case 'indicator': {
+      const ok = evalConditions(ctx, node.id, node.conditions)
+      const slot: SlotId = ok ? 'then' : 'else'
+      const children = (node.children[slot] || []).filter((c): c is FlowNode => Boolean(c))
+      const childAllocs = children.map((c) => evaluateNode(ctx, c, callStack))
+      const weighted = weightChildren(ctx, node, slot, children, childAllocs)
+      const result: PositionContribution[] = []
+      for (const w of weighted) {
+        result.push(...tracePositionContributions(ctx, w.child, parentWeight * w.share, callStack))
+      }
+      return result
+    }
+    case 'numbered': {
+      const items = node.numbered?.items || []
+      const itemTruth = items.map((it) => evalConditions(ctx, node.id, it.conditions, `${node.id}:${it.id}`))
+      const nTrue = itemTruth.filter(Boolean).length
+      const q = node.numbered?.quantifier ?? 'all'
+      const n = Math.max(0, Math.floor(Number(node.numbered?.n ?? 0)))
+
+      let slot: SlotId
+      if (q === 'ladder') {
+        slot = `ladder-${nTrue}` as SlotId
+      } else {
+        const ok =
+          q === 'any' ? nTrue >= 1
+          : q === 'all' ? nTrue === items.length
+          : q === 'none' ? nTrue === 0
+          : q === 'exactly' ? nTrue === n
+          : q === 'atLeast' ? nTrue >= n
+          : nTrue <= n
+        slot = ok ? 'then' : 'else'
+      }
+
+      const children = (node.children[slot] || []).filter((c): c is FlowNode => Boolean(c))
+      const childAllocs = children.map((c) => evaluateNode(ctx, c, callStack))
+      const weighted = weightChildren(ctx, node, slot, children, childAllocs)
+      const result: PositionContribution[] = []
+      for (const w of weighted) {
+        result.push(...tracePositionContributions(ctx, w.child, parentWeight * w.share, callStack))
+      }
+      return result
+    }
+    case 'function': {
+      const children = (node.children.next || []).filter((c): c is FlowNode => Boolean(c))
+      const candidateAllocs = children.map((c) => evaluateNode(ctx, c, callStack))
+      const candidates = children
+        .map((child, idx) => ({ child, alloc: candidateAllocs[idx] }))
+        .filter((x) => Object.keys(x.alloc).length > 0)
+
+      const metric = node.metric ?? 'Relative Strength Index'
+      const win = isWindowlessIndicator(metric) ? 1 : Math.floor(Number(node.window ?? 10))
+      const pickN = Math.max(1, Math.floor(Number(node.bottom ?? 1)))
+      const rank = node.rank ?? 'Bottom'
+
+      const scored = candidates
+        .map((c) => {
+          const vals: number[] = []
+          for (const [t, w] of Object.entries(c.alloc)) {
+            if (!(w > 0)) continue
+            const mv = metricAt(ctx, t, metric, win)
+            if (mv == null) continue
+            vals.push(mv * w)
+          }
+          const score = vals.reduce((a, b) => a + b, 0)
+          return { ...c, score: Number.isFinite(score) ? score : null }
+        })
+        .filter((x) => x.score != null)
+
+      if (scored.length === 0) return []
+
+      scored.sort((a, b) => (a.score as number) - (b.score as number))
+      const selected = rank === 'Bottom' ? scored.slice(0, pickN) : scored.slice(-pickN)
+
+      const selChildren = selected.map((s) => s.child)
+      const selAllocs = selected.map((s) => s.alloc)
+      const weighted = weightChildren(ctx, node, 'next', selChildren, selAllocs)
+      const result: PositionContribution[] = []
+      for (const w of weighted) {
+        const origChild = selected.find((s) => s.child === w.child)?.child
+        if (origChild) {
+          result.push(...tracePositionContributions(ctx, origChild, parentWeight * w.share, callStack))
+        }
+      }
+      return result
+    }
+    case 'altExit': {
+      const entryOk = evalConditions(ctx, node.id, node.entryConditions, `${node.id}:entry`)
+      const exitOk = evalConditions(ctx, node.id, node.exitConditions, `${node.id}:exit`)
+      const prevState = ctx.trace?.getAltExitState(node.id) ?? null
+      let currentState: 'then' | 'else'
+      if (prevState === null) {
+        currentState = entryOk ? 'then' : 'else'
+      } else if (prevState === 'then') {
+        currentState = exitOk ? 'else' : 'then'
+      } else {
+        currentState = entryOk ? 'then' : 'else'
+      }
+      const slot: SlotId = currentState
+      const children = (node.children[slot] || []).filter((c): c is FlowNode => Boolean(c))
+      const childAllocs = children.map((c) => evaluateNode(ctx, c, callStack))
+      const weighted = weightChildren(ctx, node, slot, children, childAllocs)
+      const result: PositionContribution[] = []
+      for (const w of weighted) {
+        result.push(...tracePositionContributions(ctx, w.child, parentWeight * w.share, callStack))
+      }
+      return result
+    }
+    case 'scaling': {
+      const metric = node.scaleMetric ?? 'Relative Strength Index'
+      const win = Math.floor(Number(node.scaleWindow ?? 14))
+      const ticker = node.scaleTicker ?? 'SPY'
+      const fromVal = Number(node.scaleFrom ?? 30)
+      const toVal = Number(node.scaleTo ?? 70)
+      const currentVal = metricAt(ctx, ticker, metric, win)
+
+      let thenWeight: number
+      let elseWeight: number
+      if (currentVal == null) {
+        thenWeight = 0.5
+        elseWeight = 0.5
+      } else {
+        const isInverted = fromVal > toVal
+        const low = isInverted ? toVal : fromVal
+        const high = isInverted ? fromVal : toVal
+        if (currentVal <= low) {
+          thenWeight = isInverted ? 0 : 1
+          elseWeight = isInverted ? 1 : 0
+        } else if (currentVal >= high) {
+          thenWeight = isInverted ? 1 : 0
+          elseWeight = isInverted ? 0 : 1
+        } else {
+          const ratio = (currentVal - low) / (high - low)
+          elseWeight = isInverted ? (1 - ratio) : ratio
+          thenWeight = 1 - elseWeight
+        }
+      }
+
+      const result: PositionContribution[] = []
+      const thenChildren = (node.children.then || []).filter((c): c is FlowNode => Boolean(c))
+      const elseChildren = (node.children.else || []).filter((c): c is FlowNode => Boolean(c))
+
+      const thenAllocs = thenChildren.map((c) => evaluateNode(ctx, c, callStack))
+      const elseAllocs = elseChildren.map((c) => evaluateNode(ctx, c, callStack))
+
+      const thenWeighted = weightChildren(ctx, node, 'then', thenChildren, thenAllocs)
+      const elseWeighted = weightChildren(ctx, node, 'else', elseChildren, elseAllocs)
+
+      for (const w of thenWeighted) {
+        result.push(...tracePositionContributions(ctx, w.child, parentWeight * thenWeight * w.share, callStack))
+      }
+      for (const w of elseWeighted) {
+        result.push(...tracePositionContributions(ctx, w.child, parentWeight * elseWeight * w.share, callStack))
+      }
+      return result
+    }
+    default:
+      return []
   }
 }
 
@@ -10732,6 +11015,7 @@ function BacktesterPanel({
                 <div>Turnover</div>
                 <div>Cost</div>
                 <div>Holdings</div>
+                <div>End Nodes</div>
               </div>
               <div className="backtester-body-rows">
                 {rebalanceDays.slice(-400).reverse().map((d) => (
@@ -10747,6 +11031,16 @@ function BacktesterPanel({
                             .slice()
                             .sort((a, b) => b.weight - a.weight)
                             .map((h) => `${h.ticker} ${(h.weight * 100).toFixed(1)}%`)
+                            .join(', ')}
+                    </div>
+                    <div className="font-mono text-xs text-muted-foreground">
+                      {(d.endNodes || []).length === 0
+                        ? '—'
+                        : (d.endNodes || [])
+                            .slice()
+                            .sort((a, b) => b.weight - a.weight)
+                            .filter((n) => n.weight >= 0.001)
+                            .map((n) => `${shortNodeId(n.nodeId)} ${(n.weight * 100).toFixed(1)}%`)
                             .join(', ')}
                     </div>
                   </div>
@@ -11801,6 +12095,7 @@ function App() {
       }
 
       const allocationsAt: Allocation[] = Array.from({ length: db.dates.length }, () => ({}))
+      const contributionsAt: PositionContribution[][] = Array.from({ length: db.dates.length }, () => [])
       const lookback = Math.max(0, Math.floor(Number(inputs.maxLookback || 0)))
       const baseLookbackIndex = decisionPrice === 'open' ? (lookback > 0 ? lookback + 1 : 0) : lookback
       // Start evaluation at the later of: lookback requirement OR first valid position ticker date
@@ -11828,6 +12123,13 @@ function App() {
         return callNodeCache.get(id) ?? null
       }
 
+      // DEBUG: Log Dec 12 index to verify date handling
+      const dec12Ts = db.dates.findIndex(t => isoFromUtcSeconds(t) === '2025-12-12')
+      console.log(`[FRONTEND BACKTEST] Dec 12 index: ${dec12Ts}, total dates: ${db.dates.length}, startEvalIndex: ${startEvalIndex}`)
+      if (dec12Ts >= 0) {
+        console.log(`[FRONTEND BACKTEST] Dec 12 timestamp: ${db.dates[dec12Ts]}, date: ${isoFromUtcSeconds(db.dates[dec12Ts])}`)
+      }
+
       for (let i = startEvalIndex; i < db.dates.length; i++) {
         const indicatorIndex = decisionPrice === 'open' ? i - 1 : i
         const ctx: EvalCtx = {
@@ -11841,6 +12143,12 @@ function App() {
           trace,
         }
         allocationsAt[i] = evaluateNode(ctx, prepared)
+        contributionsAt[i] = tracePositionContributions(ctx, prepared)
+
+        // DEBUG: Log final allocation for Dec 11 and Dec 12
+        if (isoFromUtcSeconds(db.dates[i]) === '2025-12-11' || isoFromUtcSeconds(db.dates[i]) === '2025-12-12') {
+          console.log(`[FRONTEND BACKTEST] ${isoFromUtcSeconds(db.dates[i])} FINAL ALLOCATION at index ${i}:`, JSON.stringify(allocationsAt[i]))
+        }
       }
 
       const startTradeIndex = startEvalIndex
@@ -11923,8 +12231,10 @@ function App() {
         drawdownPoints.push({ time: db.dates[end], value: dd })
         returns.push(net)
 
+        // Show decision date (when you buy at close), matching QuantMage convention
+        // In CC mode: start is the decision day, end is when we measure the return
         allocations.push({
-          date: mdyFromUtcSeconds(db.dates[end]), // Show holding date in M/D/YYYY format, matching QuantMage
+          date: mdyFromUtcSeconds(db.dates[start]),
           entries: allocEntries(alloc),
         })
 
@@ -11997,6 +12307,7 @@ function App() {
           turnover,
           cost,
           holdings: allocEntries(alloc),
+          endNodes: contributionsAt[start] || [],
         })
       }
 
