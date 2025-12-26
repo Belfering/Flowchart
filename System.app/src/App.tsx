@@ -450,6 +450,7 @@ const loadWatchlistsFromApi = async (userId: UserId): Promise<Watchlist[]> => {
       id: wl.id,
       name: wl.name,
       botIds: (wl.bots || []).map(b => b.botId),
+      isDefault: wl.isDefault,
     }))
   } catch (err) {
     console.warn('[API] Failed to load watchlists from API:', err)
@@ -697,9 +698,13 @@ const defaultUiState = (): UserUiState => ({
 })
 
 const ensureDefaultWatchlist = (watchlists: Watchlist[]): Watchlist[] => {
-  const hasDefault = watchlists.some((w) => w.name === 'Default')
+  // Check for a watchlist marked as default (from database)
+  // or named "Default" or "My Watchlist" (legacy localStorage)
+  const hasDefault = watchlists.some((w) => w.isDefault || w.name === 'Default' || w.name === 'My Watchlist')
   if (hasDefault) return watchlists
-  return [{ id: `wl-${newKeyId()}`, name: 'Default', botIds: [] }, ...watchlists]
+  // No default found - this shouldn't happen with database (backend creates default on user creation)
+  // Only create a placeholder for offline/error cases
+  return [{ id: `wl-${newKeyId()}`, name: 'My Watchlist', botIds: [], isDefault: true }, ...watchlists]
 }
 
 const loadUserData = (userId: UserId): UserData => {
@@ -935,6 +940,7 @@ type Watchlist = {
   id: string
   name: string
   botIds: string[]
+  isDefault?: boolean
 }
 
 // Dashboard investment types
@@ -4755,18 +4761,24 @@ function AdminPanel({
 // DATABASES PANEL - View all database tables
 // ============================================
 type DatabasesSubtab = 'Users' | 'Systems' | 'Portfolios' | 'Cache' | 'Admin Config'
+type DbSortConfig = { col: string; dir: 'asc' | 'desc' }
 
 function DatabasesPanel({
   databasesTab,
   setDatabasesTab,
+  onOpenBot,
+  onExportBot,
 }: {
   databasesTab: DatabasesSubtab
   setDatabasesTab: (t: DatabasesSubtab) => void
+  onOpenBot?: (botId: string) => void
+  onExportBot?: (botId: string) => void
 }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [data, setData] = useState<Record<string, unknown>[] | null>(null)
   const [columns, setColumns] = useState<string[]>([])
+  const [sortConfig, setSortConfig] = useState<DbSortConfig>({ col: '', dir: 'desc' })
 
   const fetchTable = useCallback(async (table: string) => {
     setLoading(true)
@@ -4854,30 +4866,91 @@ function DatabasesPanel({
       {loading ? (
         <div className="text-muted text-center py-8">Loading...</div>
       ) : data && data.length > 0 ? (
-        <div className="border rounded-lg overflow-auto max-h-[calc(100vh-300px)]">
-          <table className="w-full text-sm">
-            <thead className="bg-muted sticky top-0">
-              <tr>
-                {columns.map((col) => (
-                  <th key={col} className="px-3 py-2 text-left font-semibold border-b whitespace-nowrap">
-                    {col}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {data.map((row, i) => (
-                <tr key={i} className="hover:bg-muted/50 border-b border-border/50">
-                  {columns.map((col) => (
-                    <td key={col} className="px-3 py-2 font-mono text-xs whitespace-nowrap max-w-[300px] overflow-hidden text-ellipsis">
-                      {formatValue(row[col])}
-                    </td>
+        (() => {
+          // Sort data if sort config is set
+          const sortedData = sortConfig.col
+            ? [...data].sort((a, b) => {
+                const aVal = a[sortConfig.col]
+                const bVal = b[sortConfig.col]
+                // Handle null/undefined
+                if (aVal == null && bVal == null) return 0
+                if (aVal == null) return sortConfig.dir === 'asc' ? -1 : 1
+                if (bVal == null) return sortConfig.dir === 'asc' ? 1 : -1
+                // Numeric comparison for stats columns
+                if (typeof aVal === 'number' && typeof bVal === 'number') {
+                  return sortConfig.dir === 'asc' ? aVal - bVal : bVal - aVal
+                }
+                // String comparison
+                const strA = String(aVal).toLowerCase()
+                const strB = String(bVal).toLowerCase()
+                return sortConfig.dir === 'asc' ? strA.localeCompare(strB) : strB.localeCompare(strA)
+              })
+            : data
+
+          const handleSort = (col: string) => {
+            if (sortConfig.col === col) {
+              setSortConfig({ col, dir: sortConfig.dir === 'asc' ? 'desc' : 'asc' })
+            } else {
+              setSortConfig({ col, dir: 'desc' })
+            }
+          }
+
+          // Add Actions column for Systems tab
+          const showActions = databasesTab === 'Systems' && (onOpenBot || onExportBot)
+          const displayColumns = showActions ? [...columns, 'Actions'] : columns
+
+          return (
+            <div className="border rounded-lg overflow-auto max-h-[calc(100vh-300px)]">
+              <table className="w-full text-sm">
+                <thead className="bg-muted sticky top-0">
+                  <tr>
+                    {displayColumns.map((col) => (
+                      <th
+                        key={col}
+                        className={`px-3 py-2 text-left font-semibold border-b whitespace-nowrap ${col !== 'Actions' ? 'cursor-pointer hover:bg-accent/20 select-none' : ''}`}
+                        onClick={() => col !== 'Actions' && handleSort(col)}
+                      >
+                        <div className="flex items-center gap-1">
+                          {col}
+                          {col !== 'Actions' && sortConfig.col === col && (
+                            <span className="text-accent">{sortConfig.dir === 'asc' ? '↑' : '↓'}</span>
+                          )}
+                        </div>
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortedData.map((row, i) => (
+                    <tr key={i} className="hover:bg-muted/50 border-b border-border/50">
+                      {columns.map((col) => (
+                        <td key={col} className="px-3 py-2 font-mono text-xs whitespace-nowrap max-w-[300px] overflow-hidden text-ellipsis">
+                          {formatValue(row[col])}
+                        </td>
+                      ))}
+                      {showActions && (
+                        <td className="px-3 py-2 whitespace-nowrap">
+                          <div className="flex gap-1">
+                            {onExportBot && (
+                              <Button size="sm" variant="outline" onClick={() => onExportBot(String(row['id']))}>
+                                Export
+                              </Button>
+                            )}
+                            {onOpenBot && (
+                              <Button size="sm" variant="outline" onClick={() => onOpenBot(String(row['id']))}>
+                                Open
+                              </Button>
+                            )}
+                          </div>
+                        </td>
+                      )}
+                    </tr>
                   ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                </tbody>
+              </table>
+            </div>
+          )
+        })()
       ) : data && data.length === 0 ? (
         <div className="text-muted text-center py-8">No records found</div>
       ) : null}
@@ -11358,8 +11431,16 @@ function App() {
     loadWatchlistsFromApi(userId).then(async (apiWatchlists) => {
       // Check localStorage for any watchlists that aren't in the API yet (migration)
       const localData = loadUserData(userId)
-      const apiWatchlistIds = new Set(apiWatchlists.map(w => w.id))
-      const localWatchlistsNotInApi = localData.watchlists.filter(w => !apiWatchlistIds.has(w.id))
+      const apiWatchlistNames = new Set(apiWatchlists.map(w => w.name.toLowerCase()))
+      // Skip migration for default watchlists (they're auto-created by backend)
+      // Compare by NAME not ID, since localStorage IDs (wl-xxx) differ from API IDs (watchlist-xxx-default)
+      const localWatchlistsNotInApi = localData.watchlists.filter(w => {
+        const nameLower = w.name.toLowerCase()
+        // Skip default watchlist names - backend already provides these
+        if (nameLower === 'default' || nameLower === 'my watchlist') return false
+        // Skip if a watchlist with this name already exists in API
+        return !apiWatchlistNames.has(nameLower)
+      })
 
       if (localWatchlistsNotInApi.length > 0) {
         // Migrate localStorage watchlists that don't exist in API
@@ -11647,6 +11728,7 @@ function App() {
     { id: 'filter-0', mode: 'builder', comparison: 'greater', value: '' }
   ])
   const [communitySearchSort, setCommunitySearchSort] = useState<CommunitySort>({ key: 'oosCagr', dir: 'desc' })
+  const [atlasSort, setAtlasSort] = useState<CommunitySort>({ key: 'oosCagr', dir: 'desc' })
 
   // Dashboard state
   const [dashboardTimePeriod, setDashboardTimePeriod] = useState<DashboardTimePeriod>('1Y')
@@ -12716,6 +12798,46 @@ function App() {
     a.remove()
     URL.revokeObjectURL(url)
   }, [current])
+
+  // Export a specific bot by ID (for admin panel)
+  const handleExportBot = useCallback(async (botId: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/bots/${botId}?userId=${userId}`)
+      if (!res.ok) throw new Error('Failed to fetch bot')
+      const { bot } = await res.json()
+      if (!bot) throw new Error('Bot not found')
+      const json = JSON.stringify(bot, null, 2)
+      const blob = new Blob([json], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${(bot.name || 'bot').replace(/\s+/g, '_')}.json`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      console.error('Export failed:', e)
+      alert('Failed to export bot: ' + String((e as Error)?.message || e))
+    }
+  }, [userId])
+
+  // Open a specific bot by ID in the Model tab
+  const handleOpenBot = useCallback(async (botId: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/bots/${botId}?userId=${userId}`)
+      if (!res.ok) throw new Error('Failed to fetch bot')
+      const { bot } = await res.json()
+      if (!bot || !bot.payload) throw new Error('Bot payload not available (IP protected)')
+      // Parse payload if it's a string
+      const payload = typeof bot.payload === 'string' ? JSON.parse(bot.payload) : bot.payload
+      setCurrent(payload)
+      setTab('Model')
+    } catch (e) {
+      console.error('Open failed:', e)
+      alert('Failed to open bot: ' + String((e as Error)?.message || e))
+    }
+  }, [userId])
 
   const resolveWatchlistId = useCallback(
     (watchlistNameOrId: string): string => {
@@ -14304,7 +14426,12 @@ function App() {
         ) : tab === 'Databases' ? (
           <Card className="h-full flex flex-col overflow-hidden m-4">
             <CardContent className="p-6 flex flex-col h-full overflow-auto">
-              <DatabasesPanel databasesTab={databasesTab} setDatabasesTab={setDatabasesTab} />
+              <DatabasesPanel
+                databasesTab={databasesTab}
+                setDatabasesTab={setDatabasesTab}
+                onOpenBot={userId === 'admin' ? handleOpenBot : undefined}
+                onExportBot={userId === 'admin' ? handleExportBot : undefined}
+              />
             </CardContent>
           </Card>
         ) : tab === 'Analyze' ? (
@@ -15424,36 +15551,9 @@ function App() {
                   <Card className="flex flex-col gap-4 p-4">
                     <Card className="flex-[2] flex flex-col p-4 border-2 overflow-auto">
                       <div className="font-bold mb-3">Atlas Sponsored Systems</div>
-                      {atlasBotRows.length === 0 ? (
-                        <div className="flex-1 flex items-center justify-center text-muted text-sm">
-                          No Atlas sponsored systems yet.
-                        </div>
-                      ) : (
-                        <div className="space-y-2">
-                          {atlasBotRows.map((row) => (
-                            <div
-                              key={row.id}
-                              className="p-3 bg-blue-500/10 rounded-lg border border-blue-500/30 hover:bg-blue-500/20 cursor-pointer transition-colors"
-                              onClick={() => {
-                                const bot = savedBots.find((b) => b.id === row.id)
-                                if (bot) {
-                                  setAddToWatchlistBotId(bot.id)
-                                }
-                              }}
-                            >
-                              <div className="flex items-center gap-2">
-                                <Badge className="bg-blue-500 text-white">Atlas</Badge>
-                                <span className="font-bold text-sm">{row.name}</span>
-                              </div>
-                              <div className="text-xs text-muted mt-1 flex gap-3">
-                                <span>CAGR: {(row.oosCagr * 100).toFixed(1)}%</span>
-                                <span>Sharpe: {row.oosSharpe.toFixed(2)}</span>
-                                <span>MaxDD: {(row.oosMaxdd * 100).toFixed(1)}%</span>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
+                      {renderBotCards(atlasBotRows, atlasSort, setAtlasSort, {
+                        emptyMessage: 'No Atlas sponsored systems yet.',
+                      })}
                     </Card>
                     <Card className="flex-1 flex flex-col p-3 border-2">
                       <div className="font-bold text-center mb-2">Search Nexus Strategies</div>

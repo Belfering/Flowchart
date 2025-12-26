@@ -7,9 +7,53 @@ import { eq, desc, and, or, isNull, like } from 'drizzle-orm'
 import crypto from 'crypto'
 import fs from 'fs'
 import bcrypt from 'bcrypt'
+import zlib from 'zlib'
+import { promisify } from 'util'
 
 // Bcrypt configuration
 const SALT_ROUNDS = 10
+
+// GZIP compression for large payloads (FRD-017)
+const gzip = promisify(zlib.gzip)
+const gunzip = promisify(zlib.gunzip)
+const COMPRESSION_THRESHOLD = 1024 * 1024 // 1MB
+const GZIP_PREFIX = 'GZIP:'
+
+/**
+ * Compress payload if it exceeds threshold
+ * @param {string|object} payload - Raw payload
+ * @returns {Promise<string>} - Compressed (GZIP:base64) or original string
+ */
+async function compressPayload(payload) {
+  const str = typeof payload === 'string' ? payload : JSON.stringify(payload)
+  if (str.length < COMPRESSION_THRESHOLD) return str
+  try {
+    const compressed = await gzip(Buffer.from(str))
+    const result = GZIP_PREFIX + compressed.toString('base64')
+    console.log(`[DB] Compressed payload: ${str.length} -> ${result.length} bytes (${((result.length/str.length)*100).toFixed(1)}%)`)
+    return result
+  } catch (e) {
+    console.error('[DB] Compression failed, storing uncompressed:', e)
+    return str
+  }
+}
+
+/**
+ * Decompress payload if it was compressed
+ * @param {string} stored - Stored payload (may be compressed)
+ * @returns {Promise<string>} - Decompressed JSON string
+ */
+async function decompressPayload(stored) {
+  if (!stored || !stored.startsWith(GZIP_PREFIX)) return stored
+  try {
+    const compressed = Buffer.from(stored.slice(GZIP_PREFIX.length), 'base64')
+    const decompressed = await gunzip(compressed)
+    return decompressed.toString()
+  } catch (e) {
+    console.error('[DB] Decompression failed:', e)
+    return stored
+  }
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -106,7 +150,8 @@ export function initializeDatabase() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       watchlist_id TEXT NOT NULL REFERENCES watchlists(id) ON DELETE CASCADE,
       bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
-      added_at INTEGER
+      added_at INTEGER,
+      UNIQUE(watchlist_id, bot_id)
     );
 
     CREATE TABLE IF NOT EXISTS portfolios (
@@ -174,6 +219,67 @@ export function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_equity_bot ON bot_equity_curves(bot_id, date);
     CREATE INDEX IF NOT EXISTS idx_call_chains_owner ON call_chains(owner_id);
   `)
+
+  // Clean up duplicate watchlist_bots entries (keep only the first entry)
+  const duplicates = sqlite.prepare(`
+    SELECT watchlist_id, bot_id, COUNT(*) as cnt, MIN(id) as keep_id
+    FROM watchlist_bots
+    GROUP BY watchlist_id, bot_id
+    HAVING COUNT(*) > 1
+  `).all()
+
+  if (duplicates.length > 0) {
+    console.log(`[DB] Found ${duplicates.length} duplicate watchlist_bots entries, cleaning up...`)
+    for (const dup of duplicates) {
+      sqlite.prepare(`
+        DELETE FROM watchlist_bots
+        WHERE watchlist_id = ? AND bot_id = ? AND id != ?
+      `).run(dup.watchlist_id, dup.bot_id, dup.keep_id)
+    }
+    console.log('[DB] Duplicate watchlist_bots entries cleaned up')
+  }
+
+  // Create unique index if it doesn't exist (prevents future duplicates)
+  try {
+    sqlite.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_watchlist_bots_unique ON watchlist_bots(watchlist_id, bot_id)')
+  } catch (e) {
+    // Index may already exist or duplicates remain - that's ok
+  }
+
+  // Clean up ALL non-default watchlists named "Default" - these are legacy migration artifacts
+  // Also clean up any extra "My Watchlist" that aren't marked as default
+  const allRedundantWatchlists = sqlite.prepare(`
+    SELECT w.id, w.owner_id, w.name
+    FROM watchlists w
+    WHERE w.is_default = 0
+      AND (w.name = 'Default' OR w.name = 'My Watchlist')
+  `).all()
+
+  if (allRedundantWatchlists.length > 0) {
+    console.log(`[DB] Found ${allRedundantWatchlists.length} redundant watchlists (non-default named "Default" or "My Watchlist"), cleaning up...`)
+    for (const wl of allRedundantWatchlists) {
+      // Get the actual default watchlist for this owner (create if missing)
+      let defaultWl = sqlite.prepare('SELECT id FROM watchlists WHERE owner_id = ? AND is_default = 1').get(wl.owner_id)
+      if (!defaultWl) {
+        // Create a proper default watchlist for this owner
+        const newId = `watchlist-${wl.owner_id}-default`
+        const now = Date.now()
+        sqlite.prepare('INSERT OR IGNORE INTO watchlists (id, owner_id, name, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)').run(newId, wl.owner_id, 'My Watchlist', 1, now, now)
+        defaultWl = { id: newId }
+        console.log(`[DB] Created missing default watchlist for owner: ${wl.owner_id}`)
+      }
+      // Move bots from redundant watchlist to default (ignore duplicates)
+      sqlite.prepare(`
+        INSERT OR IGNORE INTO watchlist_bots (watchlist_id, bot_id, added_at)
+        SELECT ?, bot_id, added_at FROM watchlist_bots WHERE watchlist_id = ?
+      `).run(defaultWl.id, wl.id)
+      // Delete bots from redundant watchlist
+      sqlite.prepare('DELETE FROM watchlist_bots WHERE watchlist_id = ?').run(wl.id)
+      // Delete the redundant watchlist
+      sqlite.prepare('DELETE FROM watchlists WHERE id = ?').run(wl.id)
+    }
+    console.log('[DB] Redundant watchlists merged and deleted')
+  }
 
   // Seed default admin config
   const existingConfig = sqlite.prepare('SELECT key FROM admin_config WHERE key = ?').get('atlas_fee_percent')
@@ -326,6 +432,11 @@ export async function getBotById(id, includePayload = false) {
   if (!includePayload) {
     return { ...result, payload: undefined }
   }
+
+  // Decompress payload if it was compressed (FRD-017)
+  if (result.payload) {
+    result.payload = await decompressPayload(result.payload)
+  }
   return result
 }
 
@@ -336,10 +447,12 @@ export async function getBotsByOwner(ownerId) {
     orderBy: desc(schema.bots.createdAt),
   })
 
-  // Manually fetch metrics for each bot
+  // Manually fetch metrics for each bot, decompress payloads (FRD-017)
   const botsWithMetrics = await Promise.all(bots.map(async (bot) => {
     const metricsRow = sqlite.prepare('SELECT * FROM bot_metrics WHERE bot_id = ?').get(bot.id)
-    return { ...bot, metrics: metricsRow || null }
+    // Decompress payload if compressed
+    const payload = bot.payload ? await decompressPayload(bot.payload) : bot.payload
+    return { ...bot, payload, metrics: metricsRow || null }
   }))
 
   return botsWithMetrics
@@ -425,11 +538,14 @@ export async function createBot(data) {
   const id = data.id || generateId()  // Use provided ID or generate new
   const now = new Date()
 
+  // Compress payload if >1MB (FRD-017)
+  const storedPayload = await compressPayload(data.payload)
+
   await db.insert(schema.bots).values({
     id,
     ownerId: data.ownerId,
     name: data.name,
-    payload: data.payload,
+    payload: storedPayload,
     visibility: data.visibility || 'private',
     tags: data.tags ? JSON.stringify(data.tags) : null,
     fundSlot: data.fundSlot,
@@ -449,7 +565,10 @@ export async function updateBot(id, ownerId, data) {
 
   const updateData = { updatedAt: new Date() }
   if (data.name !== undefined) updateData.name = data.name
-  if (data.payload !== undefined) updateData.payload = data.payload
+  if (data.payload !== undefined) {
+    // Compress payload if >1MB (FRD-017)
+    updateData.payload = await compressPayload(data.payload)
+  }
   if (data.visibility !== undefined) updateData.visibility = data.visibility
   if (data.tags !== undefined) updateData.tags = JSON.stringify(data.tags)
   if (data.fundSlot !== undefined) updateData.fundSlot = data.fundSlot
@@ -539,18 +658,12 @@ export async function getWatchlistsByOwner(ownerId) {
 }
 
 export async function addBotToWatchlist(watchlistId, botId) {
-  // Check if already exists
-  const existing = sqlite.prepare(
-    'SELECT id FROM watchlist_bots WHERE watchlist_id = ? AND bot_id = ?'
-  ).get(watchlistId, botId)
-  if (existing) return false
-
-  await db.insert(schema.watchlistBots).values({
-    watchlistId,
-    botId,
-    addedAt: new Date(),
-  })
-  return true
+  // Use INSERT OR IGNORE with unique constraint to prevent duplicates
+  const result = sqlite.prepare(`
+    INSERT OR IGNORE INTO watchlist_bots (watchlist_id, bot_id, added_at)
+    VALUES (?, ?, ?)
+  `).run(watchlistId, botId, Date.now())
+  return result.changes > 0
 }
 
 export async function removeBotFromWatchlist(watchlistId, botId) {

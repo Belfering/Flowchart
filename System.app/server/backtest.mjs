@@ -210,7 +210,7 @@ const rollingStdDev = (values, period) => {
     if (i >= period - 1 && missing === 0) {
       const mean = sum / period
       const variance = Math.max(0, sumSq / period - mean * mean)
-      out[i] = Math.sqrt(variance)
+      out[i] = Math.sqrt(variance) * 100 // Return as percentage (e.g., 2.5 = 2.5%)
     }
   }
   return out
@@ -575,7 +575,6 @@ const buildPriceDb = (series, dateIntersectionTickers = null) => {
         validCount++
       }
     }
-    console.log(`[buildPriceDb] ${t}: ${s.bars.length} bars, ${validCount} valid`)
     return { ticker: t, byTime }
   })
 
@@ -586,10 +585,7 @@ const buildPriceDb = (series, dateIntersectionTickers = null) => {
     ? barMaps.filter(m => intersectionSet.has(m.ticker))
     : barMaps
 
-  if (intersectionMaps.length === 0) {
-    // Fallback to all tickers if no intersection tickers found
-    console.log(`[buildPriceDb] No intersection tickers found, using all tickers`)
-  }
+  // Fallback to all tickers if no intersection tickers found
 
   const mapsForDates = intersectionMaps.length > 0 ? intersectionMaps : barMaps
   const datesByTicker = mapsForDates.map((m) => new Set(m.byTime.keys()))
@@ -598,16 +594,6 @@ const buildPriceDb = (series, dateIntersectionTickers = null) => {
     common = new Set([...common].filter((d) => datesByTicker[i].has(d)))
   }
   const dates = [...common].sort((a, b) => a - b)
-  const safeDate = (ts) => {
-    try {
-      const ms = Number(ts) * 1000
-      if (!Number.isFinite(ms)) return '1970-01-01'
-      return new Date(ms).toISOString()
-    } catch {
-      return '1970-01-01'
-    }
-  }
-  console.log(`[buildPriceDb] Common dates: ${dates.length}, first: ${safeDate(dates[0])}, last: ${safeDate(dates[dates.length - 1])}`)
 
   const open = {}
   const close = {}
@@ -988,10 +974,6 @@ const evaluateCondition = (ctx, cond) => {
     const threshold = Number(cond.threshold)
     if (!Number.isFinite(threshold)) return null
     const cmp = normalizeComparatorChoice(cond.comparator)
-    // Debug Max Drawdown specifically
-    if (cond.metric === 'Max Drawdown' && ctx.indicatorIndex < 5) {
-      console.log(`[MaxDD Debug] ${leftTicker} ${cond.window}d: value=${leftVal}, threshold=${threshold}, cmp=${cmp}, result=${cmp === 'gt' ? leftVal > threshold : leftVal < threshold}`)
-    }
     return cmp === 'gt' ? leftVal > threshold : leftVal < threshold
   }
 
@@ -1140,14 +1122,6 @@ const evaluateNode = (ctx, node) => {
       alloc[t] = (alloc[t] || 0) + weight
     }
 
-    // DEBUG: Log which position node is hit on Dec 12
-    const dateStrPos = new Date(ctx.db.dates[ctx.indicatorIndex] * 1000).toISOString().slice(0, 10)
-    if (dateStrPos === '2025-12-12') {
-      const idParts = node.id?.split('-') || []
-      const counter = idParts.length >= 3 ? idParts[idParts.length - 2] : '?'
-      console.log(`[SERVER DEBUG] POSITION #${counter} hit: ${JSON.stringify(positions)}`)
-    }
-
     return alloc
   }
 
@@ -1156,39 +1130,6 @@ const evaluateNode = (ctx, node) => {
     const logic = node.conditionLogic || 'and'
     const result = evaluateConditions(ctx, conditions, logic)
     const branch = result === true ? 'then' : 'else'
-
-    // DEBUG: Log indicator evaluation for Medium Term Momentum on Dec 12
-    const dateStr = new Date(ctx.db.dates[ctx.indicatorIndex] * 1000).toISOString().slice(0, 10)
-    if (dateStr === '2025-12-12' && (node.title?.includes('Medium') || node.title?.includes('Momentum'))) {
-      console.log(`[SERVER DEBUG] INDICATOR "${node.title}" on ${dateStr}`)
-      console.log(`[SERVER DEBUG]   indicatorIndex=${ctx.indicatorIndex}, decisionIndex=${ctx.decisionIndex}`)
-      console.log(`[SERVER DEBUG]   conditions:`, JSON.stringify(conditions.map(c => ({
-        ticker: c.ticker,
-        metric: c.metric,
-        window: c.window,
-        comparator: c.comparator,
-        threshold: c.threshold,
-        expanded: c.expanded,
-        rightTicker: c.rightTicker,
-        rightMetric: c.rightMetric,
-        rightWindow: c.rightWindow
-      }))))
-      conditions.forEach((cond, i) => {
-        const leftTicker = normalizeChoice(cond.ticker)
-        const leftVal = metricAt(ctx, leftTicker, cond.metric, cond.window)
-        if (cond.expanded) {
-          const rightTicker = normalizeChoice(cond.rightTicker ?? cond.ticker)
-          const rightMetric = cond.rightMetric ?? cond.metric
-          const rightWindow = cond.rightWindow ?? cond.window
-          const rightVal = metricAt(ctx, rightTicker, rightMetric, rightWindow)
-          console.log(`[SERVER DEBUG]   cond[${i}]: ${leftVal?.toFixed(4)} ${cond.comparator} ${rightVal?.toFixed(4)} = ${cond.comparator === 'gt' ? leftVal > rightVal : leftVal < rightVal}`)
-        } else {
-          console.log(`[SERVER DEBUG]   cond[${i}]: ${leftVal?.toFixed(4)} ${cond.comparator} ${cond.threshold} = ${cond.comparator === 'gt' ? leftVal > cond.threshold : leftVal < cond.threshold}`)
-        }
-      })
-      console.log(`[SERVER DEBUG]   evaluateConditions result: ${result}`)
-      console.log(`[SERVER DEBUG]   branch: ${branch}`)
-    }
 
     const children = (node.children?.[branch] || []).filter(Boolean)
     return evaluateChildren(ctx, node, branch, children)
@@ -1227,15 +1168,7 @@ const evaluateNode = (ctx, node) => {
 
   if (node.kind === 'basic') {
     const children = (node.children?.next || []).filter(Boolean)
-    const result = evaluateChildren(ctx, node, 'next', children)
-
-    // DEBUG: Log basic node result on Dec 12
-    const dateStrBasic = new Date(ctx.db.dates[ctx.indicatorIndex] * 1000).toISOString().slice(0, 10)
-    if (dateStrBasic === '2025-12-12' && node.title?.includes('GLD')) {
-      console.log(`[SERVER DEBUG] BASIC "${node.title}" result: ${JSON.stringify(result)}`)
-    }
-
-    return result
+    return evaluateChildren(ctx, node, 'next', children)
   }
 
   if (node.kind === 'scaling') {
@@ -1269,17 +1202,6 @@ const evaluateNode = (ctx, node) => {
     const thenAlloc = evaluateChildren(ctx, node, 'then', thenChildren)
     const elseAlloc = evaluateChildren(ctx, node, 'else', elseChildren)
 
-    // DEBUG: Log scaling node on Dec 12
-    const dateStrScale = new Date(ctx.db.dates[ctx.indicatorIndex] * 1000).toISOString().slice(0, 10)
-    if (dateStrScale === '2025-12-12') {
-      console.log(`[SERVER DEBUG] SCALING "${node.title}" on ${dateStrScale}`)
-      console.log(`[SERVER DEBUG]   ${scaleWindow}d ${scaleMetric} of ${scaleTicker} = ${val?.toFixed(2)}`)
-      console.log(`[SERVER DEBUG]   range: ${scaleFrom} to ${scaleTo}`)
-      console.log(`[SERVER DEBUG]   blend = ${blend.toFixed(4)} (0=100%then, 1=100%else)`)
-      console.log(`[SERVER DEBUG]   thenAlloc: ${JSON.stringify(thenAlloc)}`)
-      console.log(`[SERVER DEBUG]   elseAlloc: ${JSON.stringify(elseAlloc)}`)
-    }
-
     // Blend allocations: (1 - blend) * then + blend * else
     const alloc = {}
     for (const [ticker, weight] of Object.entries(thenAlloc)) {
@@ -1287,11 +1209,6 @@ const evaluateNode = (ctx, node) => {
     }
     for (const [ticker, weight] of Object.entries(elseAlloc)) {
       alloc[ticker] = (alloc[ticker] || 0) + weight * blend
-    }
-
-    // DEBUG: Log result
-    if (dateStrScale === '2025-12-12') {
-      console.log(`[SERVER DEBUG]   result: ${JSON.stringify(alloc)}`)
     }
 
     return alloc
@@ -1358,7 +1275,6 @@ const evaluateNode = (ctx, node) => {
                 ? nTrue >= n
                 : nTrue <= n // atMost
 
-    console.log(`[Numbered] nTrue=${nTrue}/${items.length}, quantifier=${q}, n=${n}, ok=${ok} → branch=${ok ? 'then' : 'else'}`)
     const branch = ok ? 'then' : 'else'
     const children = (node.children?.[branch] || []).filter(Boolean)
     return evaluateChildren(ctx, node, branch, children)
@@ -1665,9 +1581,6 @@ export async function runBacktest(payload, options = {}) {
     indicatorTickers.push('SPY')
   }
 
-  console.log(`[Backtest] All tickers: ${tickers.join(', ')}`)
-  console.log(`[Backtest] Indicator tickers (for date range): ${indicatorTickers.join(', ')}`)
-
   // Load price data
   const limit = 20000
   const loaded = await Promise.all(
@@ -1710,7 +1623,6 @@ export async function runBacktest(payload, options = {}) {
         break
       }
     }
-    console.log(`[Backtest] First valid position index: ${firstValidPosIndex} (${safeIsoDate(db.dates[firstValidPosIndex])})`)
   }
 
   // Run backtest
@@ -1737,12 +1649,6 @@ export async function runBacktest(payload, options = {}) {
       warnings: [],
     }
     allocationsAt[i] = evaluateNode(ctx, node)
-
-    // DEBUG: Check allocation stored for Dec 11 and Dec 12
-    const dateStrAlloc = new Date(db.dates[i] * 1000).toISOString().slice(0, 10)
-    if (dateStrAlloc === '2025-12-11' || dateStrAlloc === '2025-12-12') {
-      console.log(`[SERVER DEBUG] allocationsAt[${i}] for ${dateStrAlloc} = ${JSON.stringify(allocationsAt[i])}`)
-    }
   }
 
   // Calculate equity curve

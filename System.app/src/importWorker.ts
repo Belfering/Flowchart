@@ -135,7 +135,7 @@ const parseCondition = (
       forDays: forDays > 1 ? forDays : undefined, // Only store if > 1
     }
 
-    if (type === 'IndicatorAndIndicator' && rhIndicator) {
+    if ((type === 'IndicatorAndIndicator' || type === 'BothIndicators') && rhIndicator) {
       base.expanded = true
       base.rightTicker = (cond.rh_ticker_symbol as string) || 'SPY'
       base.rightMetric = mapIndicator(rhIndicator.type)
@@ -156,6 +156,26 @@ const parseCondition = (
           results.push(p)
         } else {
           results.push({ ...p, type: condType === 'AndCondition' ? 'and' : 'or' })
+        }
+      })
+    })
+
+    return results
+  }
+
+  // Handle AnyOf/AllOf - these are like OrCondition/AndCondition but with different naming
+  if (condType === 'AnyOf' || condType === 'AllOf') {
+    const conditions = (cond.conditions as Record<string, unknown>[]) || []
+    const results: ConditionLine[] = []
+
+    conditions.forEach((c, idx) => {
+      const parsed = parseCondition(c, idGen)
+      parsed.forEach((p, pIdx) => {
+        if (idx === 0 && pIdx === 0) {
+          results.push(p)
+        } else {
+          // AnyOf = OR logic, AllOf = AND logic
+          results.push({ ...p, type: condType === 'AnyOf' ? 'or' : 'and' })
         }
       })
     })
@@ -429,19 +449,66 @@ const parseIncantation = (
 
     if (isLadderPattern) {
       // Create a numbered node with ladder quantifier
-      const items: NumberedItem[] = conditions.map((cond, _idx) => ({
-        id: idGen.condId(),
-        conditions: cond ? parseCondition(cond, idGen) : [{
+      // Handle nested AnyOf/AllOf condition groups
+      const items: NumberedItem[] = conditions.map((cond) => {
+        if (!cond) {
+          return {
+            id: idGen.condId(),
+            conditions: [{
+              id: idGen.condId(),
+              type: 'if' as const,
+              metric: 'Relative Strength Index' as MetricChoice,
+              window: 14,
+              ticker: 'SPY' as PositionChoice,
+              comparator: 'gt' as ComparatorChoice,
+              threshold: 50,
+              expanded: false,
+            }],
+          }
+        }
+
+        const condType = (cond as Record<string, unknown>).condition_type as string
+
+        // Handle nested AnyOf/AllOf groups - these become single items with multiple conditions
+        if (condType === 'AnyOf' || condType === 'AllOf') {
+          const innerConditions = ((cond as Record<string, unknown>).conditions as Record<string, unknown>[]) || []
+          const parsedConditions: ConditionLine[] = []
+
+          innerConditions.forEach((c, idx) => {
+            const parsed = parseCondition(c, idGen)
+            parsed.forEach((p, pIdx) => {
+              if (idx === 0 && pIdx === 0) {
+                parsedConditions.push(p) // First stays 'if'
+              } else {
+                // For AnyOf: use 'or' to connect conditions
+                // For AllOf: use 'and' to connect conditions
+                parsedConditions.push({ ...p, type: condType === 'AnyOf' ? 'or' : 'and' })
+              }
+            })
+          })
+
+          return {
+            id: idGen.condId(),
+            conditions: parsedConditions.length > 0 ? parsedConditions : [{
+              id: idGen.condId(),
+              type: 'if' as const,
+              metric: 'Relative Strength Index' as MetricChoice,
+              window: 14,
+              ticker: 'SPY' as PositionChoice,
+              comparator: 'gt' as ComparatorChoice,
+              threshold: 50,
+              expanded: false,
+            }],
+            groupLogic: condType === 'AnyOf' ? 'or' : 'and',
+          } as NumberedItem
+        }
+
+        // Regular single condition (SingleCondition, AndCondition, etc.)
+        return {
           id: idGen.condId(),
-          type: 'if' as const,
-          metric: 'Relative Strength Index' as MetricChoice,
-          window: 14,
-          ticker: 'SPY' as PositionChoice,
-          comparator: 'gt' as ComparatorChoice,
-          threshold: 50,
-          expanded: false,
-        }],
-      }))
+          conditions: parseCondition(cond, idGen),
+        }
+      })
 
       // Build children for each ladder slot (all N matches down to 0 matches)
       const children: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
@@ -587,14 +654,24 @@ const parseQuantMageStrategy = (data: Record<string, unknown>): FlowNode => {
     }
   }
 
-  if (parsed.kind === 'basic' && name) {
-    parsed.title = name
+  // If the parsed result is already a 'basic' node, use it as the root
+  if (parsed.kind === 'basic') {
+    if (name) parsed.title = name
+    parsed.collapsed = false
+    return parsed
   }
 
-  // Root node is always expanded so user can see the tree structure
-  parsed.collapsed = false
-
-  return parsed
+  // Otherwise, wrap the parsed node in a 'basic' root so users can add sibling nodes
+  // This handles cases like Switch/ladder returning a 'numbered' node directly
+  parsed.collapsed = false // Expand the inner node so user can see it
+  return {
+    id: idGen.nodeId(),
+    kind: 'basic',
+    title: name,
+    collapsed: false, // Root is expanded
+    weighting: 'equal',
+    children: { next: [parsed] },
+  }
 }
 
 // Normalize imported node (ensure slots, regenerate IDs if needed)

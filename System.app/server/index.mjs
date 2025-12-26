@@ -612,6 +612,8 @@ let cacheInitialized = false
 async function ensureDbInitialized() {
   if (!dbInitialized) {
     database.initializeDatabase()
+    // FRD-008: Migrate any existing plain-text passwords to bcrypt hashes
+    await database.migratePasswordsToBcrypt()
     dbInitialized = true
   }
   if (!cacheInitialized) {
@@ -1471,8 +1473,17 @@ app.get('/api/admin/db/:table', async (req, res) => {
         columns: ['id', 'username', 'display_name', 'role', 'is_partner_eligible', 'created_at', 'updated_at', 'last_login_at']
       },
       'bots': {
-        query: `SELECT id, owner_id, name, description, visibility, tags, fund_slot, created_at, updated_at, published_at, deleted_at FROM bots ORDER BY created_at DESC LIMIT 500`,
-        columns: ['id', 'owner_id', 'name', 'description', 'visibility', 'tags', 'fund_slot', 'created_at', 'updated_at', 'published_at', 'deleted_at']
+        query: `SELECT b.id, b.owner_id, b.name, b.visibility, b.tags, b.fund_slot,
+                ROUND(m.cagr * 100, 2) as cagr_pct,
+                ROUND(m.sharpe_ratio, 2) as sharpe,
+                ROUND(m.max_drawdown * 100, 2) as maxdd_pct,
+                ROUND(m.sortino_ratio, 2) as sortino,
+                b.created_at, b.deleted_at
+                FROM bots b
+                LEFT JOIN bot_metrics m ON b.id = m.bot_id
+                ORDER BY m.cagr DESC NULLS LAST
+                LIMIT 500`,
+        columns: ['id', 'owner_id', 'name', 'visibility', 'tags', 'fund_slot', 'cagr_pct', 'sharpe', 'maxdd_pct', 'sortino', 'created_at', 'deleted_at']
       },
       'bot_metrics': {
         query: `SELECT * FROM bot_metrics ORDER BY cagr DESC LIMIT 500`,

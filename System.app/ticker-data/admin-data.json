@@ -1,0 +1,85 @@
+{
+  "config": {
+    "atlasFeePercent": 1,
+    "partnerProgramSharePercent": 1,
+    "eligibilityRequirements": [
+      {
+        "id": "live_months",
+        "type": "live_months",
+        "value": 0
+      },
+      {
+        "id": "metric-1766334280934",
+        "type": "metric",
+        "metric": "cagr",
+        "comparison": "at_least",
+        "value": 10
+      }
+    ],
+    "atlasFundSlots": [
+      "saved-node-1766691143089-18425-sj6m40u0",
+      "saved-node-1766691129184-15389-obh67dop",
+      "saved-node-1766691119504-14693-kron1ol1",
+      "saved-node-1766691108945-12648-hfiakynn",
+      "saved-node-1766691092170-11822-x90j66sy",
+      "saved-node-1766691092170-11051-x90j66sy",
+      "saved-node-1766690317257-775-r11epnme"
+    ]
+  },
+  "treasury": {
+    "balance": 100000,
+    "entries": []
+  },
+  "userSummaries": {
+    "1": {
+      "userId": "1",
+      "totalValue": 100000,
+      "totalInvested": 0,
+      "investmentCount": 0,
+      "investedAtlas": 0,
+      "investedNexus": 0,
+      "investedPrivate": 0,
+      "lastUpdated": 1766782373696
+    },
+    "3": {
+      "userId": "3",
+      "totalValue": 100000,
+      "totalInvested": 0,
+      "investmentCount": 0,
+      "investedAtlas": 0,
+      "investedNexus": 0,
+      "investedPrivate": 0,
+      "lastUpdated": 1766713495985
+    },
+    "5": {
+      "userId": "5",
+      "totalValue": 100000,
+      "totalInvested": 0,
+      "investmentCount": 0,
+      "investedAtlas": 0,
+      "investedNexus": 0,
+      "investedPrivate": 0,
+      "lastUpdated": 1766713506612
+    },
+    "7": {
+      "userId": "7",
+      "totalValue": 100000,
+      "totalInvested": 0,
+      "investmentCount": 0,
+      "investedAtlas": 0,
+      "investedNexus": 0,
+      "investedPrivate": 0,
+      "lastUpdated": 1766713514039
+    },
+    "9": {
+      "userId": "9",
+      "totalValue": 39987580.15836765,
+      "totalInvested": 39937580.15836765,
+      "investmentCount": 2,
+      "investedAtlas": 39937580.15836765,
+      "investedNexus": 0,
+      "investedPrivate": 0,
+      "lastUpdated": 1766713468698
+    }
+  }
+}
