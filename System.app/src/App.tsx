@@ -231,7 +231,6 @@ const TICKER_DATALIST_ID = 'systemapp-tickers'
 
 const CURRENT_USER_KEY = 'systemapp.currentUser'
 const userDataKey = (userId: UserId) => `systemapp.user.${userId}.data.v1`
-const LEGACY_THEME_KEY = 'systemapp.theme'
 
 const loadDeviceThemeMode = (): ThemeMode => {
   try {
@@ -431,46 +430,222 @@ const deleteBotFromApi = async (userId: UserId, botId: string): Promise<boolean>
   }
 }
 
-// Sync a bot to the database (for saving new bots or updates) - LEGACY, use createBotInApi/updateBotInApi
-const syncBotToApi = async (userId: UserId, bot: SavedBot): Promise<boolean> => {
+// ============================================================================
+// WATCHLIST API FUNCTIONS
+// ============================================================================
+
+// Load all watchlists for a user from the database
+const loadWatchlistsFromApi = async (userId: UserId): Promise<Watchlist[]> => {
   try {
-    const payload = JSON.stringify(bot.payload)
-    const tags = bot.tags || []
-    const visibility = bot.tags?.includes('Nexus') ? 'nexus' : bot.tags?.includes('Nexus Eligible') ? 'nexus_eligible' : 'private'
-
-    // Check if bot exists in DB
-    const checkRes = await fetch(`${API_BASE}/bots/${bot.id}?userId=${userId}`)
-    const exists = checkRes.ok
-
-    if (exists) {
-      // Update
-      await fetch(`${API_BASE}/bots/${bot.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ownerId: userId, name: bot.name, payload, visibility, tags, fundSlot: bot.fundSlot }),
-      })
-    } else {
-      // Create - include bot.id to preserve ID
-      await fetch(`${API_BASE}/bots`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: bot.id,  // Preserve the localStorage ID
-          ownerId: userId,
-          name: bot.name,
-          payload,
-          visibility,
-          tags,
-          fundSlot: bot.fundSlot,
-        }),
-      })
-    }
-    return true
+    const res = await fetch(`${API_BASE}/watchlists?userId=${userId}`)
+    if (!res.ok) return []
+    const { watchlists } = await res.json() as { watchlists: Array<{
+      id: string
+      ownerId: string
+      name: string
+      isDefault: boolean
+      bots?: Array<{ botId: string }>
+    }> }
+    return watchlists.map((wl) => ({
+      id: wl.id,
+      name: wl.name,
+      botIds: (wl.bots || []).map(b => b.botId),
+    }))
   } catch (err) {
-    console.warn('[API] Failed to sync bot:', err)
+    console.warn('[API] Failed to load watchlists from API:', err)
+    return []
+  }
+}
+
+// Create a new watchlist in the database
+const createWatchlistInApi = async (userId: UserId, name: string): Promise<string | null> => {
+  try {
+    const res = await fetch(`${API_BASE}/watchlists`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, name }),
+    })
+    if (!res.ok) return null
+    const { watchlist } = await res.json() as { watchlist: { id: string } }
+    return watchlist.id
+  } catch (err) {
+    console.warn('[API] Failed to create watchlist:', err)
+    return null
+  }
+}
+
+// Add a bot to a watchlist in the database
+const addBotToWatchlistInApi = async (watchlistId: string, botId: string): Promise<boolean> => {
+  try {
+    const res = await fetch(`${API_BASE}/watchlists/${watchlistId}/bots`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ botId }),
+    })
+    return res.ok
+  } catch (err) {
+    console.warn('[API] Failed to add bot to watchlist:', err)
     return false
   }
 }
+
+// Remove a bot from a watchlist in the database
+const removeBotFromWatchlistInApi = async (watchlistId: string, botId: string): Promise<boolean> => {
+  try {
+    const res = await fetch(`${API_BASE}/watchlists/${watchlistId}/bots/${botId}`, {
+      method: 'DELETE',
+    })
+    return res.ok
+  } catch (err) {
+    console.warn('[API] Failed to remove bot from watchlist:', err)
+    return false
+  }
+}
+
+// ============================================================================
+// USER PREFERENCES API FUNCTIONS
+// ============================================================================
+
+type DbPreferences = {
+  userId: string
+  theme: string
+  colorScheme: string
+  uiState: string | null
+}
+
+// Load user preferences from the database
+const loadPreferencesFromApi = async (userId: UserId): Promise<UserUiState | null> => {
+  try {
+    const res = await fetch(`${API_BASE}/preferences?userId=${userId}`)
+    if (!res.ok) return null
+    const { preferences } = await res.json() as { preferences: DbPreferences | null }
+    if (!preferences || !preferences.uiState) return null
+    const parsed = JSON.parse(preferences.uiState) as Partial<UserUiState>
+    return {
+      theme: (parsed.theme as ThemeMode) || 'dark',
+      colorTheme: parsed.colorTheme || 'slate',
+      analyzeCollapsedByBotId: parsed.analyzeCollapsedByBotId || {},
+      communityCollapsedByBotId: parsed.communityCollapsedByBotId || {},
+      analyzeBotCardTab: parsed.analyzeBotCardTab || {},
+      analyzeFilterWatchlistId: parsed.analyzeFilterWatchlistId ?? null,
+      communitySelectedWatchlistId: parsed.communitySelectedWatchlistId ?? null,
+      communityWatchlistSlot1Id: parsed.communityWatchlistSlot1Id ?? null,
+      communityWatchlistSlot2Id: parsed.communityWatchlistSlot2Id ?? null,
+      fundZones: parsed.fundZones || { fund1: null, fund2: null, fund3: null, fund4: null, fund5: null },
+    }
+  } catch (err) {
+    console.warn('[API] Failed to load preferences:', err)
+    return null
+  }
+}
+
+// Save user preferences to the database
+const savePreferencesToApi = async (userId: UserId, uiState: UserUiState): Promise<boolean> => {
+  try {
+    const res = await fetch(`${API_BASE}/preferences`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        userId,
+        theme: uiState.theme,
+        colorScheme: uiState.colorTheme,
+        uiState: JSON.stringify(uiState),
+      }),
+    })
+    return res.ok
+  } catch (err) {
+    console.warn('[API] Failed to save preferences:', err)
+    return false
+  }
+}
+
+// ============================================================================
+// CALL CHAIN API FUNCTIONS
+// ============================================================================
+
+type DbCallChain = {
+  id: string
+  ownerId: string
+  name: string
+  root: string // JSON string
+  collapsed: boolean
+  createdAt: number
+  updatedAt: number
+}
+
+// Load all call chains for a user from the database
+const loadCallChainsFromApi = async (userId: UserId): Promise<CallChain[]> => {
+  try {
+    const res = await fetch(`${API_BASE}/call-chains?userId=${userId}`)
+    if (!res.ok) return []
+    const { callChains } = await res.json() as { callChains: DbCallChain[] }
+    return callChains.map((cc) => ({
+      id: cc.id,
+      name: cc.name,
+      root: JSON.parse(cc.root) as FlowNode,
+      collapsed: cc.collapsed,
+    }))
+  } catch (err) {
+    console.warn('[API] Failed to load call chains:', err)
+    return []
+  }
+}
+
+// Create a new call chain in the database
+const createCallChainInApi = async (userId: UserId, callChain: CallChain): Promise<string | null> => {
+  try {
+    const res = await fetch(`${API_BASE}/call-chains`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        userId,
+        name: callChain.name,
+        root: JSON.stringify(callChain.root),
+      }),
+    })
+    if (!res.ok) return null
+    const { callChain: created } = await res.json() as { callChain: { id: string } }
+    return created.id
+  } catch (err) {
+    console.warn('[API] Failed to create call chain:', err)
+    return null
+  }
+}
+
+// Update a call chain in the database
+const updateCallChainInApi = async (userId: UserId, callChain: CallChain): Promise<boolean> => {
+  try {
+    const res = await fetch(`${API_BASE}/call-chains/${callChain.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        userId,
+        name: callChain.name,
+        root: JSON.stringify(callChain.root),
+        collapsed: callChain.collapsed,
+      }),
+    })
+    return res.ok
+  } catch (err) {
+    console.warn('[API] Failed to update call chain:', err)
+    return false
+  }
+}
+
+// Delete a call chain from the database
+const deleteCallChainInApi = async (userId: UserId, callChainId: string): Promise<boolean> => {
+  try {
+    const res = await fetch(`${API_BASE}/call-chains/${callChainId}?userId=${userId}`, {
+      method: 'DELETE',
+    })
+    return res.ok
+  } catch (err) {
+    console.warn('[API] Failed to delete call chain:', err)
+    return false
+  }
+}
+
+// ============================================================================
 
 // Update bot metrics in the database after backtest
 const syncBotMetricsToApi = async (botId: string, metrics: {
@@ -502,12 +677,7 @@ const syncBotMetricsToApi = async (botId: string, metrics: {
 // ============================================================================
 
 const loadInitialThemeMode = (): ThemeMode => {
-  try {
-    const raw = localStorage.getItem(LEGACY_THEME_KEY)
-    if (raw === 'light' || raw === 'dark') return raw
-  } catch {
-    // ignore
-  }
+  // Theme now comes from user preferences (database), so just use device preference as default
   return loadDeviceThemeMode()
 }
 
@@ -532,66 +702,12 @@ const ensureDefaultWatchlist = (watchlists: Watchlist[]): Watchlist[] => {
   return [{ id: `wl-${newKeyId()}`, name: 'Default', botIds: [] }, ...watchlists]
 }
 
-// First 100 tickers distributed across 5 users (20 each)
-const SEED_TICKERS: Record<UserId, string[]> = {
-  '1': ['SPY', 'QQQ', 'SMH', 'DIA', 'IVV', 'VTI', 'VUG', 'VTV', 'IWF', 'IJH', 'IJR', 'VGT', 'VWO', 'IWM', 'VO', 'GLD', 'XLK', 'RSP', 'VB', 'ITOT'],
-  '3': ['IWD', 'IVW', 'EFA', 'SPLG', 'XLF', 'IWR', 'VV', 'IWB', 'XLV', 'XLE', 'VNQ', 'IVE', 'IAU', 'SPYG', 'VBR', 'SPYV', 'MDY', 'XLY', 'VXF', 'XLI'],
-  '5': ['SDY', 'DVY', 'IUSG', 'VBK', 'IUSV', 'IYW', 'EFV', 'XLU', 'EEM', 'IWP', 'VGK', 'VHT', 'XLP', 'IWV', 'EFG', 'OEF', 'IWS', 'SOXX', 'EWJ', 'IWN'],
-  '7': ['IWO', 'SPMD', 'SPHQ', 'VFH', 'FVD', 'IJK', 'SPTM', 'IGV', 'VDE', 'IJJ', 'FXI', 'PRF', 'IJS', 'XLG', 'ONEQ', 'VDC', 'VPL', 'VPU', 'EZU', 'IBB'],
-  '9': ['IJT', 'VCR', 'IOO', 'XLB', 'VIS', 'IGM', 'EWT', 'IXN', 'IYR', 'PPA', 'VOX', 'SLYV', 'EWY', 'IXJ', 'IYF', 'MDYV', 'EWZ', 'FEZ', 'IYH', 'XMMO'],
-  'admin': [], // Admin account has no seed data
-}
-
-const generateSeedData = (userId: UserId): UserData => {
-  const tickers = SEED_TICKERS[userId] || []
-  const savedBots: SavedBot[] = tickers.map((ticker, idx) => ({
-    id: `seed-bot-${ticker}`,
-    name: ticker,
-    builderId: userId,
-    payload: {
-      id: `node-seed-${ticker}-1`,
-      kind: 'basic' as BlockKind,
-      title: ticker,
-      children: {
-        next: [
-          {
-            id: `node-seed-${ticker}-2`,
-            kind: 'position' as BlockKind,
-            title: 'Position',
-            children: {},
-            weighting: 'equal' as WeightMode,
-            collapsed: false,
-            positions: [ticker],
-          },
-        ],
-      },
-      weighting: 'equal' as WeightMode,
-      collapsed: false,
-    },
-    visibility: 'private' as BotVisibility,
-    createdAt: 1700000000000 + idx * 1000,
-  }))
-
-  return {
-    savedBots,
-    watchlists: [
-      {
-        id: `default-watchlist-${userId}`,
-        name: 'Default',
-        botIds: savedBots.map((b) => b.id),
-      },
-    ],
-    callChains: [],
-    ui: defaultUiState(),
-  }
-}
-
 const loadUserData = (userId: UserId): UserData => {
   try {
     const raw = localStorage.getItem(userDataKey(userId))
     if (!raw) {
-      // No localStorage data - return seed data for this user
-      return generateSeedData(userId)
+      // No localStorage data - return empty data (bots come from database)
+      return { savedBots: [], watchlists: ensureDefaultWatchlist([]), callChains: [], ui: defaultUiState() }
     }
     const parsed = JSON.parse(raw) as Partial<UserData>
     const savedBots = Array.isArray(parsed.savedBots)
@@ -650,45 +766,11 @@ const loadUserData = (userId: UserId): UserData => {
         }) as CallChain[])
       : []
     const ui = parsed.ui ? ({ ...defaultUiState(), ...(parsed.ui as Partial<UserUiState>) } as UserUiState) : defaultUiState()
+    // Note: dashboardPortfolio is now loaded from database API, not localStorage
     return { savedBots, watchlists, callChains, ui }
   } catch {
     return { savedBots: [], watchlists: ensureDefaultWatchlist([]), callChains: [], ui: defaultUiState() }
   }
-}
-
-const saveUserData = (userId: UserId, data: UserData) => {
-  localStorage.setItem(userDataKey(userId), JSON.stringify(data))
-}
-
-// Load all Nexus-tagged bots from all users (for Community Nexus)
-const ALL_USER_IDS: UserId[] = ['1', '3', '5', '7', '9']
-
-const loadAllNexusBots = (currentUserId: UserId): SavedBot[] => {
-  const allNexusBots: SavedBot[] = []
-  const seen = new Set<string>()
-  for (const uid of ALL_USER_IDS) {
-    try {
-      const userData = loadUserData(uid)
-      const nexusBots = userData.savedBots.filter((bot) => bot.tags?.includes('Nexus'))
-      // For non-owners, strip the payload for IP protection
-      const sanitizedBots = nexusBots.map((bot) => {
-        if (bot.builderId !== currentUserId) {
-          return { ...bot, payload: null as unknown as FlowNode }
-        }
-        return bot
-      })
-      // Deduplicate by ID
-      for (const bot of sanitizedBots) {
-        if (!seen.has(bot.id)) {
-          seen.add(bot.id)
-          allNexusBots.push(bot)
-        }
-      }
-    } catch {
-      // Skip users with invalid/missing data
-    }
-  }
-  return allNexusBots
 }
 
 // Dashboard investment helpers
@@ -866,6 +948,15 @@ type DashboardInvestment = {
 type DashboardPortfolio = {
   cash: number // remaining uninvested cash (starts at $100,000)
   investments: DashboardInvestment[]
+}
+
+// Type for database portfolio position (from API)
+type DbPosition = {
+  botId: string
+  costBasis: number
+  shares: number
+  entryDate: string
+  bot?: { name: string }
 }
 
 // Admin types for Atlas Overview
@@ -3153,14 +3244,55 @@ function AllocationChart({
     }
     seriesRefs.current = []
 
-    for (const s of series) {
-      const line = chart.addSeries(LineSeries, {
-        color: s.color,
-        lineWidth: 2,
+    // Build stacked data: each series shows cumulative allocation from bottom
+    // We need to stack in reverse order (last series at bottom)
+    const reversedSeries = [...series].reverse()
+
+    // Build a map of time -> cumulative values for stacking
+    const timeMap = new Map<number, number[]>()
+    for (let i = 0; i < reversedSeries.length; i++) {
+      for (const pt of reversedSeries[i].points) {
+        const time = pt.time as number
+        if (!timeMap.has(time)) {
+          timeMap.set(time, new Array(reversedSeries.length).fill(0))
+        }
+        timeMap.get(time)![i] = pt.value
+      }
+    }
+
+    // Compute cumulative sums for stacking
+    const stackedData: Array<{ color: string; topColor: string; bottomColor: string; points: EquityPoint[] }> = []
+    for (let i = 0; i < reversedSeries.length; i++) {
+      const points: EquityPoint[] = []
+      for (const [time, values] of timeMap) {
+        let cumulative = 0
+        for (let j = 0; j <= i; j++) {
+          cumulative += values[j]
+        }
+        points.push({ time: time as UTCTimestamp, value: cumulative })
+      }
+      points.sort((a, b) => (a.time as number) - (b.time as number))
+      const baseColor = reversedSeries[i].color
+      stackedData.push({
+        color: baseColor,
+        topColor: baseColor + '80', // 50% opacity
+        bottomColor: baseColor + '20', // 12% opacity
+        points,
+      })
+    }
+
+    // Add series from top to bottom (highest cumulative first)
+    for (let i = stackedData.length - 1; i >= 0; i--) {
+      const s = stackedData[i]
+      const area = chart.addSeries(AreaSeries, {
+        lineColor: s.color,
+        topColor: s.topColor,
+        bottomColor: s.bottomColor,
+        lineWidth: 1,
         priceFormat: { type: 'percent', precision: 2, minMove: 0.01 },
       })
-      line.setData(sanitizeSeriesPoints(s.points, { clampMin: 0, clampMax: 1 }))
-      seriesRefs.current.push(line)
+      area.setData(sanitizeSeriesPoints(s.points, { clampMin: 0, clampMax: 1 }))
+      seriesRefs.current.push(area as unknown as ISeriesApi<'Line'>)
     }
 
     if (visibleRange && visibleRange.from && visibleRange.to) {
@@ -3303,6 +3435,7 @@ function AdminPanel({
   onClearData,
   savedBots,
   setSavedBots,
+  onRefreshNexusBots,
 }: {
   adminTab: AdminSubtab
   setAdminTab: (t: AdminSubtab) => void
@@ -3311,6 +3444,7 @@ function AdminPanel({
   onClearData: () => void
   savedBots: SavedBot[]
   setSavedBots: React.Dispatch<React.SetStateAction<SavedBot[]>>
+  onRefreshNexusBots?: () => Promise<void>
 }) {
   const [status, setStatus] = useState<AdminStatus | null>(null)
   const [tickers, setTickers] = useState<string[]>([])
@@ -3569,7 +3703,16 @@ function AdminPanel({
     } catch (e) {
       console.error('Failed to save Atlas slots:', e)
     }
-  }, [adminConfig, savedBots])
+
+    // Refresh allNexusBots after API updates complete so other users see the new Atlas system
+    if (onRefreshNexusBots) {
+      try {
+        await onRefreshNexusBots()
+      } catch (e) {
+        console.error('Failed to refresh Nexus bots:', e)
+      }
+    }
+  }, [adminConfig, savedBots, onRefreshNexusBots])
 
   const handleRemoveAtlasSlot = useCallback(async (botId: string) => {
     // Remove from Atlas Fund Slots
@@ -3604,7 +3747,16 @@ function AdminPanel({
     } catch (e) {
       console.error('Failed to save Atlas slots:', e)
     }
-  }, [adminConfig, savedBots])
+
+    // Refresh allNexusBots after API updates complete so other users see the removal
+    if (onRefreshNexusBots) {
+      try {
+        await onRefreshNexusBots()
+      } catch (e) {
+        console.error('Failed to refresh Nexus bots:', e)
+      }
+    }
+  }, [adminConfig, savedBots, onRefreshNexusBots])
 
   // Get admin's bots that are available to add to Atlas Fund
   // Show ALL admin bots that aren't already tagged as Atlas
@@ -8464,7 +8616,9 @@ const collectBacktestInputs = (root: FlowNode, callMap: Map<string, CallChain>):
       if (mode === 'defined' || mode === 'capped') {
         for (const child of children) {
           const v = Number(child.window)
-          if (!Number.isFinite(v) || v <= 0) {
+          // Allow 0% weight (valid choice to not allocate to a branch)
+          // Only error if undefined/NaN or negative
+          if (!Number.isFinite(v) || v < 0) {
             addError(child.id, 'window', `${mode === 'capped' ? 'Cap' : 'Weight'} % is missing for "${child.title}".`)
           } else if (mode === 'capped' && v > 100) {
             addError(child.id, 'window', `Cap % must be <= 100 for "${child.title}".`)
@@ -8821,7 +8975,7 @@ const rollingStdDev = (values: number[], period: number): Array<number | null> =
     if (i >= period - 1 && missing === 0) {
       const mean = sum / period
       const variance = Math.max(0, sumSq / period - mean * mean)
-      out[i] = Math.sqrt(variance)
+      out[i] = Math.sqrt(variance) * 100 // Return as percentage (e.g., 2.5 = 2.5%)
     }
   }
   return out
@@ -9527,15 +9681,6 @@ const evalCondition = (ctx: EvalCtx, ownerId: string, traceOwnerId: string, cond
     const rightWindow = cond.rightWindow ?? cond.window
     const right = metricAt(ctx, rightTicker, rightMetric, rightWindow)
 
-    // DEBUG: Log SMA comparisons for Dec 12
-    const debugDate = isoFromUtcSeconds(ctx.db.dates[ctx.decisionIndex])
-    if (debugDate === '2025-12-12' && cond.metric === 'Simple Moving Average') {
-      console.log(`[DEBUG ${debugDate}] ${cond.window}d ${cond.metric} of ${cond.ticker} = ${left?.toFixed(4)}`)
-      console.log(`[DEBUG ${debugDate}] ${rightWindow}d ${rightMetric} of ${rightTicker} = ${right?.toFixed(4)}`)
-      console.log(`[DEBUG ${debugDate}] ${left?.toFixed(4)} ${cmp === 'lt' ? '<' : '>'} ${right?.toFixed(4)} = ${left != null && right != null ? (cmp === 'lt' ? left < right : left > right) : 'null'}`)
-      console.log(`[DEBUG ${debugDate}] indicatorIndex=${ctx.indicatorIndex}, decisionIndex=${ctx.decisionIndex}`)
-    }
-
     if (left == null || right == null) {
       ctx.warnings.push({
         time: ctx.db.dates[ctx.decisionIndex],
@@ -9556,11 +9701,6 @@ const evalCondition = (ctx: EvalCtx, ownerId: string, traceOwnerId: string, cond
       right,
     })
     return ok
-  }
-  // DEBUG: Log RSI comparisons for Dec 12
-  const debugDate2 = isoFromUtcSeconds(ctx.db.dates[ctx.decisionIndex])
-  if (debugDate2 === '2025-12-12' && cond.metric === 'Relative Strength Index') {
-    console.log(`[DEBUG ${debugDate2}] ${cond.window}d RSI of ${cond.ticker} = ${left?.toFixed(2)} ${cmp === 'lt' ? '<' : '>'} ${cond.threshold} = ${left != null ? (cmp === 'lt' ? left < cond.threshold : left > cond.threshold) : 'null'}`)
   }
 
   if (left == null) {
@@ -9718,15 +9858,6 @@ const evaluateNode = (ctx: EvalCtx, node: FlowNode, callStack: string[] = []): A
       const share = 1 / unique.length
       const alloc: Allocation = {}
       for (const t of unique) alloc[t] = (alloc[t] || 0) + share
-
-      // DEBUG: Log which position nodes are hit on Dec 11 and Dec 12
-      const debugDatePos = isoFromUtcSeconds(ctx.db.dates[ctx.decisionIndex])
-      const idPartsPos = node.id?.split('-') || []
-      const counterPos = idPartsPos.length >= 3 ? idPartsPos[idPartsPos.length - 2] : '?'
-      if (debugDatePos === '2025-12-11' || debugDatePos === '2025-12-12') {
-        console.log(`[DEBUG ${debugDatePos}] POSITION #${counterPos} hit: ${JSON.stringify(unique)}`)
-      }
-
       return alloc
     }
     case 'call': {
@@ -9763,19 +9894,6 @@ const evaluateNode = (ctx: EvalCtx, node: FlowNode, callStack: string[] = []): A
       const ok = evalConditions(ctx, node.id, node.conditions)
       ctx.trace?.recordBranch(node.id, 'indicator', ok)
       const slot: SlotId = ok ? 'then' : 'else'
-
-      // DEBUG: Log ALL indicator branch decisions for Dec 11 and Dec 12
-      const debugDateInd = isoFromUtcSeconds(ctx.db.dates[ctx.decisionIndex])
-      const idPartsInd = node.id?.split('-') || []
-      const counterInd = idPartsInd.length >= 3 ? idPartsInd[idPartsInd.length - 2] : '?'
-      if (debugDateInd === '2025-12-11' || debugDateInd === '2025-12-12') {
-        console.log(`[DEBUG ${debugDateInd}] INDICATOR #${counterInd} "${node.title}" → ${ok ? 'THEN' : 'ELSE'}`)
-        if (counterInd === '99' || counterInd === '198') {
-          // Extra detail for the momentum indicators
-          console.log(`[DEBUG ${debugDateInd}]   Conditions:`, JSON.stringify(node.conditions?.map(c => ({ metric: c.metric, window: c.window, ticker: c.ticker, comparator: c.comparator, threshold: c.threshold, expanded: c.expanded, rightTicker: c.rightTicker, rightWindow: c.rightWindow }))))
-        }
-      }
-
       const children = (node.children[slot] || []).filter((c): c is FlowNode => Boolean(c))
       const childAllocs = children.map((c) => evaluateNode(ctx, c, callStack))
       const weighted = weightChildren(ctx, node, slot, children, childAllocs)
@@ -9789,16 +9907,6 @@ const evaluateNode = (ctx: EvalCtx, node: FlowNode, callStack: string[] = []): A
       const nTrue = itemTruth.filter(Boolean).length
       const q = node.numbered?.quantifier ?? 'all'
       const n = Math.max(0, Math.floor(Number(node.numbered?.n ?? 0)))
-
-      // DEBUG: Log numbered node evaluation for Dec 11 and Dec 12
-      const debugDateNum = isoFromUtcSeconds(ctx.db.dates[ctx.decisionIndex])
-      if (debugDateNum === '2025-12-11' || debugDateNum === '2025-12-12') {
-        const okDebug = q === 'any' ? nTrue >= 1 : q === 'all' ? nTrue === items.length : q === 'none' ? nTrue === 0 : q === 'exactly' ? nTrue === n : q === 'atLeast' ? nTrue >= n : nTrue <= n
-        console.log(`[DEBUG ${debugDateNum}] NUMBERED "${node.title}" (${node.id})`)
-        console.log(`[DEBUG ${debugDateNum}]   quantifier: "${q}", n: ${n}`)
-        console.log(`[DEBUG ${debugDateNum}]   itemTruth: [${itemTruth.join(', ')}], nTrue: ${nTrue}`)
-        console.log(`[DEBUG ${debugDateNum}]   result: ${okDebug} → branch: ${okDebug ? 'then' : 'else'}`)
-      }
 
       // Handle ladder mode: select ladder-N slot based on how many conditions are true
       if (q === 'ladder') {
@@ -10459,7 +10567,7 @@ function BacktesterPanel({
   onRun,
   onJumpToError,
 }: BacktesterPanelProps) {
-  const [tab, setTab] = useState<'Overview' | 'Allocations' | 'Rebalances' | 'Warnings'>('Overview')
+  const [tab, setTab] = useState<'Overview' | 'In Depth'>('Overview')
   const [selectedRange, setSelectedRange] = useState<VisibleRange | null>(null)
   const [logScale, setLogScale] = useState(true)
   const [activePreset, setActivePreset] = useState<'1m' | '3m' | '6m' | 'ytd' | '1y' | '5y' | 'max' | 'custom'>('max')
@@ -10788,7 +10896,7 @@ function BacktesterPanel({
       </CardHeader>
       <CardContent className="grid gap-3">
         <div className="flex gap-2">
-          {(['Overview', 'Allocations', 'Rebalances', 'Warnings'] as const).map((t) => (
+          {(['Overview', 'In Depth'] as const).map((t) => (
             <Button key={t} variant={tab === t ? 'accent' : 'secondary'} size="sm" onClick={() => setTab(t)}>
               {t}
             </Button>
@@ -10964,11 +11072,27 @@ function BacktesterPanel({
             )}
 
           </>
-        ) : result && tab === 'Allocations' ? (
+        ) : result && tab === 'In Depth' ? (
           <>
-            <div className="saved-item">
-              <div className="font-black mb-1.5">Monthly returns</div>
-              <div className="monthly-heatmap">{renderMonthlyHeatmap(result.monthly, result.days)}</div>
+            <div className="saved-item grid grid-cols-2 gap-4 items-start">
+              <div className="monthly-heatmap overflow-auto">{renderMonthlyHeatmap(result.monthly, result.days)}</div>
+              <div className="border border-border rounded-lg p-3 flex flex-col" style={{ height: '320px' }}>
+                <div className="font-black mb-1.5">Allocations (recent)</div>
+                <div className="flex-1 overflow-auto font-mono text-xs min-h-0">
+                  {(result.allocations || []).slice(-300).reverse().map((row) => (
+                    <div key={row.date}>
+                      {row.date} —{' '}
+                      {row.entries.length === 0
+                        ? 'Cash'
+                        : row.entries
+                            .slice()
+                            .sort((a, b) => b.weight - a.weight)
+                            .map((e) => `${e.ticker} ${(e.weight * 100).toFixed(2)}%`)
+                            .join(', ')}
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
             <div className="saved-item">
               <div className="font-black mb-1.5">Allocation over time (top 10 + cash)</div>
@@ -10982,107 +11106,74 @@ function BacktesterPanel({
                 ))}
               </div>
             </div>
-            <Card>
-              <div className="font-black mb-1.5">Allocations (recent)</div>
-              <div className="max-h-[280px] overflow-auto font-mono text-xs">
-                {(result.allocations || []).slice(-300).map((row) => (
-                  <div key={row.date}>
-                    {row.date} —{' '}
-                    {row.entries.length === 0
-                      ? 'Cash'
-                      : row.entries
-                          .slice()
-                          .sort((a, b) => b.weight - a.weight)
-                          .map((e) => `${e.ticker} ${(e.weight * 100).toFixed(2)}%`)
-                          .join(', ')}
+            <div className="saved-item grid grid-cols-2 gap-4 items-start">
+              <div className="border border-border rounded-lg p-3 flex flex-col" style={{ height: '280px' }}>
+                <div className="font-black mb-1.5">Rebalance days ({rebalanceDays.length})</div>
+                <div className="backtester-table flex-1 overflow-auto min-h-0">
+                  <div className="backtester-row backtester-head-row">
+                    <div>Date</div>
+                    <div>Net</div>
+                    <div>Turnover</div>
+                    <div>Cost</div>
+                    <div>Holdings</div>
                   </div>
-                ))}
+                  <div className="backtester-body-rows">
+                    {rebalanceDays.slice(-400).reverse().map((d) => (
+                      <div key={d.date} className="backtester-row">
+                        <div>{d.date}</div>
+                        <div>{formatPct(d.netReturn)}</div>
+                        <div>{formatPct(d.turnover)}</div>
+                        <div>{formatPct(d.cost)}</div>
+                        <div className="font-mono text-xs">
+                          {d.holdings.length === 0
+                            ? 'Cash'
+                            : d.holdings
+                                .slice()
+                                .sort((a, b) => b.weight - a.weight)
+                                .map((h) => `${h.ticker} ${(h.weight * 100).toFixed(1)}%`)
+                                .join(', ')}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
-              <div className="mt-2.5 flex gap-2 flex-wrap">
-                <Button size="sm" onClick={() => downloadEquityCsv(result, mode, costBps, benchmark, showBenchmark)}>Download equity CSV</Button>
-                <Button size="sm" onClick={() => downloadAllocationsCsv(result)}>Download allocations CSV</Button>
-                <Button size="sm" onClick={() => downloadRebalancesCsv(result)}>Download rebalances CSV</Button>
-              </div>
-            </Card>
-          </>
-        ) : result && tab === 'Rebalances' ? (
-          <Card>
-            <div className="font-black mb-1.5">Rebalance days ({rebalanceDays.length})</div>
-            <div className="backtester-table">
-              <div className="backtester-row backtester-head-row">
-                <div>Date</div>
-                <div>Net</div>
-                <div>Turnover</div>
-                <div>Cost</div>
-                <div>Holdings</div>
-                <div>End Nodes</div>
-              </div>
-              <div className="backtester-body-rows">
-                {rebalanceDays.slice(-400).reverse().map((d) => (
-                  <div key={d.date} className="backtester-row">
-                    <div>{d.date}</div>
-                    <div>{formatPct(d.netReturn)}</div>
-                    <div>{formatPct(d.turnover)}</div>
-                    <div>{formatPct(d.cost)}</div>
-                    <div className="font-mono text-xs">
-                      {d.holdings.length === 0
-                        ? 'Cash'
-                        : d.holdings
-                            .slice()
-                            .sort((a, b) => b.weight - a.weight)
-                            .map((h) => `${h.ticker} ${(h.weight * 100).toFixed(1)}%`)
-                            .join(', ')}
+              <div className="border border-border rounded-lg p-3 flex flex-col" style={{ height: '280px' }}>
+                <div className="font-black mb-1.5">Warnings ({result.warnings.length})</div>
+                {groupedWarnings.length === 0 ? (
+                  <div className="text-muted flex-1 flex items-center justify-center">No warnings.</div>
+                ) : (
+                  <div className="backtester-table flex-1 overflow-auto min-h-0">
+                    <div className="backtester-row backtester-head-row">
+                      <div>Count</div>
+                      <div>Message</div>
+                      <div>First</div>
+                      <div>Last</div>
                     </div>
-                    <div className="font-mono text-xs text-muted-foreground">
-                      {(d.endNodes || []).length === 0
-                        ? '—'
-                        : (d.endNodes || [])
-                            .slice()
-                            .sort((a, b) => b.weight - a.weight)
-                            .filter((n) => n.weight >= 0.001)
-                            .map((n) => `${shortNodeId(n.nodeId)} ${(n.weight * 100).toFixed(1)}%`)
-                            .join(', ')}
+                    <div className="backtester-body-rows">
+                      {groupedWarnings.map((g) => (
+                        <div key={g.message} className="backtester-row">
+                          <div>{g.count}</div>
+                          <div>{g.message}</div>
+                          <div>{g.first?.date ?? '—'}</div>
+                          <div>{g.last?.date ?? '—'}</div>
+                        </div>
+                      ))}
                     </div>
                   </div>
-                ))}
+                )}
               </div>
             </div>
-          </Card>
-        ) : result && tab === 'Warnings' ? (
-          <div className="saved-item">
-            <div className="font-black mb-1.5">Warnings ({result.warnings.length})</div>
-            {groupedWarnings.length === 0 ? (
-              <div className="text-muted">No warnings.</div>
-            ) : (
-              <div className="backtester-table">
-                <div className="backtester-row backtester-head-row">
-                  <div>Count</div>
-                  <div>Message</div>
-                  <div>First</div>
-                  <div>Last</div>
-                </div>
-                <div className="backtester-body-rows">
-                  {groupedWarnings.map((g) => (
-                    <div key={g.message} className="backtester-row">
-                      <div>{g.count}</div>
-                      <div>{g.message}</div>
-                      <div>{g.first?.date ?? '—'}</div>
-                      <div>{g.last?.date ?? '—'}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
 
             {result.trace ? (
-              <div className="mt-3.5">
+              <div className="saved-item">
                 <div className="flex gap-2.5 items-center flex-wrap">
                   <div className="font-black">Condition trace (debug)</div>
                   <Button onClick={() => downloadTextFile('backtest_trace.json', JSON.stringify(result.trace, null, 2), 'application/json')}>
                     Download trace JSON
                   </Button>
                 </div>
-                <div className="mt-2 backtester-table">
+                <div className="mt-2 backtester-table max-h-[300px] overflow-auto">
                   <div className="backtester-row backtester-head-row">
                     <div>Node</div>
                     <div>Kind</div>
@@ -11114,7 +11205,15 @@ function BacktesterPanel({
                 ) : null}
               </div>
             ) : null}
-          </div>
+
+            <Card>
+              <div className="flex gap-2 flex-wrap">
+                <Button size="sm" onClick={() => downloadEquityCsv(result, mode, costBps, benchmark, showBenchmark)}>Download equity CSV</Button>
+                <Button size="sm" onClick={() => downloadAllocationsCsv(result)}>Download allocations CSV</Button>
+                <Button size="sm" onClick={() => downloadRebalancesCsv(result)}>Download rebalances CSV</Button>
+              </div>
+            </Card>
+          </>
         ) : status === 'running' ? (
           <div className="text-muted font-bold p-4 text-center">Running backtest…</div>
         ) : (
@@ -11152,16 +11251,14 @@ function App() {
   const [watchlists, setWatchlists] = useState<Watchlist[]>(() => initialUserData.watchlists)
   const [callChains, setCallChains] = useState<CallChain[]>(() => initialUserData.callChains)
   const [uiState, setUiState] = useState<UserUiState>(() => initialUserData.ui)
-  const [dashboardPortfolio, setDashboardPortfolio] = useState<DashboardPortfolio>(
-    () => initialUserData.dashboardPortfolio ?? defaultDashboardPortfolio(),
-  )
+  // Portfolio is now loaded from database API, start with default
+  const [dashboardPortfolio, setDashboardPortfolio] = useState<DashboardPortfolio>(defaultDashboardPortfolio)
+  const [_portfolioLoading, setPortfolioLoading] = useState(false) // TODO: show loading state in UI
   const [analyzeBacktests, setAnalyzeBacktests] = useState<Record<string, AnalyzeBacktestState>>({})
   const [analyzeTickerContrib, setAnalyzeTickerContrib] = useState<Record<string, TickerContributionState>>({})
 
-  // Cross-user Nexus bots for Community Nexus tab
-  const [allNexusBots, setAllNexusBots] = useState<SavedBot[]>(() =>
-    userId ? loadAllNexusBots(userId) : []
-  )
+  // Cross-user Nexus bots for Community Nexus tab (populated via API in useEffect)
+  const [allNexusBots, setAllNexusBots] = useState<SavedBot[]>([])
   const [analyzeTickerSort, setAnalyzeTickerSort] = useState<{ column: string; dir: 'asc' | 'desc' }>({
     column: 'ticker',
     dir: 'asc',
@@ -11186,21 +11283,13 @@ function App() {
     if (!userId) return
     setBotsLoadedFromApi(false)
     loadBotsFromApi(userId).then(async (apiBots) => {
-      // Check localStorage AND seed data for any bots that aren't in the API yet (migration)
+      // Check localStorage for any bots that aren't in the API yet (migration)
       const localData = loadUserData(userId)
-      const seedData = generateSeedData(userId)
-      // Combine localStorage and seed data, preferring localStorage versions
-      const localBotIds = new Set(localData.savedBots.map(b => b.id))
-      const allLocalBots = [
-        ...localData.savedBots,
-        ...seedData.savedBots.filter(b => !localBotIds.has(b.id))
-      ]
-
       const apiBotIds = new Set(apiBots.map(b => b.id))
-      const localBotsNotInApi = allLocalBots.filter(b => !apiBotIds.has(b.id))
+      const localBotsNotInApi = localData.savedBots.filter(b => !apiBotIds.has(b.id))
 
       if (localBotsNotInApi.length > 0) {
-        // Migrate localStorage/seed bots that don't exist in API
+        // Migrate localStorage bots that don't exist in API
         console.log('[Migration] Migrating', localBotsNotInApi.length, 'bots to API...')
         await Promise.all(localBotsNotInApi.map(bot => createBotInApi(userId, bot)))
         console.log('[Migration] Bots migrated successfully')
@@ -11222,48 +11311,239 @@ function App() {
     })
   }, [userId])
 
-  // Save non-bot user data to localStorage (UI state, watchlists, etc.)
-  // Bots are now saved directly to API, not localStorage
+  // Load portfolio from database API when user logs in
   useEffect(() => {
     if (!userId) return
-    // Save everything except savedBots - bots go to database only
-    const dataWithoutBots = { savedBots: [], watchlists, callChains, ui: uiState, dashboardPortfolio }
-    saveUserData(userId, dataWithoutBots)
-  }, [userId, watchlists, callChains, uiState, dashboardPortfolio])
+
+    const loadPortfolio = async () => {
+      setPortfolioLoading(true)
+      try {
+        const res = await fetch(`/api/portfolio?userId=${userId}`)
+        if (res.ok) {
+          const { portfolio } = await res.json()
+          if (portfolio) {
+            setDashboardPortfolio({
+              cash: portfolio.cashBalance,
+              investments: (portfolio.positions || []).map((p: DbPosition) => ({
+                botId: p.botId,
+                botName: p.bot?.name || 'Unknown',
+                buyDate: p.entryDate ? new Date(p.entryDate).getTime() : Date.now(),
+                costBasis: p.costBasis,
+              })),
+            })
+          } else {
+            // No portfolio in DB yet, use default
+            setDashboardPortfolio(defaultDashboardPortfolio())
+          }
+        } else {
+          console.warn('[Portfolio] Failed to load from API, using default')
+          setDashboardPortfolio(defaultDashboardPortfolio())
+        }
+      } catch (e) {
+        console.error('[Portfolio] Error loading portfolio:', e)
+        setDashboardPortfolio(defaultDashboardPortfolio())
+      } finally {
+        setPortfolioLoading(false)
+      }
+    }
+
+    loadPortfolio()
+  }, [userId])
+
+  // Load watchlists from database API when user logs in
+  const [_watchlistsLoadedFromApi, setWatchlistsLoadedFromApi] = useState(false)
+  useEffect(() => {
+    if (!userId) return
+    setWatchlistsLoadedFromApi(false)
+    loadWatchlistsFromApi(userId).then(async (apiWatchlists) => {
+      // Check localStorage for any watchlists that aren't in the API yet (migration)
+      const localData = loadUserData(userId)
+      const apiWatchlistIds = new Set(apiWatchlists.map(w => w.id))
+      const localWatchlistsNotInApi = localData.watchlists.filter(w => !apiWatchlistIds.has(w.id))
+
+      if (localWatchlistsNotInApi.length > 0) {
+        // Migrate localStorage watchlists that don't exist in API
+        console.log('[Migration] Migrating', localWatchlistsNotInApi.length, 'watchlists to API...')
+        for (const wl of localWatchlistsNotInApi) {
+          const newId = await createWatchlistInApi(userId, wl.name)
+          if (newId) {
+            // Add bots to the newly created watchlist
+            for (const botId of wl.botIds) {
+              await addBotToWatchlistInApi(newId, botId)
+            }
+          }
+        }
+        console.log('[Migration] Watchlists migrated successfully')
+        // Reload from API to get fresh data with server IDs
+        const refreshedWatchlists = await loadWatchlistsFromApi(userId)
+        setWatchlists(ensureDefaultWatchlist(refreshedWatchlists))
+      } else if (apiWatchlists.length > 0) {
+        // No migration needed, just use API watchlists
+        setWatchlists(ensureDefaultWatchlist(apiWatchlists))
+      }
+      // If both are empty, keep the default watchlist from initial state
+      setWatchlistsLoadedFromApi(true)
+    }).catch((err) => {
+      console.warn('[API] Failed to load watchlists, using localStorage fallback:', err)
+      // Fallback to localStorage if API fails
+      const localData = loadUserData(userId)
+      if (localData.watchlists.length > 0) {
+        setWatchlists(ensureDefaultWatchlist(localData.watchlists))
+      }
+      setWatchlistsLoadedFromApi(true)
+    })
+  }, [userId])
+
+  // Load UI preferences from database API when user logs in
+  const [_prefsLoadedFromApi, setPrefsLoadedFromApi] = useState(false)
+  useEffect(() => {
+    if (!userId) return
+    setPrefsLoadedFromApi(false)
+    loadPreferencesFromApi(userId).then((apiPrefs) => {
+      if (apiPrefs) {
+        setUiState(apiPrefs)
+        console.log('[Preferences] Loaded from API')
+      } else {
+        // No API prefs yet, check localStorage for migration
+        const localData = loadUserData(userId)
+        if (localData.ui && localData.ui.theme) {
+          // Migrate localStorage preferences to API
+          savePreferencesToApi(userId, localData.ui).catch(err =>
+            console.warn('[API] Failed to migrate preferences:', err)
+          )
+        }
+      }
+      setPrefsLoadedFromApi(true)
+    }).catch((err) => {
+      console.warn('[API] Failed to load preferences:', err)
+      setPrefsLoadedFromApi(true)
+    })
+  }, [userId])
+
+  // Save UI preferences to database API when they change (debounced)
+  const uiStateRef = useRef(uiState)
+  useEffect(() => {
+    uiStateRef.current = uiState
+  }, [uiState])
+
+  useEffect(() => {
+    if (!userId) return
+    // Debounce preferences save to avoid excessive API calls
+    const timer = setTimeout(() => {
+      savePreferencesToApi(userId, uiStateRef.current).catch(err =>
+        console.warn('[API] Failed to save preferences:', err)
+      )
+    }, 1000) // 1 second debounce
+    return () => clearTimeout(timer)
+  }, [userId, uiState])
+
+  // Load call chains from database API when user logs in
+  const [_callChainsLoadedFromApi, setCallChainsLoadedFromApi] = useState(false)
+  useEffect(() => {
+    if (!userId) return
+    setCallChainsLoadedFromApi(false)
+    loadCallChainsFromApi(userId).then(async (apiCallChains) => {
+      // Check localStorage for any call chains that aren't in the API yet (migration)
+      const localData = loadUserData(userId)
+      const apiCallChainIds = new Set(apiCallChains.map(cc => cc.id))
+      const localCallChainsNotInApi = localData.callChains.filter(cc => !apiCallChainIds.has(cc.id))
+
+      if (localCallChainsNotInApi.length > 0) {
+        // Migrate localStorage call chains that don't exist in API
+        console.log('[Migration] Migrating', localCallChainsNotInApi.length, 'call chains to API...')
+        for (const cc of localCallChainsNotInApi) {
+          await createCallChainInApi(userId, cc)
+        }
+        console.log('[Migration] Call chains migrated successfully')
+        // Reload from API to get fresh data with server IDs
+        const refreshedCallChains = await loadCallChainsFromApi(userId)
+        setCallChains(refreshedCallChains)
+      } else if (apiCallChains.length > 0) {
+        // No migration needed, just use API call chains
+        setCallChains(apiCallChains)
+      }
+      setCallChainsLoadedFromApi(true)
+    }).catch((err) => {
+      console.warn('[API] Failed to load call chains, using localStorage fallback:', err)
+      const localData = loadUserData(userId)
+      if (localData.callChains.length > 0) {
+        setCallChains(localData.callChains)
+      }
+      setCallChainsLoadedFromApi(true)
+    })
+  }, [userId])
+
+  // Track call chain changes and sync to API
+  const callChainsRef = useRef(callChains)
+  const prevCallChainsRef = useRef<CallChain[]>([])
+  useEffect(() => {
+    callChainsRef.current = callChains
+  }, [callChains])
+
+  // Save call chains to database when they change (debounced)
+  useEffect(() => {
+    if (!userId) return
+    // Debounce call chain saves
+    const timer = setTimeout(async () => {
+      const current = callChainsRef.current
+      const previous = prevCallChainsRef.current
+
+      // Find new call chains (in current but not in previous)
+      const previousIds = new Set(previous.map(cc => cc.id))
+      const newCallChains = current.filter(cc => !previousIds.has(cc.id))
+      for (const cc of newCallChains) {
+        await createCallChainInApi(userId, cc)
+      }
+
+      // Find updated call chains (in both but different)
+      for (const cc of current) {
+        const prev = previous.find(p => p.id === cc.id)
+        if (prev && (prev.name !== cc.name || JSON.stringify(prev.root) !== JSON.stringify(cc.root) || prev.collapsed !== cc.collapsed)) {
+          await updateCallChainInApi(userId, cc)
+        }
+      }
+
+      // Find deleted call chains (in previous but not in current)
+      const currentIds = new Set(current.map(cc => cc.id))
+      const deletedCallChains = previous.filter(cc => !currentIds.has(cc.id))
+      for (const cc of deletedCallChains) {
+        await deleteCallChainInApi(userId, cc.id)
+      }
+
+      prevCallChainsRef.current = [...current]
+    }, 1000) // 1 second debounce
+    return () => clearTimeout(timer)
+  }, [userId, callChains])
+
+  // Manual refresh function for allNexusBots (called after Atlas slot changes)
+  const refreshAllNexusBots = useCallback(async () => {
+    if (!userId) return
+    try {
+      const apiBots = await fetchNexusBotsFromApi()
+      // Merge user's local Nexus bots with API bots (deduplicated)
+      const localNexusBots = savedBots.filter((bot) => bot.tags?.includes('Nexus'))
+      const localBotIds = new Set(localNexusBots.map((b) => b.id))
+      const apiBotsMerged = apiBots.filter((ab) => !localBotIds.has(ab.id))
+      const merged = [...localNexusBots, ...apiBotsMerged]
+      const seen = new Set<string>()
+      const deduplicated = merged.filter((bot) => {
+        if (seen.has(bot.id)) return false
+        seen.add(bot.id)
+        return true
+      })
+      setAllNexusBots(deduplicated)
+    } catch {
+      // Fallback to just user's local Nexus bots if API fails
+      setAllNexusBots(savedBots.filter((bot) => bot.tags?.includes('Nexus')))
+    }
+  }, [userId, savedBots])
 
   // Refresh cross-user Nexus bots when user changes or their own savedBots change
   // (their saved bots may now have Nexus tag)
   // Uses API for scalable cross-user visibility, falls back to localStorage
   useEffect(() => {
-    if (!userId) return
-
-    // Try API first for scalable cross-user data
-    fetchNexusBotsFromApi().then((apiBots) => {
-      if (apiBots.length > 0) {
-        // For current user's bots, prefer localStorage (has payload for editing)
-        // For other users' bots, use API data
-        const localNexusBots = savedBots.filter((bot) => bot.tags?.includes('Nexus'))
-        const localBotIds = new Set(localNexusBots.map((b) => b.id))
-        // Get API bots that aren't already in local (other users' bots, or user's bots not yet in local)
-        const apiBotsMerged = apiBots.filter((ab) => !localBotIds.has(ab.id))
-        // Merge: local first (freshest), then API bots not in local
-        const merged = [...localNexusBots, ...apiBotsMerged]
-        const seen = new Set<string>()
-        const deduplicated = merged.filter((bot) => {
-          if (seen.has(bot.id)) return false
-          seen.add(bot.id)
-          return true
-        })
-        setAllNexusBots(deduplicated)
-      } else {
-        // Fallback to localStorage-based loading
-        setAllNexusBots(loadAllNexusBots(userId))
-      }
-    }).catch(() => {
-      // Fallback to localStorage
-      setAllNexusBots(loadAllNexusBots(userId))
-    })
-  }, [userId, savedBots])
+    void refreshAllNexusBots()
+  }, [refreshAllNexusBots])
 
   const loadAvailableTickers = useCallback(async () => {
     const tryLoad = async (url: string) => {
@@ -11519,8 +11799,8 @@ function App() {
     return () => clearInterval(interval)
   }, [userId, dashboardTotalValue, dashboardCash, dashboardInvestmentsWithPnl, savedBots, allNexusBots])
 
-  const handleDashboardBuy = () => {
-    if (!dashboardBuyBotId) return
+  const handleDashboardBuy = async () => {
+    if (!dashboardBuyBotId || !userId) return
     // Look in both savedBots and allNexusBots to find the bot
     const bot = savedBots.find((b) => b.id === dashboardBuyBotId)
       ?? allNexusBots.find((b) => b.id === dashboardBuyBotId)
@@ -11550,23 +11830,42 @@ function App() {
       return
     }
 
-    const newInvestment: DashboardInvestment = {
-      botId: bot.id,
-      botName: bot.name,
-      buyDate: Date.now(),
-      costBasis: amount,
-    }
+    // Call API to persist the purchase
+    try {
+      const res = await fetch('/api/portfolio/buy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, botId: bot.id, amount }),
+      })
+      if (!res.ok) {
+        const { error } = await res.json()
+        alert(error || 'Failed to buy')
+        return
+      }
 
-    setDashboardPortfolio((prev) => ({
-      cash: prev.cash - amount,
-      investments: [...prev.investments, newInvestment],
-    }))
-    setDashboardBuyBotId('')
-    setDashboardBuyBotSearch('')
-    setDashboardBuyAmount('')
+      // Update local state after successful API call
+      const newInvestment: DashboardInvestment = {
+        botId: bot.id,
+        botName: bot.name,
+        buyDate: Date.now(),
+        costBasis: amount,
+      }
+
+      setDashboardPortfolio((prev) => ({
+        cash: prev.cash - amount,
+        investments: [...prev.investments, newInvestment],
+      }))
+      setDashboardBuyBotId('')
+      setDashboardBuyBotSearch('')
+      setDashboardBuyAmount('')
+    } catch (e) {
+      console.error('[Portfolio] Buy failed:', e)
+      alert('Network error - failed to buy')
+    }
   }
 
-  const handleDashboardSell = (botId: string, sellAll: boolean) => {
+  const handleDashboardSell = async (botId: string, sellAll: boolean) => {
+    if (!userId) return
     const investment = dashboardPortfolio.investments.find((inv) => inv.botId === botId)
     if (!investment) return
 
@@ -11585,29 +11884,48 @@ function App() {
 
     if (sellAmount <= 0) return
 
-    // If selling all or selling more than 99% of position, remove investment
-    if (sellAmount >= invWithPnl.currentValue * 0.99) {
-      setDashboardPortfolio((prev) => ({
-        cash: prev.cash + invWithPnl.currentValue,
-        investments: prev.investments.filter((inv) => inv.botId !== botId),
-      }))
-    } else {
-      // Partial sell - reduce cost basis proportionally
-      const sellRatio = sellAmount / invWithPnl.currentValue
-      const newCostBasis = investment.costBasis * (1 - sellRatio)
-      setDashboardPortfolio((prev) => ({
-        cash: prev.cash + sellAmount,
-        investments: prev.investments.map((inv) =>
-          inv.botId === botId ? { ...inv, costBasis: newCostBasis } : inv,
-        ),
-      }))
-    }
+    // Call API to persist the sale
+    try {
+      const res = await fetch('/api/portfolio/sell', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, botId, amount: sellAmount }),
+      })
+      if (!res.ok) {
+        const { error } = await res.json()
+        alert(error || 'Failed to sell')
+        return
+      }
 
-    setDashboardSellBotId(null)
-    setDashboardSellAmount('')
+      // Update local state after successful API call
+      // If selling all or selling more than 99% of position, remove investment
+      if (sellAmount >= invWithPnl.currentValue * 0.99) {
+        setDashboardPortfolio((prev) => ({
+          cash: prev.cash + invWithPnl.currentValue,
+          investments: prev.investments.filter((inv) => inv.botId !== botId),
+        }))
+      } else {
+        // Partial sell - reduce cost basis proportionally
+        const sellRatio = sellAmount / invWithPnl.currentValue
+        const newCostBasis = investment.costBasis * (1 - sellRatio)
+        setDashboardPortfolio((prev) => ({
+          cash: prev.cash + sellAmount,
+          investments: prev.investments.map((inv) =>
+            inv.botId === botId ? { ...inv, costBasis: newCostBasis } : inv,
+          ),
+        }))
+      }
+
+      setDashboardSellBotId(null)
+      setDashboardSellAmount('')
+    } catch (e) {
+      console.error('[Portfolio] Sell failed:', e)
+      alert('Network error - failed to sell')
+    }
   }
 
-  const handleDashboardBuyMore = (botId: string) => {
+  const handleDashboardBuyMore = async (botId: string) => {
+    if (!userId) return
     const investment = dashboardPortfolio.investments.find((inv) => inv.botId === botId)
     if (!investment) return
 
@@ -11630,22 +11948,40 @@ function App() {
       return
     }
 
-    // Add to existing position
-    setDashboardPortfolio((prev) => ({
-      cash: prev.cash - amount,
-      investments: prev.investments.map((inv) =>
-        inv.botId === botId
-          ? { ...inv, costBasis: inv.costBasis + amount, buyDate: Date.now() }
-          : inv,
-      ),
-    }))
+    // Call API to persist the additional purchase
+    try {
+      const res = await fetch('/api/portfolio/buy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, botId, amount }),
+      })
+      if (!res.ok) {
+        const { error } = await res.json()
+        alert(error || 'Failed to buy more')
+        return
+      }
 
-    setDashboardBuyMoreBotId(null)
-    setDashboardBuyMoreAmount('')
+      // Add to existing position
+      setDashboardPortfolio((prev) => ({
+        cash: prev.cash - amount,
+        investments: prev.investments.map((inv) =>
+          inv.botId === botId
+            ? { ...inv, costBasis: inv.costBasis + amount, buyDate: Date.now() }
+            : inv,
+        ),
+      }))
+
+      setDashboardBuyMoreBotId(null)
+      setDashboardBuyMoreAmount('')
+    } catch (e) {
+      console.error('[Portfolio] Buy more failed:', e)
+      alert('Network error - failed to buy more')
+    }
   }
 
   // Handle buying Nexus bots from inline buy UI (Analyze tab, Community Nexus, watchlists)
-  const handleNexusBuy = (botId: string) => {
+  const handleNexusBuy = async (botId: string) => {
+    if (!userId) return
     // Look in both savedBots and allNexusBots to find the bot
     const bot = savedBots.find((b) => b.id === botId)
       ?? allNexusBots.find((b) => b.id === botId)
@@ -11670,35 +12006,53 @@ function App() {
       return
     }
 
-    // Check if already invested - if so, add to position
-    const existingInvestment = dashboardPortfolio.investments.find((inv) => inv.botId === botId)
-    if (existingInvestment) {
-      // Add to existing position
-      setDashboardPortfolio((prev) => ({
-        cash: prev.cash - amount,
-        investments: prev.investments.map((inv) =>
-          inv.botId === botId
-            ? { ...inv, costBasis: inv.costBasis + amount, buyDate: Date.now() }
-            : inv,
-        ),
-      }))
-    } else {
-      // Create new investment
-      const newInvestment: DashboardInvestment = {
-        botId: bot.id,
-        botName: bot.name,
-        buyDate: Date.now(),
-        costBasis: amount,
+    // Call API to persist the purchase
+    try {
+      const res = await fetch('/api/portfolio/buy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, botId: bot.id, amount }),
+      })
+      if (!res.ok) {
+        const { error } = await res.json()
+        alert(error || 'Failed to buy')
+        return
       }
-      setDashboardPortfolio((prev) => ({
-        cash: prev.cash - amount,
-        investments: [...prev.investments, newInvestment],
-      }))
-    }
 
-    // Reset state
-    setNexusBuyBotId(null)
-    setNexusBuyAmount('')
+      // Update local state after successful API call
+      // Check if already invested - if so, add to position
+      const existingInvestment = dashboardPortfolio.investments.find((inv) => inv.botId === botId)
+      if (existingInvestment) {
+        // Add to existing position
+        setDashboardPortfolio((prev) => ({
+          cash: prev.cash - amount,
+          investments: prev.investments.map((inv) =>
+            inv.botId === botId
+              ? { ...inv, costBasis: inv.costBasis + amount, buyDate: Date.now() }
+              : inv,
+          ),
+        }))
+      } else {
+        // Create new investment
+        const newInvestment: DashboardInvestment = {
+          botId: bot.id,
+          botName: bot.name,
+          buyDate: Date.now(),
+          costBasis: amount,
+        }
+        setDashboardPortfolio((prev) => ({
+          cash: prev.cash - amount,
+          investments: [...prev.investments, newInvestment],
+        }))
+      }
+
+      // Reset state
+      setNexusBuyBotId(null)
+      setNexusBuyAmount('')
+    } catch (e) {
+      console.error('[Portfolio] Nexus buy failed:', e)
+      alert('Network error - failed to buy')
+    }
   }
 
   // Bot colors for chart lines
@@ -12123,13 +12477,6 @@ function App() {
         return callNodeCache.get(id) ?? null
       }
 
-      // DEBUG: Log Dec 12 index to verify date handling
-      const dec12Ts = db.dates.findIndex(t => isoFromUtcSeconds(t) === '2025-12-12')
-      console.log(`[FRONTEND BACKTEST] Dec 12 index: ${dec12Ts}, total dates: ${db.dates.length}, startEvalIndex: ${startEvalIndex}`)
-      if (dec12Ts >= 0) {
-        console.log(`[FRONTEND BACKTEST] Dec 12 timestamp: ${db.dates[dec12Ts]}, date: ${isoFromUtcSeconds(db.dates[dec12Ts])}`)
-      }
-
       for (let i = startEvalIndex; i < db.dates.length; i++) {
         const indicatorIndex = decisionPrice === 'open' ? i - 1 : i
         const ctx: EvalCtx = {
@@ -12144,11 +12491,6 @@ function App() {
         }
         allocationsAt[i] = evaluateNode(ctx, prepared)
         contributionsAt[i] = tracePositionContributions(ctx, prepared)
-
-        // DEBUG: Log final allocation for Dec 11 and Dec 12
-        if (isoFromUtcSeconds(db.dates[i]) === '2025-12-11' || isoFromUtcSeconds(db.dates[i]) === '2025-12-12') {
-          console.log(`[FRONTEND BACKTEST] ${isoFromUtcSeconds(db.dates[i])} FINAL ALLOCATION at index ${i}:`, JSON.stringify(allocationsAt[i]))
-        }
       }
 
       const startTradeIndex = startEvalIndex
@@ -12362,7 +12704,7 @@ function App() {
 
   const handleExport = useCallback(() => {
     if (!current) return
-    const json = JSON.stringify(current, null, 2)
+    const json = JSON.stringify(current) // Minified for smaller file size
     const blob = new Blob([json], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -12383,14 +12725,25 @@ function App() {
       if (byId) return byId.id
       const byName = watchlists.find((w) => w.name.toLowerCase() === raw.toLowerCase())
       if (byName) return byName.id
-      const id = `wl-${newId()}`
-      setWatchlists((prev) => ensureDefaultWatchlist([{ id, name: raw, botIds: [] }, ...prev]))
-      return id
+      // Create new watchlist with temporary local ID
+      const tempId = `wl-${newId()}`
+      setWatchlists((prev) => ensureDefaultWatchlist([{ id: tempId, name: raw, botIds: [] }, ...prev]))
+      // Create in database asynchronously (will use different ID, but local state works for now)
+      if (userId) {
+        createWatchlistInApi(userId, raw).then(serverId => {
+          if (serverId && serverId !== tempId) {
+            // Update local state with server-assigned ID
+            setWatchlists((prev) => prev.map(w => w.id === tempId ? { ...w, id: serverId } : w))
+          }
+        }).catch(err => console.warn('[API] Failed to create watchlist:', err))
+      }
+      return tempId
     },
-    [watchlists],
+    [watchlists, userId],
   )
 
   const addBotToWatchlist = useCallback((botId: string, watchlistId: string) => {
+    // Update local state immediately for responsive UI
     setWatchlists((prev) =>
       prev.map((w) => {
         if (w.id !== watchlistId) return w
@@ -12398,11 +12751,20 @@ function App() {
         return { ...w, botIds: [...w.botIds, botId] }
       }),
     )
+    // Sync to database in background
+    addBotToWatchlistInApi(watchlistId, botId).catch(err =>
+      console.warn('[API] Failed to add bot to watchlist:', err)
+    )
   }, [])
 
   const removeBotFromWatchlist = useCallback((botId: string, watchlistId: string) => {
+    // Update local state immediately for responsive UI
     setWatchlists((prev) =>
       prev.map((w) => (w.id === watchlistId ? { ...w, botIds: w.botIds.filter((id) => id !== botId) } : w)),
+    )
+    // Sync to database in background
+    removeBotFromWatchlistInApi(watchlistId, botId).catch(err =>
+      console.warn('[API] Failed to remove bot from watchlist:', err)
     )
   }, [])
 
@@ -12917,7 +13279,7 @@ function App() {
       }
       const ensured = ensureSlots(cloneNode(bot.payload))
       setClipboard(ensured)
-      const json = JSON.stringify(bot.payload, null, 2)
+      const json = JSON.stringify(bot.payload) // Minified for smaller clipboard size
       try {
         if (navigator?.clipboard?.writeText) {
           await navigator.clipboard.writeText(json)
@@ -12953,7 +13315,7 @@ function App() {
 
       // Add to savedBots and sync to API
       setSavedBots((prev) => [...prev, newBot])
-      await syncBotToApi(userId, newBot)
+      await createBotInApi(userId, newBot)
 
       // Open in Build tab
       const session: BotSession = {
@@ -13319,10 +13681,14 @@ function App() {
     }
     const data = loadUserData(nextUser)
     setUserId(nextUser)
-    setSavedBots(data.savedBots)
-    setWatchlists(data.watchlists)
-    setCallChains(data.callChains)
-    setUiState(data.ui)
+    // Bots, watchlists, call chains, and preferences will be loaded from database API via useEffects when userId changes
+    // Set defaults here, the useEffects will replace with API data
+    setSavedBots(data.savedBots) // Initial from localStorage, then replaced by API
+    setWatchlists(ensureDefaultWatchlist([])) // Empty default, will be loaded from API
+    setCallChains([]) // Empty default, will be loaded from API
+    setUiState(defaultUiState()) // Default, will be loaded from API
+    // Portfolio will be loaded from database API via useEffect when userId changes
+    setDashboardPortfolio(defaultDashboardPortfolio())
     setAnalyzeBacktests({})
     setTab('Build')
   }
@@ -13338,6 +13704,7 @@ function App() {
     setWatchlists([])
     setCallChains([])
     setUiState(defaultUiState())
+    setDashboardPortfolio(defaultDashboardPortfolio())
     setAnalyzeBacktests({})
     setTab('Build')
     setSaveMenuOpen(false)
@@ -13930,6 +14297,7 @@ function App() {
                 }}
                 savedBots={savedBots}
                 setSavedBots={setSavedBots}
+                onRefreshNexusBots={refreshAllNexusBots}
               />
             </CardContent>
           </Card>
@@ -14601,8 +14969,8 @@ function App() {
                   }
                 })
 
-              // Atlas sponsored systems (from admin)
-              const atlasBotRows: CommunityBotRow[] = savedBots
+              // Atlas sponsored systems (from admin) - use allNexusBots which includes Atlas-tagged bots from API
+              const atlasBotRows: CommunityBotRow[] = allNexusBots
                 .filter(bot => bot.tags?.includes('Atlas'))
                 .map((bot) => {
                   const tagNames = (watchlistsByBotId.get(bot.id) ?? []).map((w) => w.name)
@@ -15986,7 +16354,7 @@ function App() {
                                 const updatedBot: SavedBot = { ...bot, tags: ['Private', 'Nexus Eligible', ...baseTags], fundSlot: null }
                                 setSavedBots(prev => prev.map(b => b.id !== botId ? b : updatedBot))
                                 // Sync to database - this will set visibility to 'nexus_eligible' (not 'nexus')
-                                await syncBotToApi(userId, updatedBot)
+                                await updateBotInApi(userId, updatedBot)
                               }}
                             >
                               Remove
@@ -16090,7 +16458,7 @@ function App() {
                                           const baseTags = (bot.tags || []).filter(t => t !== 'Private' && t !== 'Nexus Eligible' && t !== 'Nexus')
                                           const updatedBot = { ...bot, tags: ['Nexus', ...baseTags], fundSlot: fundNum }
                                           // Sync to database for cross-user visibility
-                                          if (userId) syncBotToApi(userId, updatedBot).catch(() => {})
+                                          if (userId) updateBotInApi(userId, updatedBot).catch(() => {})
                                           return updatedBot
                                         }))
                                       }}

@@ -123,6 +123,19 @@ export const userPreferences = sqliteTable('user_preferences', {
 })
 
 // ============================================
+// CALL CHAINS (Reusable Strategy Components)
+// ============================================
+export const callChains = sqliteTable('call_chains', {
+  id: text('id').primaryKey(),
+  ownerId: text('owner_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  root: text('root').notNull(), // JSON payload of FlowNode
+  collapsed: integer('collapsed', { mode: 'boolean' }).default(false),
+  createdAt: integer('created_at', { mode: 'timestamp' }).$defaultFn(() => new Date()),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).$defaultFn(() => new Date()),
+})
+
+// ============================================
 // ADMIN: ELIGIBILITY REQUIREMENTS
 // ============================================
 export const eligibilityRequirements = sqliteTable('eligibility_requirements', {
@@ -150,6 +163,7 @@ export const adminConfig = sqliteTable('admin_config', {
 export const usersRelations = relations(users, ({ many, one }) => ({
   bots: many(bots),
   watchlists: many(watchlists),
+  callChains: many(callChains),
   portfolio: one(portfolios),
   preferences: one(userPreferences),
 }))
@@ -184,4 +198,8 @@ export const portfoliosRelations = relations(portfolios, ({ one, many }) => ({
 export const portfolioPositionsRelations = relations(portfolioPositions, ({ one }) => ({
   portfolio: one(portfolios, { fields: [portfolioPositions.portfolioId], references: [portfolios.id] }),
   bot: one(bots, { fields: [portfolioPositions.botId], references: [bots.id] }),
+}))
+
+export const callChainsRelations = relations(callChains, ({ one }) => ({
+  owner: one(users, { fields: [callChains.ownerId], references: [users.id] }),
 }))

@@ -3,7 +3,7 @@ import { drizzle } from 'drizzle-orm/better-sqlite3'
 import * as schema from './schema.mjs'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import { eq, desc, and, isNull } from 'drizzle-orm'
+import { eq, desc, and, or, isNull, like } from 'drizzle-orm'
 import crypto from 'crypto'
 import fs from 'fs'
 
@@ -132,6 +132,16 @@ export function initializeDatabase() {
       updated_at INTEGER
     );
 
+    CREATE TABLE IF NOT EXISTS call_chains (
+      id TEXT PRIMARY KEY,
+      owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      root TEXT NOT NULL,
+      collapsed INTEGER DEFAULT 0,
+      created_at INTEGER,
+      updated_at INTEGER
+    );
+
     CREATE TABLE IF NOT EXISTS eligibility_requirements (
       id TEXT PRIMARY KEY,
       metric TEXT NOT NULL,
@@ -158,6 +168,7 @@ export function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_watchlists_owner ON watchlists(owner_id);
     CREATE INDEX IF NOT EXISTS idx_positions_portfolio ON portfolio_positions(portfolio_id);
     CREATE INDEX IF NOT EXISTS idx_equity_bot ON bot_equity_curves(bot_id, date);
+    CREATE INDEX IF NOT EXISTS idx_call_chains_owner ON call_chains(owner_id);
   `)
 
   // Seed default admin config
@@ -285,10 +296,13 @@ export async function getBotsByOwner(ownerId) {
 }
 
 export async function getNexusBots() {
-  // Get all Nexus bots (visibility = 'nexus') - NO payload for security
+  // Get all Nexus bots (visibility = 'nexus') OR Atlas-tagged bots - NO payload for security
   const bots = await db.query.bots.findMany({
     where: and(
-      eq(schema.bots.visibility, 'nexus'),
+      or(
+        eq(schema.bots.visibility, 'nexus'),
+        like(schema.bots.tags, '%"Atlas"%')
+      ),
       isNull(schema.bots.deletedAt)
     ),
     orderBy: desc(schema.bots.createdAt),
@@ -493,6 +507,35 @@ export async function removeBotFromWatchlist(watchlistId, botId) {
   const result = sqlite.prepare(
     'DELETE FROM watchlist_bots WHERE watchlist_id = ? AND bot_id = ?'
   ).run(watchlistId, botId)
+  return result.changes > 0
+}
+
+export async function createWatchlist(ownerId, name) {
+  const id = generateId()
+  const now = new Date()
+  await db.insert(schema.watchlists).values({
+    id,
+    ownerId,
+    name,
+    isDefault: false,
+    createdAt: now,
+    updatedAt: now,
+  })
+  return { id, ownerId, name, isDefault: false, bots: [] }
+}
+
+export async function updateWatchlist(id, data) {
+  const now = new Date()
+  await db.update(schema.watchlists)
+    .set({ ...data, updatedAt: now })
+    .where(eq(schema.watchlists.id, id))
+}
+
+export async function deleteWatchlist(id) {
+  // First delete all bot associations
+  sqlite.prepare('DELETE FROM watchlist_bots WHERE watchlist_id = ?').run(id)
+  // Then delete the watchlist
+  const result = sqlite.prepare('DELETE FROM watchlists WHERE id = ?').run(id)
   return result.changes > 0
 }
 
@@ -718,6 +761,74 @@ export async function getAggregatedStats() {
     totalPortfolioValue: result.total_cash + result.total_invested,
     nexusBotCount: result.nexus_bot_count,
   }
+}
+
+// ============================================
+// CALL CHAIN OPERATIONS
+// ============================================
+export async function getCallChainsByOwner(ownerId) {
+  const chains = sqlite.prepare(`
+    SELECT id, owner_id, name, root, collapsed, created_at, updated_at
+    FROM call_chains
+    WHERE owner_id = ?
+    ORDER BY created_at DESC
+  `).all(ownerId)
+
+  return chains.map(chain => ({
+    id: chain.id,
+    ownerId: chain.owner_id,
+    name: chain.name,
+    root: chain.root, // JSON string, frontend will parse
+    collapsed: Boolean(chain.collapsed),
+    createdAt: chain.created_at,
+    updatedAt: chain.updated_at,
+  }))
+}
+
+export async function createCallChain(ownerId, name, root) {
+  const id = generateId()
+  const now = Date.now()
+  sqlite.prepare(`
+    INSERT INTO call_chains (id, owner_id, name, root, collapsed, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(id, ownerId, name, root, 0, now, now)
+  return { id, ownerId, name, root, collapsed: false, createdAt: now, updatedAt: now }
+}
+
+export async function updateCallChain(id, ownerId, data) {
+  // Verify ownership
+  const existing = sqlite.prepare('SELECT id FROM call_chains WHERE id = ? AND owner_id = ?').get(id, ownerId)
+  if (!existing) return null
+
+  const updates = []
+  const values = []
+
+  if (data.name !== undefined) {
+    updates.push('name = ?')
+    values.push(data.name)
+  }
+  if (data.root !== undefined) {
+    updates.push('root = ?')
+    values.push(data.root)
+  }
+  if (data.collapsed !== undefined) {
+    updates.push('collapsed = ?')
+    values.push(data.collapsed ? 1 : 0)
+  }
+
+  if (updates.length === 0) return id
+
+  updates.push('updated_at = ?')
+  values.push(Date.now())
+  values.push(id)
+
+  sqlite.prepare(`UPDATE call_chains SET ${updates.join(', ')} WHERE id = ?`).run(...values)
+  return id
+}
+
+export async function deleteCallChain(id, ownerId) {
+  const result = sqlite.prepare('DELETE FROM call_chains WHERE id = ? AND owner_id = ?').run(id, ownerId)
+  return result.changes > 0
 }
 
 // Export the raw sqlite connection for advanced queries

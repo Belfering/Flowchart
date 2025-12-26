@@ -929,6 +929,117 @@ app.delete('/api/watchlists/:id/bots/:botId', async (req, res) => {
   }
 })
 
+// POST /api/watchlists - Create a new watchlist
+app.post('/api/watchlists', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const { userId, name } = req.body
+    if (!userId || !name) {
+      return res.status(400).json({ error: 'userId and name are required' })
+    }
+    const watchlist = await database.createWatchlist(userId, name)
+    res.json({ watchlist })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// PUT /api/watchlists/:id - Update a watchlist
+app.put('/api/watchlists/:id', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const { name } = req.body
+    if (!name) {
+      return res.status(400).json({ error: 'name is required' })
+    }
+    await database.updateWatchlist(req.params.id, { name })
+    res.json({ success: true })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// DELETE /api/watchlists/:id - Delete a watchlist
+app.delete('/api/watchlists/:id', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    await database.deleteWatchlist(req.params.id)
+    res.json({ success: true })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// ============================================================================
+// Call Chain Endpoints
+// ============================================================================
+
+// GET /api/call-chains - Get user's call chains
+app.get('/api/call-chains', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const userId = req.query.userId
+    if (!userId) {
+      return res.status(400).json({ error: 'userId query parameter required' })
+    }
+    const callChains = await database.getCallChainsByOwner(userId)
+    res.json({ callChains })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// POST /api/call-chains - Create a new call chain
+app.post('/api/call-chains', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const { userId, name, root } = req.body
+    if (!userId || !name || !root) {
+      return res.status(400).json({ error: 'userId, name, and root are required' })
+    }
+    const callChain = await database.createCallChain(userId, name, root)
+    res.json({ callChain })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// PUT /api/call-chains/:id - Update a call chain
+app.put('/api/call-chains/:id', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const { userId, name, root, collapsed } = req.body
+    if (!userId) {
+      return res.status(400).json({ error: 'userId is required' })
+    }
+    const result = await database.updateCallChain(req.params.id, userId, { name, root, collapsed })
+    if (!result) {
+      return res.status(404).json({ error: 'Call chain not found or not owned by user' })
+    }
+    res.json({ success: true })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// DELETE /api/call-chains/:id - Delete a call chain
+app.delete('/api/call-chains/:id', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const userId = req.query.userId
+    if (!userId) {
+      return res.status(400).json({ error: 'userId query parameter required' })
+    }
+    const success = await database.deleteCallChain(req.params.id, userId)
+    if (!success) {
+      return res.status(404).json({ error: 'Call chain not found or not owned by user' })
+    }
+    res.json({ success: true })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
 // ============================================================================
 // Portfolio Endpoints
 // ============================================================================

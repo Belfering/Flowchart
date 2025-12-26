@@ -3,15 +3,17 @@ Generated: 2025-12-22 (Updated)
 
 ## Executive Summary
 
-**Total FRDs**: 14 active documents
-**Completed**: 10 (FRD-001, FRD-002, FRD-004, FRD-005, FRD-006, FRD-012, FRD-013, FRD-014, FRD-016, Admin features)
+**Total FRDs**: 15 active documents
+**Completed**: 12 (FRD-001, FRD-002, FRD-004, FRD-005, FRD-006, FRD-012, FRD-013, FRD-014, FRD-016, FRD-018, FRD-019, Admin features)
 **In Progress**: 0
 **Deferred (OFF)**: 1 (FRD-011)
 **Blocked/Awaiting Decisions**: 3 (FRD-003, FRD-007, FRD-008)
 **Pending**: 1 (FRD-017)
-**Completion Rate**: 71%
+**Completion Rate**: 80%
 
 ### Latest Updates (2025-12-22)
+- **COMPLETED**: FRD-018 (Alt Exit & Scaling) - Two new node types with stateful/gradient allocation
+- **COMPLETED**: FRD-019 (Auto-Detect Import) - Unified import with Atlas/Composer/QuantMage detection
 - **COMPLETED**: FRD-012 (Fund Lock) - Published systems are immutable, "Copy to New" available
 - **COMPLETED**: FRD-013 (Rename to Systems) - UI strings updated from "Bot" to "System"
 - **COMPLETED**: FRD-014 (Backtest Caching) - Separate cache DB, daily refresh on first login
@@ -159,6 +161,50 @@ Generated: 2025-12-22 (Updated)
 - Displayed in Build tab metrics panel
 - Displayed in Analyze tab expanded view
 - Displayed in System Cards (Historical Stats)
+
+---
+
+### FRD-018: Alt Exit & Scaling Node Types
+**Status**: COMPLETE
+**Priority**: Medium
+
+#### What Was Completed:
+- **Alt Exit Node**: Stateful toggle with distinct entry/exit conditions
+  - "Latches" in THEN state until exit condition triggers
+  - Then stays in ELSE until entry condition triggers again
+  - Supports AND/OR condition chains for both entry and exit
+  - First bar evaluates both conditions, entry takes priority
+- **Scaling Node**: Gradient allocation based on indicator position in range
+  - Single indicator only (e.g., RSI 14 of SPY)
+  - FROM/TO range defines gradient (inverted ranges supported)
+  - At or below FROM = 100% THEN, at or above TO = 100% ELSE
+  - In range = proportional blend between branches
+- Both node types added to createNode(), evaluateNode(), NodeCard UI
+- SLOT_ORDER updated: both use `['then', 'else']` (no 'next' slot)
+
+---
+
+### FRD-019: Auto-Detect Import (Atlas/Composer/QuantMage)
+**Status**: COMPLETE
+**Priority**: High
+
+#### What Was Completed:
+- Unified Import button auto-detects format:
+  - **Atlas**: Native JSON format (has `kind`, `id`, `children` fields)
+  - **Composer**: Symphony export format (has `step` field)
+  - **QuantMage**: Placeholder for future (detected but shows "not yet supported")
+- **Composer Parser** (`parseComposerSymphony`):
+  - Maps `asset` → Position node
+  - Maps `filter` → Sort/Function node
+  - Maps `if`/`if-child` → Indicator node with conditions
+  - Maps `group`/`wt-cash-equal`/`root` → Basic node
+  - Flattens `wt-cash-equal` wrapper nodes
+  - Threshold detection via `rhs-fixed-value?` field
+  - Indicator vs indicator comparison support (`expanded: true`)
+- **Metric Mapping**: standard-deviation-return → Standard Deviation, etc.
+- **Comparator Mapping**: crosses-above → crossAbove, etc.
+- Console logging for debugging: `[Import] Detected format: composer`
+- File name inference for untitled strategies
 
 ---
 

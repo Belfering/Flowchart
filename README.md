@@ -167,8 +167,17 @@ The backend provides the following REST API endpoints:
 
 ### Watchlists
 - `GET /api/watchlists?userId=X` - Get user's watchlists
+- `POST /api/watchlists` - Create new watchlist
+- `PUT /api/watchlists/:id` - Update watchlist
+- `DELETE /api/watchlists/:id` - Delete watchlist
 - `POST /api/watchlists/:id/bots` - Add bot to watchlist
 - `DELETE /api/watchlists/:id/bots/:botId` - Remove bot from watchlist
+
+### Call Chains
+- `GET /api/call-chains?userId=X` - Get user's call chains
+- `POST /api/call-chains` - Create new call chain
+- `PUT /api/call-chains/:id` - Update call chain
+- `DELETE /api/call-chains/:id` - Delete call chain
 
 ### Portfolio
 - `GET /api/portfolio?userId=X` - Get user's portfolio with positions
@@ -224,9 +233,9 @@ npm run preview
 3. Data is stored as Parquet files in `ticker-data/data/ticker_data_parquet/`
 4. DuckDB queries Parquet files on-demand for candle data
 5. Frontend displays data and allows users to build trading logic
-6. **All bots are stored in the SQLite database** (database is the sole source of truth)
-7. Portfolio investments and metrics are stored in SQLite database
-8. localStorage stores only UI state, watchlists, and call chains (not bots)
+6. **All user data is stored in the SQLite database** (database is the sole source of truth)
+7. Portfolio investments, watchlists, preferences, and call chains are all in SQLite
+8. localStorage is only used for legacy migration (data migrates to database on login)
 
 ### Storage Architecture
 
@@ -235,11 +244,11 @@ npm run preview
 | **Bots** | SQLite database | Full payload, metrics, visibility |
 | **Portfolios** | SQLite database | Cash balance, positions |
 | **Bot Metrics** | SQLite database | CAGR, Sharpe, drawdown, etc. |
-| **Watchlists** | localStorage | Bot ID references only |
-| **UI State** | localStorage | Theme, expanded panels, etc. |
-| **Call Chains** | localStorage | User-defined function chains |
+| **Watchlists** | SQLite database | Per-user watchlists with bot associations |
+| **User Preferences** | SQLite database | Theme, color scheme, UI state |
+| **Call Chains** | SQLite database | User-defined reusable function chains |
 
-On first login, any bots stored in localStorage plus seed bots for new users are automatically migrated to the database.
+All user data is now stored in the SQLite database, enabling multi-device access and cross-user features. On first login, any legacy localStorage data is automatically migrated to the database.
 
 ## Development
 
@@ -273,12 +282,17 @@ Feature Requirements Documents live in `frd/`.
 - FRD-004: Theming toggle with per-profile persistence
 - FRD-005: Atlas Engine branding
 - FRD-006: Tailwind CSS + shadcn/ui refactor
-- FRD-010: Scalable database architecture
+- FRD-012: Fund Lock (no edit for published systems)
+- FRD-013: Rename "Bots" to "Systems" in UI
+- FRD-014: Backtest caching with daily refresh
+- FRD-016: Beta metric (vs SPY)
+- FRD-018: Alt Exit & Scaling node types
+- FRD-019: Auto-detect import (Atlas/Composer/QuantMage)
+- Full database migration (portfolios, bots, watchlists, preferences, call chains)
 
-### In Progress
+### Pending
 - FRD-003: Conditional logic validation (AND/IF, OR/IF testing)
-- FRD-007: Database architecture decisions
-- Admin Panel & Partner Program enhancements
+- FRD-017: Payload storage optimization (deferred until needed)
 
 ## Contributing
 
