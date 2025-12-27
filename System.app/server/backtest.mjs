@@ -507,6 +507,530 @@ const rollingUltimateSmoother = (values, period) => {
 }
 
 // ============================================
+// ADDITIONAL MOVING AVERAGES
+// ============================================
+
+// Hull Moving Average - reduces lag significantly
+// HMA = WMA(2*WMA(n/2) - WMA(n), sqrt(n))
+const rollingHma = (values, period) => {
+  const halfPeriod = Math.floor(period / 2)
+  const sqrtPeriod = Math.floor(Math.sqrt(period))
+  const wma1 = rollingWma(values, halfPeriod)
+  const wma2 = rollingWma(values, period)
+  const diff = wma1.map((v, i) => {
+    if (v == null || wma2[i] == null) return NaN
+    return 2 * v - wma2[i]
+  })
+  return rollingWma(diff, sqrtPeriod)
+}
+
+// Weighted Moving Average - linear weights (recent bars weighted more)
+const rollingWma = (values, period) => {
+  const out = new Array(values.length).fill(null)
+  const divisor = (period * (period + 1)) / 2
+  for (let i = period - 1; i < values.length; i++) {
+    let sum = 0
+    let valid = true
+    for (let j = 0; j < period; j++) {
+      const v = values[i - period + 1 + j]
+      if (Number.isNaN(v)) {
+        valid = false
+        break
+      }
+      sum += v * (j + 1) // weight increases from 1 to period
+    }
+    if (valid) out[i] = sum / divisor
+  }
+  return out
+}
+
+// Wilder's Moving Average (same alpha as Wilder RSI uses)
+const rollingWildersMa = (values, period) => {
+  const out = new Array(values.length).fill(null)
+  const alpha = 1 / period
+  let ma = null
+  let seedSum = 0
+  let seedCount = 0
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i]
+    if (Number.isNaN(v)) {
+      ma = null
+      seedSum = 0
+      seedCount = 0
+      continue
+    }
+    if (ma == null) {
+      seedSum += v
+      seedCount++
+      if (seedCount === period) {
+        ma = seedSum / period
+        out[i] = ma
+      }
+      continue
+    }
+    ma = alpha * v + (1 - alpha) * ma
+    out[i] = ma
+  }
+  return out
+}
+
+// Double EMA (DEMA) = 2*EMA - EMA(EMA)
+const rollingDema = (values, period) => {
+  const ema1 = rollingEma(values, period)
+  const ema2 = rollingEma(ema1.map(v => v ?? NaN), period)
+  return ema1.map((v, i) => {
+    if (v == null || ema2[i] == null) return null
+    return 2 * v - ema2[i]
+  })
+}
+
+// Triple EMA (TEMA) = 3*EMA - 3*EMA(EMA) + EMA(EMA(EMA))
+const rollingTema = (values, period) => {
+  const ema1 = rollingEma(values, period)
+  const ema2 = rollingEma(ema1.map(v => v ?? NaN), period)
+  const ema3 = rollingEma(ema2.map(v => v ?? NaN), period)
+  return ema1.map((v, i) => {
+    if (v == null || ema2[i] == null || ema3[i] == null) return null
+    return 3 * v - 3 * ema2[i] + ema3[i]
+  })
+}
+
+// Kaufman Adaptive Moving Average (KAMA)
+const rollingKama = (values, period, fastPeriod = 2, slowPeriod = 30) => {
+  const out = new Array(values.length).fill(null)
+  const fastSC = 2 / (fastPeriod + 1)
+  const slowSC = 2 / (slowPeriod + 1)
+  let kama = null
+  for (let i = period; i < values.length; i++) {
+    const v = values[i]
+    if (Number.isNaN(v) || Number.isNaN(values[i - period])) {
+      kama = null
+      continue
+    }
+    // Calculate Efficiency Ratio
+    const change = Math.abs(v - values[i - period])
+    let volatility = 0
+    let valid = true
+    for (let j = 1; j <= period; j++) {
+      if (Number.isNaN(values[i - j]) || Number.isNaN(values[i - j + 1])) {
+        valid = false
+        break
+      }
+      volatility += Math.abs(values[i - j + 1] - values[i - j])
+    }
+    if (!valid) continue
+    const er = volatility === 0 ? 0 : change / volatility
+    const sc = Math.pow(er * (fastSC - slowSC) + slowSC, 2)
+    if (kama == null) {
+      kama = v
+    } else {
+      kama = kama + sc * (v - kama)
+    }
+    out[i] = kama
+  }
+  return out
+}
+
+// ============================================
+// RSI VARIANTS
+// ============================================
+
+// RSI with SMA smoothing (instead of Wilder's method)
+const rollingRsiSma = (closes, period) => {
+  const out = new Array(closes.length).fill(null)
+  const gains = new Array(closes.length).fill(NaN)
+  const losses = new Array(closes.length).fill(NaN)
+  for (let i = 1; i < closes.length; i++) {
+    const change = closes[i] - closes[i - 1]
+    if (Number.isNaN(change)) continue
+    gains[i] = change > 0 ? change : 0
+    losses[i] = change < 0 ? -change : 0
+  }
+  const avgGain = rollingSma(gains, period)
+  const avgLoss = rollingSma(losses, period)
+  for (let i = 0; i < closes.length; i++) {
+    if (avgGain[i] == null || avgLoss[i] == null) continue
+    const rs = avgLoss[i] === 0 ? Infinity : avgGain[i] / avgLoss[i]
+    out[i] = 100 - 100 / (1 + rs)
+  }
+  return out
+}
+
+// RSI with EMA smoothing
+const rollingRsiEma = (closes, period) => {
+  const out = new Array(closes.length).fill(null)
+  const gains = new Array(closes.length).fill(NaN)
+  const losses = new Array(closes.length).fill(NaN)
+  for (let i = 1; i < closes.length; i++) {
+    const change = closes[i] - closes[i - 1]
+    if (Number.isNaN(change)) continue
+    gains[i] = change > 0 ? change : 0
+    losses[i] = change < 0 ? -change : 0
+  }
+  const avgGain = rollingEma(gains, period)
+  const avgLoss = rollingEma(losses, period)
+  for (let i = 0; i < closes.length; i++) {
+    if (avgGain[i] == null || avgLoss[i] == null) continue
+    const rs = avgLoss[i] === 0 ? Infinity : avgGain[i] / avgLoss[i]
+    out[i] = 100 - 100 / (1 + rs)
+  }
+  return out
+}
+
+// Stochastic RSI = (RSI - RSI_Low) / (RSI_High - RSI_Low) * 100
+const rollingStochRsi = (closes, rsiPeriod, stochPeriod) => {
+  const rsi = rollingWilderRsi(closes, rsiPeriod)
+  const out = new Array(closes.length).fill(null)
+  for (let i = stochPeriod - 1; i < closes.length; i++) {
+    let minRsi = Infinity, maxRsi = -Infinity
+    let valid = true
+    for (let j = 0; j < stochPeriod; j++) {
+      const r = rsi[i - j]
+      if (r == null) {
+        valid = false
+        break
+      }
+      if (r < minRsi) minRsi = r
+      if (r > maxRsi) maxRsi = r
+    }
+    if (valid && maxRsi !== minRsi) {
+      out[i] = ((rsi[i] - minRsi) / (maxRsi - minRsi)) * 100
+    }
+  }
+  return out
+}
+
+// Laguerre RSI (Ehlers) - gamma typically 0.5-0.8
+const rollingLaguerreRsi = (closes, gamma = 0.8) => {
+  const out = new Array(closes.length).fill(null)
+  let L0 = 0, L1 = 0, L2 = 0, L3 = 0
+  let L0_1 = 0, L1_1 = 0, L2_1 = 0, L3_1 = 0
+  for (let i = 0; i < closes.length; i++) {
+    const v = closes[i]
+    if (Number.isNaN(v)) continue
+    L0 = (1 - gamma) * v + gamma * L0_1
+    L1 = -gamma * L0 + L0_1 + gamma * L1_1
+    L2 = -gamma * L1 + L1_1 + gamma * L2_1
+    L3 = -gamma * L2 + L2_1 + gamma * L3_1
+    const cu = (L0 > L1 ? L0 - L1 : 0) + (L1 > L2 ? L1 - L2 : 0) + (L2 > L3 ? L2 - L3 : 0)
+    const cd = (L0 < L1 ? L1 - L0 : 0) + (L1 < L2 ? L2 - L1 : 0) + (L2 < L3 ? L3 - L2 : 0)
+    if (cu + cd !== 0) {
+      out[i] = cu / (cu + cd) * 100
+    }
+    L0_1 = L0
+    L1_1 = L1
+    L2_1 = L2
+    L3_1 = L3
+  }
+  return out
+}
+
+// ============================================
+// VOLATILITY INDICATORS
+// ============================================
+
+// Bollinger %B = (Price - Lower Band) / (Upper Band - Lower Band)
+// Returns 0-1 range (below 0 = below lower band, above 1 = above upper band)
+const rollingBollingerB = (closes, period, stdMult = 2) => {
+  const sma = rollingSma(closes, period)
+  const std = rollingStdDev(closes, period)
+  return closes.map((v, i) => {
+    if (sma[i] == null || std[i] == null || Number.isNaN(v)) return null
+    const stdVal = std[i] / 100 * sma[i] // Convert from percentage back
+    const upper = sma[i] + stdMult * stdVal
+    const lower = sma[i] - stdMult * stdVal
+    const range = upper - lower
+    if (range === 0) return 0.5
+    return (v - lower) / range
+  })
+}
+
+// Bollinger Bandwidth = (Upper - Lower) / Middle * 100
+const rollingBollingerBandwidth = (closes, period, stdMult = 2) => {
+  const sma = rollingSma(closes, period)
+  const std = rollingStdDev(closes, period)
+  return closes.map((_, i) => {
+    if (sma[i] == null || std[i] == null || sma[i] === 0) return null
+    const stdVal = std[i] / 100 * sma[i]
+    return (2 * stdMult * stdVal) / sma[i] * 100
+  })
+}
+
+// Average True Range (ATR)
+const rollingAtr = (highs, lows, closes, period) => {
+  const tr = new Array(closes.length).fill(NaN)
+  for (let i = 1; i < closes.length; i++) {
+    if (Number.isNaN(highs[i]) || Number.isNaN(lows[i]) || Number.isNaN(closes[i - 1])) continue
+    const hl = highs[i] - lows[i]
+    const hc = Math.abs(highs[i] - closes[i - 1])
+    const lc = Math.abs(lows[i] - closes[i - 1])
+    tr[i] = Math.max(hl, hc, lc)
+  }
+  return rollingWildersMa(tr, period)
+}
+
+// ATR as percentage of price
+const rollingAtrPercent = (highs, lows, closes, period) => {
+  const atr = rollingAtr(highs, lows, closes, period)
+  return atr.map((v, i) => {
+    if (v == null || closes[i] == null || closes[i] === 0) return null
+    return (v / closes[i]) * 100
+  })
+}
+
+// Historical Volatility (annualized standard deviation of returns)
+const rollingHistoricalVolatility = (closes, period) => {
+  const returns = new Array(closes.length).fill(NaN)
+  for (let i = 1; i < closes.length; i++) {
+    if (!Number.isNaN(closes[i]) && !Number.isNaN(closes[i - 1]) && closes[i - 1] !== 0) {
+      returns[i] = Math.log(closes[i] / closes[i - 1])
+    }
+  }
+  const std = rollingStdDev(returns, period)
+  return std.map(v => v == null ? null : v * Math.sqrt(252)) // Annualize
+}
+
+// Ulcer Index - measures downside volatility/pain
+const rollingUlcerIndex = (closes, period) => {
+  const out = new Array(closes.length).fill(null)
+  for (let i = period - 1; i < closes.length; i++) {
+    let maxClose = -Infinity
+    let sumSq = 0
+    let valid = true
+    for (let j = 0; j < period; j++) {
+      const v = closes[i - period + 1 + j]
+      if (Number.isNaN(v)) {
+        valid = false
+        break
+      }
+      if (v > maxClose) maxClose = v
+      const pctDrawdown = ((v - maxClose) / maxClose) * 100
+      sumSq += pctDrawdown * pctDrawdown
+    }
+    if (valid) {
+      out[i] = Math.sqrt(sumSq / period)
+    }
+  }
+  return out
+}
+
+// ============================================
+// MOMENTUM INDICATORS
+// ============================================
+
+// Rate of Change (ROC) - percentage change over period
+const rollingRoc = (closes, period) => {
+  const out = new Array(closes.length).fill(null)
+  for (let i = period; i < closes.length; i++) {
+    const prev = closes[i - period]
+    const cur = closes[i]
+    if (!Number.isNaN(prev) && !Number.isNaN(cur) && prev !== 0) {
+      out[i] = ((cur - prev) / prev) * 100
+    }
+  }
+  return out
+}
+
+// Williams %R = (Highest High - Close) / (Highest High - Lowest Low) * -100
+// Range: -100 to 0 (oversold below -80, overbought above -20)
+const rollingWilliamsR = (highs, lows, closes, period) => {
+  const out = new Array(closes.length).fill(null)
+  for (let i = period - 1; i < closes.length; i++) {
+    let hh = -Infinity, ll = Infinity
+    let valid = true
+    for (let j = 0; j < period; j++) {
+      const h = highs[i - j]
+      const l = lows[i - j]
+      if (Number.isNaN(h) || Number.isNaN(l)) {
+        valid = false
+        break
+      }
+      if (h > hh) hh = h
+      if (l < ll) ll = l
+    }
+    if (valid && hh !== ll && !Number.isNaN(closes[i])) {
+      out[i] = ((hh - closes[i]) / (hh - ll)) * -100
+    }
+  }
+  return out
+}
+
+// Commodity Channel Index (CCI)
+// CCI = (Typical Price - SMA of TP) / (0.015 * Mean Deviation)
+const rollingCci = (highs, lows, closes, period) => {
+  const tp = closes.map((c, i) => {
+    if (Number.isNaN(c) || Number.isNaN(highs[i]) || Number.isNaN(lows[i])) return NaN
+    return (highs[i] + lows[i] + c) / 3
+  })
+  const smaTP = rollingSma(tp, period)
+  const out = new Array(closes.length).fill(null)
+  for (let i = period - 1; i < closes.length; i++) {
+    if (smaTP[i] == null || Number.isNaN(tp[i])) continue
+    let meanDev = 0
+    let valid = true
+    for (let j = 0; j < period; j++) {
+      if (Number.isNaN(tp[i - j])) {
+        valid = false
+        break
+      }
+      meanDev += Math.abs(tp[i - j] - smaTP[i])
+    }
+    if (valid) {
+      meanDev /= period
+      if (meanDev !== 0) {
+        out[i] = (tp[i] - smaTP[i]) / (0.015 * meanDev)
+      }
+    }
+  }
+  return out
+}
+
+// Stochastic %K (Fast) = (Close - Lowest Low) / (Highest High - Lowest Low) * 100
+const rollingStochK = (highs, lows, closes, period) => {
+  const out = new Array(closes.length).fill(null)
+  for (let i = period - 1; i < closes.length; i++) {
+    let hh = -Infinity, ll = Infinity
+    let valid = true
+    for (let j = 0; j < period; j++) {
+      const h = highs[i - j]
+      const l = lows[i - j]
+      if (Number.isNaN(h) || Number.isNaN(l)) {
+        valid = false
+        break
+      }
+      if (h > hh) hh = h
+      if (l < ll) ll = l
+    }
+    if (valid && hh !== ll && !Number.isNaN(closes[i])) {
+      out[i] = ((closes[i] - ll) / (hh - ll)) * 100
+    }
+  }
+  return out
+}
+
+// Stochastic %D (Slow) = SMA of %K
+const rollingStochD = (highs, lows, closes, kPeriod, dPeriod = 3) => {
+  const stochK = rollingStochK(highs, lows, closes, kPeriod)
+  return rollingSma(stochK.map(v => v ?? NaN), dPeriod)
+}
+
+// Average Directional Index (ADX)
+const rollingAdx = (highs, lows, closes, period) => {
+  const n = closes.length
+  const tr = new Array(n).fill(NaN)
+  const plusDM = new Array(n).fill(NaN)
+  const minusDM = new Array(n).fill(NaN)
+
+  for (let i = 1; i < n; i++) {
+    if (Number.isNaN(highs[i]) || Number.isNaN(lows[i]) || Number.isNaN(closes[i - 1])) continue
+    const hl = highs[i] - lows[i]
+    const hc = Math.abs(highs[i] - closes[i - 1])
+    const lc = Math.abs(lows[i] - closes[i - 1])
+    tr[i] = Math.max(hl, hc, lc)
+
+    const upMove = highs[i] - highs[i - 1]
+    const downMove = lows[i - 1] - lows[i]
+    plusDM[i] = (upMove > downMove && upMove > 0) ? upMove : 0
+    minusDM[i] = (downMove > upMove && downMove > 0) ? downMove : 0
+  }
+
+  const smoothTR = rollingWildersMa(tr, period)
+  const smoothPlusDM = rollingWildersMa(plusDM, period)
+  const smoothMinusDM = rollingWildersMa(minusDM, period)
+
+  const plusDI = smoothPlusDM.map((v, i) => {
+    if (v == null || smoothTR[i] == null || smoothTR[i] === 0) return NaN
+    return (v / smoothTR[i]) * 100
+  })
+  const minusDI = smoothMinusDM.map((v, i) => {
+    if (v == null || smoothTR[i] == null || smoothTR[i] === 0) return NaN
+    return (v / smoothTR[i]) * 100
+  })
+
+  const dx = plusDI.map((plus, i) => {
+    const minus = minusDI[i]
+    if (Number.isNaN(plus) || Number.isNaN(minus)) return NaN
+    const sum = plus + minus
+    if (sum === 0) return 0
+    return (Math.abs(plus - minus) / sum) * 100
+  })
+
+  return rollingWildersMa(dx, period)
+}
+
+// ============================================
+// TREND INDICATORS
+// ============================================
+
+// Linear Regression Slope (normalized by price)
+const rollingLinRegSlope = (values, period) => {
+  const out = new Array(values.length).fill(null)
+  for (let i = period - 1; i < values.length; i++) {
+    let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0
+    let valid = true
+    const n = period
+
+    for (let j = 0; j < n; j++) {
+      const y = values[i - n + 1 + j]
+      if (Number.isNaN(y)) {
+        valid = false
+        break
+      }
+      sumX += j
+      sumY += y
+      sumXY += j * y
+      sumX2 += j * j
+    }
+
+    if (valid) {
+      const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX)
+      // Normalize by average price to get percentage slope
+      const avgPrice = sumY / n
+      out[i] = avgPrice !== 0 ? (slope / avgPrice) * 100 : 0
+    }
+  }
+  return out
+}
+
+// Linear Regression Value (predicted price at current bar)
+const rollingLinRegValue = (values, period) => {
+  const out = new Array(values.length).fill(null)
+  for (let i = period - 1; i < values.length; i++) {
+    let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0
+    let valid = true
+    const n = period
+
+    for (let j = 0; j < n; j++) {
+      const y = values[i - n + 1 + j]
+      if (Number.isNaN(y)) {
+        valid = false
+        break
+      }
+      sumX += j
+      sumY += y
+      sumXY += j * y
+      sumX2 += j * j
+    }
+
+    if (valid) {
+      const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX)
+      const intercept = (sumY - slope * sumX) / n
+      out[i] = intercept + slope * (n - 1)
+    }
+  }
+  return out
+}
+
+// Price vs SMA ratio (Price / SMA - 1) * 100
+const rollingPriceVsSma = (closes, period) => {
+  const sma = rollingSma(closes, period)
+  return closes.map((v, i) => {
+    if (sma[i] == null || Number.isNaN(v) || sma[i] === 0) return null
+    return ((v / sma[i]) - 1) * 100
+  })
+}
+
+// ============================================
 // INDICATOR CACHE
 // ============================================
 
@@ -532,9 +1056,42 @@ const emptyCache = () => ({
   ppo: new Map(),
   trendClarity: new Map(),
   ultimateSmoother: new Map(),
+  // New Moving Averages
+  hma: new Map(),
+  wma: new Map(),
+  wildersMa: new Map(),
+  dema: new Map(),
+  tema: new Map(),
+  kama: new Map(),
+  // RSI Variants
+  rsiSma: new Map(),
+  rsiEma: new Map(),
+  stochRsi: new Map(),
+  laguerreRsi: new Map(),
+  // Volatility
+  bollingerB: new Map(),
+  bollingerBandwidth: new Map(),
+  atr: new Map(),
+  atrPercent: new Map(),
+  histVol: new Map(),
+  ulcerIndex: new Map(),
+  // Momentum
+  roc: new Map(),
+  williamsR: new Map(),
+  cci: new Map(),
+  stochK: new Map(),
+  stochD: new Map(),
+  adx: new Map(),
+  // Trend
+  linRegSlope: new Map(),
+  linRegValue: new Map(),
+  priceVsSma: new Map(),
   // Performance optimization: cache close and returns arrays
   closeArrays: new Map(),
   returnsArrays: new Map(),
+  // High/Low arrays cache (for indicators needing OHLC)
+  highArrays: new Map(),
+  lowArrays: new Map(),
 })
 
 const getCachedSeries = (cache, kind, ticker, period, compute) => {
@@ -561,7 +1118,7 @@ const getCachedSeries = (cache, kind, ticker, period, compute) => {
 // If provided, only those tickers determine the common date range (allows longer history for indicators)
 // Position tickers get null values for dates before their data starts
 const buildPriceDb = (series, dateIntersectionTickers = null) => {
-  if (!series.length) return { dates: [], open: {}, close: {}, adjClose: {} }
+  if (!series.length) return { dates: [], open: {}, high: {}, low: {}, close: {}, adjClose: {} }
 
   // Build a map from ticker -> (time -> bar) for each series
   const barMaps = series.map((s) => {
@@ -596,16 +1153,20 @@ const buildPriceDb = (series, dateIntersectionTickers = null) => {
   const dates = [...common].sort((a, b) => a - b)
 
   const open = {}
+  const high = {}
+  const low = {}
   const close = {}
   const adjClose = {}
   for (const { ticker, byTime } of barMaps) {
     // All tickers get arrays aligned to dates, but may have null for dates before their data starts
     open[ticker] = dates.map((d) => byTime.get(d)?.open ?? null)
+    high[ticker] = dates.map((d) => byTime.get(d)?.high ?? null)
+    low[ticker] = dates.map((d) => byTime.get(d)?.low ?? null)
     close[ticker] = dates.map((d) => byTime.get(d)?.close ?? null)
     adjClose[ticker] = dates.map((d) => byTime.get(d)?.adjClose ?? null)
   }
 
-  return { dates, open, close, adjClose }
+  return { dates, open, high, low, close, adjClose }
 }
 
 // Cached version - handles ratio tickers like "SPY/XLU" by computing numerator/denominator prices
@@ -656,6 +1217,26 @@ const getCachedReturnsArray = (cache, db, ticker) => {
   }
   cache.returnsArrays.set(t, returns)
   return returns
+}
+
+// Cached high array for OHLC indicators
+const getCachedHighArray = (cache, db, ticker) => {
+  const t = getSeriesKey(ticker)
+  const existing = cache.highArrays.get(t)
+  if (existing) return existing
+  const arr = (db.high?.[t] || []).map((v) => (v == null ? NaN : v))
+  cache.highArrays.set(t, arr)
+  return arr
+}
+
+// Cached low array for OHLC indicators
+const getCachedLowArray = (cache, db, ticker) => {
+  const t = getSeriesKey(ticker)
+  const existing = cache.lowArrays.get(t)
+  if (existing) return existing
+  const arr = (db.low?.[t] || []).map((v) => (v == null ? NaN : v))
+  cache.lowArrays.set(t, arr)
+  return arr
 }
 
 // ============================================
@@ -774,6 +1355,142 @@ const metricAt = (ctx, ticker, metric, window) => {
       const series = getCachedSeries(ctx.cache, 'ultSmooth', t, w, () => rollingUltimateSmoother(closes, w))
       return series[i] ?? null
     }
+    // ============================================
+    // NEW MOVING AVERAGES
+    // ============================================
+    case 'Hull Moving Average': {
+      const series = getCachedSeries(ctx.cache, 'hma', t, w, () => rollingHma(closes, w))
+      return series[i] ?? null
+    }
+    case 'Weighted Moving Average': {
+      const series = getCachedSeries(ctx.cache, 'wma', t, w, () => rollingWma(closes, w))
+      return series[i] ?? null
+    }
+    case 'Wilder Moving Average': {
+      const series = getCachedSeries(ctx.cache, 'wildersMa', t, w, () => rollingWildersMa(closes, w))
+      return series[i] ?? null
+    }
+    case 'DEMA': {
+      const series = getCachedSeries(ctx.cache, 'dema', t, w, () => rollingDema(closes, w))
+      return series[i] ?? null
+    }
+    case 'TEMA': {
+      const series = getCachedSeries(ctx.cache, 'tema', t, w, () => rollingTema(closes, w))
+      return series[i] ?? null
+    }
+    case 'KAMA': {
+      const series = getCachedSeries(ctx.cache, 'kama', t, w, () => rollingKama(closes, w))
+      return series[i] ?? null
+    }
+    // ============================================
+    // RSI VARIANTS
+    // ============================================
+    case 'RSI (SMA)': {
+      const series = getCachedSeries(ctx.cache, 'rsiSma', t, w, () => rollingRsiSma(closes, w))
+      return series[i] ?? null
+    }
+    case 'RSI (EMA)': {
+      const series = getCachedSeries(ctx.cache, 'rsiEma', t, w, () => rollingRsiEma(closes, w))
+      return series[i] ?? null
+    }
+    case 'Stochastic RSI': {
+      const series = getCachedSeries(ctx.cache, 'stochRsi', t, w, () => rollingStochRsi(closes, w, w))
+      return series[i] ?? null
+    }
+    case 'Laguerre RSI': {
+      const series = getCachedSeries(ctx.cache, 'laguerreRsi', t, 0, () => rollingLaguerreRsi(closes))
+      return series[i] ?? null
+    }
+    // ============================================
+    // VOLATILITY INDICATORS
+    // ============================================
+    case 'Bollinger %B': {
+      const series = getCachedSeries(ctx.cache, 'bollingerB', t, w, () => rollingBollingerB(closes, w))
+      return series[i] ?? null
+    }
+    case 'Bollinger Bandwidth': {
+      const series = getCachedSeries(ctx.cache, 'bollingerBandwidth', t, w, () => rollingBollingerBandwidth(closes, w))
+      return series[i] ?? null
+    }
+    case 'ATR': {
+      const highs = getCachedHighArray(ctx.cache, ctx.db, t)
+      const lows = getCachedLowArray(ctx.cache, ctx.db, t)
+      if (!highs.length || !lows.length) return null
+      const series = getCachedSeries(ctx.cache, 'atr', t, w, () => rollingAtr(highs, lows, closes, w))
+      return series[i] ?? null
+    }
+    case 'ATR %': {
+      const highs = getCachedHighArray(ctx.cache, ctx.db, t)
+      const lows = getCachedLowArray(ctx.cache, ctx.db, t)
+      if (!highs.length || !lows.length) return null
+      const series = getCachedSeries(ctx.cache, 'atrPercent', t, w, () => rollingAtrPercent(highs, lows, closes, w))
+      return series[i] ?? null
+    }
+    case 'Historical Volatility': {
+      const series = getCachedSeries(ctx.cache, 'histVol', t, w, () => rollingHistoricalVolatility(closes, w))
+      return series[i] ?? null
+    }
+    case 'Ulcer Index': {
+      const series = getCachedSeries(ctx.cache, 'ulcerIndex', t, w, () => rollingUlcerIndex(closes, w))
+      return series[i] ?? null
+    }
+    // ============================================
+    // MOMENTUM INDICATORS
+    // ============================================
+    case 'Rate of Change': {
+      const series = getCachedSeries(ctx.cache, 'roc', t, w, () => rollingRoc(closes, w))
+      return series[i] ?? null
+    }
+    case 'Williams %R': {
+      const highs = getCachedHighArray(ctx.cache, ctx.db, t)
+      const lows = getCachedLowArray(ctx.cache, ctx.db, t)
+      if (!highs.length || !lows.length) return null
+      const series = getCachedSeries(ctx.cache, 'williamsR', t, w, () => rollingWilliamsR(highs, lows, closes, w))
+      return series[i] ?? null
+    }
+    case 'CCI': {
+      const highs = getCachedHighArray(ctx.cache, ctx.db, t)
+      const lows = getCachedLowArray(ctx.cache, ctx.db, t)
+      if (!highs.length || !lows.length) return null
+      const series = getCachedSeries(ctx.cache, 'cci', t, w, () => rollingCci(highs, lows, closes, w))
+      return series[i] ?? null
+    }
+    case 'Stochastic %K': {
+      const highs = getCachedHighArray(ctx.cache, ctx.db, t)
+      const lows = getCachedLowArray(ctx.cache, ctx.db, t)
+      if (!highs.length || !lows.length) return null
+      const series = getCachedSeries(ctx.cache, 'stochK', t, w, () => rollingStochK(highs, lows, closes, w))
+      return series[i] ?? null
+    }
+    case 'Stochastic %D': {
+      const highs = getCachedHighArray(ctx.cache, ctx.db, t)
+      const lows = getCachedLowArray(ctx.cache, ctx.db, t)
+      if (!highs.length || !lows.length) return null
+      const series = getCachedSeries(ctx.cache, 'stochD', t, w, () => rollingStochD(highs, lows, closes, w))
+      return series[i] ?? null
+    }
+    case 'ADX': {
+      const highs = getCachedHighArray(ctx.cache, ctx.db, t)
+      const lows = getCachedLowArray(ctx.cache, ctx.db, t)
+      if (!highs.length || !lows.length) return null
+      const series = getCachedSeries(ctx.cache, 'adx', t, w, () => rollingAdx(highs, lows, closes, w))
+      return series[i] ?? null
+    }
+    // ============================================
+    // TREND INDICATORS
+    // ============================================
+    case 'Linear Reg Slope': {
+      const series = getCachedSeries(ctx.cache, 'linRegSlope', t, w, () => rollingLinRegSlope(closes, w))
+      return series[i] ?? null
+    }
+    case 'Linear Reg Value': {
+      const series = getCachedSeries(ctx.cache, 'linRegValue', t, w, () => rollingLinRegValue(closes, w))
+      return series[i] ?? null
+    }
+    case 'Price vs SMA': {
+      const series = getCachedSeries(ctx.cache, 'priceVsSma', t, w, () => rollingPriceVsSma(closes, w))
+      return series[i] ?? null
+    }
   }
   return null
 }
@@ -886,6 +1603,142 @@ const metricAtIndex = (ctx, ticker, metric, window, index) => {
     // Ultimate Smoother
     case 'Ultimate Smoother': {
       const series = getCachedSeries(ctx.cache, 'ultSmooth', t, w, () => rollingUltimateSmoother(closes, w))
+      return series[index] ?? null
+    }
+    // ============================================
+    // NEW MOVING AVERAGES
+    // ============================================
+    case 'Hull Moving Average': {
+      const series = getCachedSeries(ctx.cache, 'hma', t, w, () => rollingHma(closes, w))
+      return series[index] ?? null
+    }
+    case 'Weighted Moving Average': {
+      const series = getCachedSeries(ctx.cache, 'wma', t, w, () => rollingWma(closes, w))
+      return series[index] ?? null
+    }
+    case 'Wilder Moving Average': {
+      const series = getCachedSeries(ctx.cache, 'wildersMa', t, w, () => rollingWildersMa(closes, w))
+      return series[index] ?? null
+    }
+    case 'DEMA': {
+      const series = getCachedSeries(ctx.cache, 'dema', t, w, () => rollingDema(closes, w))
+      return series[index] ?? null
+    }
+    case 'TEMA': {
+      const series = getCachedSeries(ctx.cache, 'tema', t, w, () => rollingTema(closes, w))
+      return series[index] ?? null
+    }
+    case 'KAMA': {
+      const series = getCachedSeries(ctx.cache, 'kama', t, w, () => rollingKama(closes, w))
+      return series[index] ?? null
+    }
+    // ============================================
+    // RSI VARIANTS
+    // ============================================
+    case 'RSI (SMA)': {
+      const series = getCachedSeries(ctx.cache, 'rsiSma', t, w, () => rollingRsiSma(closes, w))
+      return series[index] ?? null
+    }
+    case 'RSI (EMA)': {
+      const series = getCachedSeries(ctx.cache, 'rsiEma', t, w, () => rollingRsiEma(closes, w))
+      return series[index] ?? null
+    }
+    case 'Stochastic RSI': {
+      const series = getCachedSeries(ctx.cache, 'stochRsi', t, w, () => rollingStochRsi(closes, w, w))
+      return series[index] ?? null
+    }
+    case 'Laguerre RSI': {
+      const series = getCachedSeries(ctx.cache, 'laguerreRsi', t, 0, () => rollingLaguerreRsi(closes))
+      return series[index] ?? null
+    }
+    // ============================================
+    // VOLATILITY INDICATORS
+    // ============================================
+    case 'Bollinger %B': {
+      const series = getCachedSeries(ctx.cache, 'bollingerB', t, w, () => rollingBollingerB(closes, w))
+      return series[index] ?? null
+    }
+    case 'Bollinger Bandwidth': {
+      const series = getCachedSeries(ctx.cache, 'bollingerBandwidth', t, w, () => rollingBollingerBandwidth(closes, w))
+      return series[index] ?? null
+    }
+    case 'ATR': {
+      const highs = getCachedHighArray(ctx.cache, ctx.db, t)
+      const lows = getCachedLowArray(ctx.cache, ctx.db, t)
+      if (!highs.length || !lows.length) return null
+      const series = getCachedSeries(ctx.cache, 'atr', t, w, () => rollingAtr(highs, lows, closes, w))
+      return series[index] ?? null
+    }
+    case 'ATR %': {
+      const highs = getCachedHighArray(ctx.cache, ctx.db, t)
+      const lows = getCachedLowArray(ctx.cache, ctx.db, t)
+      if (!highs.length || !lows.length) return null
+      const series = getCachedSeries(ctx.cache, 'atrPercent', t, w, () => rollingAtrPercent(highs, lows, closes, w))
+      return series[index] ?? null
+    }
+    case 'Historical Volatility': {
+      const series = getCachedSeries(ctx.cache, 'histVol', t, w, () => rollingHistoricalVolatility(closes, w))
+      return series[index] ?? null
+    }
+    case 'Ulcer Index': {
+      const series = getCachedSeries(ctx.cache, 'ulcerIndex', t, w, () => rollingUlcerIndex(closes, w))
+      return series[index] ?? null
+    }
+    // ============================================
+    // MOMENTUM INDICATORS
+    // ============================================
+    case 'Rate of Change': {
+      const series = getCachedSeries(ctx.cache, 'roc', t, w, () => rollingRoc(closes, w))
+      return series[index] ?? null
+    }
+    case 'Williams %R': {
+      const highs = getCachedHighArray(ctx.cache, ctx.db, t)
+      const lows = getCachedLowArray(ctx.cache, ctx.db, t)
+      if (!highs.length || !lows.length) return null
+      const series = getCachedSeries(ctx.cache, 'williamsR', t, w, () => rollingWilliamsR(highs, lows, closes, w))
+      return series[index] ?? null
+    }
+    case 'CCI': {
+      const highs = getCachedHighArray(ctx.cache, ctx.db, t)
+      const lows = getCachedLowArray(ctx.cache, ctx.db, t)
+      if (!highs.length || !lows.length) return null
+      const series = getCachedSeries(ctx.cache, 'cci', t, w, () => rollingCci(highs, lows, closes, w))
+      return series[index] ?? null
+    }
+    case 'Stochastic %K': {
+      const highs = getCachedHighArray(ctx.cache, ctx.db, t)
+      const lows = getCachedLowArray(ctx.cache, ctx.db, t)
+      if (!highs.length || !lows.length) return null
+      const series = getCachedSeries(ctx.cache, 'stochK', t, w, () => rollingStochK(highs, lows, closes, w))
+      return series[index] ?? null
+    }
+    case 'Stochastic %D': {
+      const highs = getCachedHighArray(ctx.cache, ctx.db, t)
+      const lows = getCachedLowArray(ctx.cache, ctx.db, t)
+      if (!highs.length || !lows.length) return null
+      const series = getCachedSeries(ctx.cache, 'stochD', t, w, () => rollingStochD(highs, lows, closes, w))
+      return series[index] ?? null
+    }
+    case 'ADX': {
+      const highs = getCachedHighArray(ctx.cache, ctx.db, t)
+      const lows = getCachedLowArray(ctx.cache, ctx.db, t)
+      if (!highs.length || !lows.length) return null
+      const series = getCachedSeries(ctx.cache, 'adx', t, w, () => rollingAdx(highs, lows, closes, w))
+      return series[index] ?? null
+    }
+    // ============================================
+    // TREND INDICATORS
+    // ============================================
+    case 'Linear Reg Slope': {
+      const series = getCachedSeries(ctx.cache, 'linRegSlope', t, w, () => rollingLinRegSlope(closes, w))
+      return series[index] ?? null
+    }
+    case 'Linear Reg Value': {
+      const series = getCachedSeries(ctx.cache, 'linRegValue', t, w, () => rollingLinRegValue(closes, w))
+      return series[index] ?? null
+    }
+    case 'Price vs SMA': {
+      const series = getCachedSeries(ctx.cache, 'priceVsSma', t, w, () => rollingPriceVsSma(closes, w))
       return series[index] ?? null
     }
   }
@@ -1054,6 +1907,17 @@ const getIndicatorLookback = (metric, window) => {
     case 'MACD Histogram':
     case 'PPO Histogram':
       return 35 // 26 + 9 for signal line
+    case 'Laguerre RSI':
+      return 10 // Minimal lookback, uses recursive filter
+    // EMAs need extra lookback for multi-layer indicators
+    case 'DEMA':
+      return Math.max(1, Math.floor(window || 0)) * 2
+    case 'TEMA':
+      return Math.max(1, Math.floor(window || 0)) * 3
+    case 'KAMA':
+      return Math.max(1, Math.floor(window || 0)) + 30 // window + slow period
+    case 'ADX':
+      return Math.max(1, Math.floor(window || 0)) * 2 // Extra for smoothing
     default:
       return Math.max(1, Math.floor(window || 0))
   }
@@ -1559,6 +2423,7 @@ const turnoverFraction = (prevAlloc, alloc) => {
 export async function runBacktest(payload, options = {}) {
   const backtestMode = options.mode || 'OC' // OO, CC, CO, OC
   const costBps = options.costBps ?? 0
+  const indicatorOverlays = options.indicatorOverlays || [] // Conditions to show as chart overlays
 
   // Parse payload if string
   const node = typeof payload === 'string' ? JSON.parse(payload) : payload
@@ -1579,6 +2444,22 @@ export async function runBacktest(payload, options = {}) {
   }
   if (!indicatorTickers.includes('SPY')) {
     indicatorTickers.push('SPY')
+  }
+
+  // Add tickers from indicator overlays (conditions to display on chart)
+  for (const cond of indicatorOverlays) {
+    const t = getSeriesKey(cond.ticker)
+    if (t && t !== "Empty" && !tickers.includes(t)) {
+      tickers.push(t)
+      indicatorTickers.push(t)
+    }
+    if (cond.expanded && cond.rightTicker) {
+      const rt = getSeriesKey(cond.rightTicker)
+      if (rt && rt !== "Empty" && !tickers.includes(rt)) {
+        tickers.push(rt)
+        indicatorTickers.push(rt)
+      }
+    }
   }
 
   // Load price data
@@ -1806,6 +2687,63 @@ export async function runBacktest(payload, options = {}) {
   const avgHoldings = holdingsCount > 0 ? totalHoldings / holdingsCount : 0
   const winRate = (winDays + lossDays) > 0 ? winDays / (winDays + lossDays) : 0
 
+  // Create a context object for indicator lookups outside the main eval loop
+  const overlayCtx = {
+    db,
+    cache,
+    decisionIndex: db.dates.length - 1,
+    indicatorIndex: db.dates.length - 1,
+    decisionPrice: "close",
+    warnings: [],
+  }
+
+  // Compute indicator overlay series if requested
+  const overlaySeriesResult = indicatorOverlays.map((cond, idx) => {
+    const OVERLAY_COLORS = ['#f59e0b', '#10b981', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316']
+    const color = OVERLAY_COLORS[idx % OVERLAY_COLORS.length]
+
+    // Helper to format indicator label
+    const formatLabel = (ticker, metric, window) => {
+      const WINDOWLESS = ['Current Price', 'Momentum (Weighted)', 'Momentum (Unweighted)', 'Momentum (12-Month SMA)', 'Drawdown', 'MACD Histogram', 'PPO Histogram', 'Laguerre RSI']
+      const prefix = WINDOWLESS.includes(metric) ? '' : `${Math.floor(window || 0)}d `
+      return `${prefix}${metric} of ${getSeriesKey(ticker)}`
+    }
+
+    // Compute left indicator series
+    const leftSeries = []
+    for (let i = startEvalIndex; i < db.dates.length; i++) {
+      const value = metricAtIndex(overlayCtx, cond.ticker, cond.metric, cond.window, i)
+      leftSeries.push({
+        date: safeIsoDate(db.dates[i]),
+        value: value ?? null
+      })
+    }
+
+    // Compute right indicator series if expanded mode
+    let rightSeries = null
+    if (cond.expanded && cond.rightTicker && cond.rightMetric) {
+      rightSeries = []
+      for (let i = startEvalIndex; i < db.dates.length; i++) {
+        const value = metricAtIndex(overlayCtx, cond.rightTicker, cond.rightMetric, cond.rightWindow || cond.window, i)
+        rightSeries.push({
+          date: safeIsoDate(db.dates[i]),
+          value: value ?? null
+        })
+      }
+    }
+
+    return {
+      conditionId: cond.id,
+      label: formatLabel(cond.ticker, cond.metric, cond.window),
+      leftSeries,
+      rightSeries,
+      rightLabel: cond.expanded ? formatLabel(cond.rightTicker, cond.rightMetric, cond.rightWindow || cond.window) : null,
+      threshold: cond.expanded ? null : (cond.threshold ?? null),
+      comparator: cond.comparator,
+      color
+    }
+  })
+
   return {
     metrics: {
       cagr: metrics.cagr,
@@ -1827,5 +2765,7 @@ export async function runBacktest(payload, options = {}) {
     benchmarkCurve: benchmarkPoints.map(p => ({ date: safeIsoDate(p.time), equity: p.value })),
     // Include daily allocations for the Allocations tab
     allocations: dailyAllocations,
+    // Include indicator overlay series if requested
+    indicatorOverlays: overlaySeriesResult.length > 0 ? overlaySeriesResult : undefined,
   }
 }

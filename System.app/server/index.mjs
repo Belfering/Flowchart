@@ -1305,6 +1305,53 @@ app.post('/api/bots/:id/run-backtest', async (req, res) => {
   }
 })
 
+// POST /api/indicator-series - Get indicator time series for chart overlay
+// Takes conditions and returns indicator values for each date
+app.post('/api/indicator-series', async (req, res) => {
+  try {
+    const { conditions, mode = 'OC' } = req.body
+
+    if (!conditions || !Array.isArray(conditions) || conditions.length === 0) {
+      return res.json({ indicatorOverlays: [] })
+    }
+
+    // Collect all tickers from conditions
+    const tickers = new Set()
+    conditions.forEach(cond => {
+      if (cond.ticker) tickers.add(cond.ticker)
+      if (cond.rightTicker) tickers.add(cond.rightTicker)
+    })
+
+    // Always include SPY as reference
+    tickers.add('SPY')
+
+    // Create a minimal payload with just a position node for SPY
+    // This is needed to run the backtest infrastructure
+    const dummyPayload = {
+      id: 'dummy-root',
+      kind: 'position',
+      title: 'Dummy',
+      positions: ['SPY'],
+      weighting: 'equal',
+      children: {}
+    }
+
+    // Run backtest with indicator overlays
+    const result = await runBacktest(dummyPayload, {
+      mode,
+      costBps: 0,
+      indicatorOverlays: conditions
+    })
+
+    res.json({
+      indicatorOverlays: result.indicatorOverlays || []
+    })
+  } catch (e) {
+    console.error('[Indicator Series] Error:', e)
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
 // GET /api/bots/:id/metrics - Get cached metrics for a bot
 app.get('/api/bots/:id/metrics', async (req, res) => {
   try {

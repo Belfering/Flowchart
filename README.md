@@ -276,23 +276,35 @@ Feature Requirements Documents live in `frd/`.
 - Name FRDs with a sortable prefix when order matters (example: `frd/001-some-feature.md`).
 - Include `Status` + `Depends on` in the FRD header so ordering isn't only implied by filenames.
 
-### Completed FRDs
+### Completed FRDs (17 total)
 - FRD-001: Analyze Tab with collapsible bot cards
 - FRD-002: Community Nexus tab with top bots tables
+- FRD-003: Conditional logic testing (34 Vitest tests for AND/OR/IF)
 - FRD-004: Theming toggle with per-profile persistence
 - FRD-005: Atlas Engine branding
 - FRD-006: Tailwind CSS + shadcn/ui refactor
+- FRD-007: Full database migration (portfolios, bots, watchlists, preferences, call chains)
+- FRD-008: Password hashing with bcrypt + auto-migration
 - FRD-012: Fund Lock (no edit for published systems)
 - FRD-013: Rename "Bots" to "Systems" in UI
 - FRD-014: Backtest caching with daily refresh
 - FRD-016: Beta metric (vs SPY)
 - FRD-018: Alt Exit & Scaling node types
 - FRD-019: Auto-detect import (Atlas/Composer/QuantMage)
-- Full database migration (portfolios, bots, watchlists, preferences, call chains)
+- FRD-021: Model Tab UI improvements (60px insert button, accent-tinted nodes)
+- FRD-024: Nexus label rename (Community Nexus -> Nexus)
 
-### Pending
-- FRD-003: Conditional logic validation (AND/IF, OR/IF testing)
-- FRD-017: Payload storage optimization (deferred until needed)
+### Pending (3 total)
+- FRD-017: Payload storage optimization (deferred until scale needed)
+- FRD-023: Separate Atlas database (high priority)
+- FRD-025: Atlas zone improvements (expandable cards, watchlist buttons)
+
+### Deferred/Future (4 total)
+- FRD-011: Atlas Sponsored Systems (blocked - needs investigation)
+- FRD-022: Extended Indicator Support (RSI variants, Hull MA, Bollinger, etc.)
+- FRD-026: Advanced Analytics Suite (Monte Carlo, K-Folds, etc.)
+- FRD-027: Tiingo API Integration (replace Yahoo Finance)
+
 
 ## Contributing
 

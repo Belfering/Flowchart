@@ -47,28 +47,59 @@ type BlockKind = 'basic' | 'function' | 'indicator' | 'numbered' | 'position' | 
 type SlotId = 'next' | 'then' | 'else' | `ladder-${number}`
 type PositionChoice = string
 type MetricChoice =
+  // Price
   | 'Current Price'
+  // Moving Averages
   | 'Simple Moving Average'
   | 'Exponential Moving Average'
+  | 'Hull Moving Average'
+  | 'Weighted Moving Average'
+  | 'Wilder Moving Average'
+  | 'DEMA'
+  | 'TEMA'
+  | 'KAMA'
+  // RSI & Variants
   | 'Relative Strength Index'
-  | 'Max Drawdown'
-  | 'Standard Deviation'
-  | 'Standard Deviation of Price'
-  | 'Cumulative Return'
-  | 'SMA of Returns'
-  // Momentum indicators (no window - fixed lookbacks)
+  | 'RSI (SMA)'
+  | 'RSI (EMA)'
+  | 'Stochastic RSI'
+  | 'Laguerre RSI'
+  // Momentum indicators
   | 'Momentum (Weighted)'      // 13612W: 1/3/6/12 month weighted
   | 'Momentum (Unweighted)'    // 13612U: 1/3/6/12 month unweighted
   | 'Momentum (12-Month SMA)'  // SMA12: 12-month SMA based
-  // Additional indicators
-  | 'Ultimate Smoother'        // Ehlers filter
+  | 'Rate of Change'
+  | 'Williams %R'
+  | 'CCI'
+  | 'Stochastic %K'
+  | 'Stochastic %D'
+  | 'ADX'
+  // Volatility
+  | 'Max Drawdown'
+  | 'Standard Deviation'
+  | 'Standard Deviation of Price'
   | 'Drawdown'                 // Current drawdown from ATH (no window)
+  | 'Bollinger %B'
+  | 'Bollinger Bandwidth'
+  | 'ATR'
+  | 'ATR %'
+  | 'Historical Volatility'
+  | 'Ulcer Index'
+  // Trend
+  | 'Cumulative Return'
+  | 'SMA of Returns'
+  | 'Ultimate Smoother'        // Ehlers filter
+  | 'Trend Clarity'            // R² of linear regression
+  | 'Linear Reg Slope'
+  | 'Linear Reg Value'
+  | 'Price vs SMA'
+  // Aroon
   | 'Aroon Up'                 // Days since high
   | 'Aroon Down'               // Days since low
   | 'Aroon Oscillator'         // Up - Down
+  // MACD/PPO
   | 'MACD Histogram'           // Fixed 12/26/9
   | 'PPO Histogram'            // Percentage version of MACD
-  | 'Trend Clarity'            // R² of linear regression
 type RankChoice = 'Bottom' | 'Top'
 type ComparatorChoice = 'lt' | 'gt'
 
@@ -81,6 +112,7 @@ const WINDOWLESS_INDICATORS: MetricChoice[] = [
   'Drawdown',                 // Uses all history from ATH
   'MACD Histogram',           // Fixed 12/26/9
   'PPO Histogram',            // Fixed 12/26/9
+  'Laguerre RSI',             // Uses gamma instead of window
 ]
 const isWindowlessIndicator = (metric: MetricChoice): boolean => WINDOWLESS_INDICATORS.includes(metric)
 
@@ -99,12 +131,149 @@ const getIndicatorLookback = (metric: MetricChoice, window: number): number => {
     case 'MACD Histogram':
     case 'PPO Histogram':
       return 35 // 26 + 9 for signal line
+    case 'Laguerre RSI':
+      return 10 // Minimal lookback, uses recursive filter
+    case 'DEMA':
+      return Math.max(1, Math.floor(window || 0)) * 2
+    case 'TEMA':
+      return Math.max(1, Math.floor(window || 0)) * 3
+    case 'KAMA':
+      return Math.max(1, Math.floor(window || 0)) + 30 // window + slow period
+    case 'ADX':
+      return Math.max(1, Math.floor(window || 0)) * 2 // Extra for smoothing
     default:
       return Math.max(1, Math.floor(window || 0))
   }
 }
 
 type WeightMode = 'equal' | 'defined' | 'inverse' | 'pro' | 'capped'
+
+// Indicator metadata with descriptions and formulas
+const INDICATOR_INFO: Record<MetricChoice, { desc: string; formula: string }> = {
+  // Price
+  'Current Price': { desc: 'The current closing price of the asset', formula: 'Price = Close' },
+
+  // Moving Averages
+  'Simple Moving Average': { desc: 'Average price over N periods, equal weight to all', formula: 'SMA = Σ(Close) / N' },
+  'Exponential Moving Average': { desc: 'Weighted average giving more weight to recent prices', formula: 'EMA = α×Close + (1-α)×EMA_prev, α=2/(N+1)' },
+  'Hull Moving Average': { desc: 'Reduced lag MA using weighted MAs', formula: 'HMA = WMA(2×WMA(N/2) - WMA(N), √N)' },
+  'Weighted Moving Average': { desc: 'Linear weighted average, recent prices weighted more', formula: 'WMA = Σ(i×Close_i) / Σ(i), i=1..N' },
+  'Wilder Moving Average': { desc: 'Smoothed MA used in RSI, slower response', formula: 'WilderMA = (Prev×(N-1) + Close) / N' },
+  'DEMA': { desc: 'Double EMA reduces lag vs single EMA', formula: 'DEMA = 2×EMA - EMA(EMA)' },
+  'TEMA': { desc: 'Triple EMA for even less lag', formula: 'TEMA = 3×EMA - 3×EMA² + EMA³' },
+  'KAMA': { desc: 'Adapts smoothing based on market noise', formula: 'KAMA = KAMA_prev + SC²×(Close - KAMA_prev)' },
+
+  // RSI & Variants
+  'Relative Strength Index': { desc: "Wilder's RSI, momentum oscillator 0-100", formula: 'RSI = 100 - 100/(1 + AvgGain/AvgLoss)' },
+  'RSI (SMA)': { desc: 'RSI using simple moving average smoothing', formula: 'RSI_SMA = 100 - 100/(1 + SMA(Gains)/SMA(Losses))' },
+  'RSI (EMA)': { desc: 'RSI using exponential moving average smoothing', formula: 'RSI_EMA = 100 - 100/(1 + EMA(Gains)/EMA(Losses))' },
+  'Stochastic RSI': { desc: 'Stochastic applied to RSI values, more sensitive', formula: 'StochRSI = (RSI - RSI_Low) / (RSI_High - RSI_Low)' },
+  'Laguerre RSI': { desc: "Ehlers' Laguerre filter RSI, smoother", formula: 'Uses 4-element Laguerre filter with gamma' },
+
+  // Momentum
+  'Momentum (Weighted)': { desc: '13612W weighted momentum score', formula: '12×M1 + 4×M3 + 2×M6 + M12 (1/3/6/12 month returns)' },
+  'Momentum (Unweighted)': { desc: '13612U unweighted momentum score', formula: 'M1 + M3 + M6 + M12 (equal weight)' },
+  'Momentum (12-Month SMA)': { desc: 'SMA of 12-month returns', formula: 'SMA(12-month return, N)' },
+  'Rate of Change': { desc: 'Percent change over N periods', formula: 'ROC = (Close - Close_N) / Close_N × 100' },
+  'Williams %R': { desc: 'Momentum indicator, inverse of Fast Stochastic', formula: '%R = (High_N - Close) / (High_N - Low_N) × -100' },
+  'CCI': { desc: 'Measures price deviation from average', formula: 'CCI = (TP - SMA(TP)) / (0.015 × MeanDev)' },
+  'Stochastic %K': { desc: 'Fast Stochastic, price position in range', formula: '%K = (Close - Low_N) / (High_N - Low_N) × 100' },
+  'Stochastic %D': { desc: 'Slow Stochastic, SMA of %K', formula: '%D = SMA(%K, 3)' },
+  'ADX': { desc: 'Trend strength indicator 0-100', formula: 'ADX = SMA(|+DI - -DI| / (+DI + -DI) × 100)' },
+
+  // Volatility
+  'Standard Deviation': { desc: 'Volatility of returns over N periods', formula: 'StdDev = √(Σ(r - r̄)² / N)' },
+  'Standard Deviation of Price': { desc: 'Volatility of price levels', formula: 'StdDev = √(Σ(P - P̄)² / N)' },
+  'Max Drawdown': { desc: 'Largest peak-to-trough decline over N periods', formula: 'MaxDD = max((Peak - Trough) / Peak)' },
+  'Drawdown': { desc: 'Current decline from recent peak', formula: 'DD = (Peak - Current) / Peak' },
+  'Bollinger %B': { desc: 'Position within Bollinger Bands (0-1)', formula: '%B = (Close - LowerBand) / (UpperBand - LowerBand)' },
+  'Bollinger Bandwidth': { desc: 'Width of Bollinger Bands as % of middle', formula: 'BW = (Upper - Lower) / Middle × 100' },
+  'ATR': { desc: 'Average True Range, volatility measure', formula: 'ATR = SMA(max(H-L, |H-C_prev|, |L-C_prev|))' },
+  'ATR %': { desc: 'ATR as percentage of price', formula: 'ATR% = ATR / Close × 100' },
+  'Historical Volatility': { desc: 'Annualized standard deviation of returns', formula: 'HV = StdDev(returns) × √252' },
+  'Ulcer Index': { desc: 'Measures downside volatility/drawdown pain', formula: 'UI = √(Σ(DD²) / N)' },
+
+  // Trend
+  'Cumulative Return': { desc: 'Total return over N periods', formula: 'CumRet = (Close / Close_N) - 1' },
+  'SMA of Returns': { desc: 'Smoothed average of daily returns', formula: 'SMA(daily returns, N)' },
+  'Trend Clarity': { desc: 'R² of price regression, trend strength', formula: 'R² = 1 - (SS_res / SS_tot)' },
+  'Ultimate Smoother': { desc: "Ehlers' low-lag smoother", formula: '3-pole Butterworth filter' },
+  'Linear Reg Slope': { desc: 'Slope of best-fit line through prices', formula: 'Slope = Σ((x-x̄)(y-ȳ)) / Σ(x-x̄)²' },
+  'Linear Reg Value': { desc: 'Current value on regression line', formula: 'Value = Intercept + Slope × N' },
+  'Price vs SMA': { desc: 'Ratio of price to its moving average', formula: 'Ratio = Close / SMA(Close, N)' },
+
+  // Aroon
+  'Aroon Up': { desc: 'Days since highest high (0-100)', formula: 'AroonUp = ((N - DaysSinceHigh) / N) × 100' },
+  'Aroon Down': { desc: 'Days since lowest low (0-100)', formula: 'AroonDown = ((N - DaysSinceLow) / N) × 100' },
+  'Aroon Oscillator': { desc: 'Difference between Aroon Up and Down', formula: 'AroonOsc = AroonUp - AroonDown' },
+
+  // MACD/PPO
+  'MACD Histogram': { desc: 'MACD minus signal line', formula: 'Hist = (EMA12 - EMA26) - EMA9(EMA12 - EMA26)' },
+  'PPO Histogram': { desc: 'Percentage Price Oscillator histogram', formula: 'PPO = ((EMA12 - EMA26) / EMA26) × 100' },
+}
+
+// Indicator categories for submenu dropdown
+const INDICATOR_CATEGORIES: Record<string, MetricChoice[]> = {
+  'Price': ['Current Price'],
+  'Moving Averages': [
+    'Simple Moving Average',
+    'Exponential Moving Average',
+    'Hull Moving Average',
+    'Weighted Moving Average',
+    'Wilder Moving Average',
+    'DEMA',
+    'TEMA',
+    'KAMA',
+  ],
+  'RSI & Variants': [
+    'Relative Strength Index',
+    'RSI (SMA)',
+    'RSI (EMA)',
+    'Stochastic RSI',
+    'Laguerre RSI',
+  ],
+  'Momentum': [
+    'Momentum (Weighted)',
+    'Momentum (Unweighted)',
+    'Momentum (12-Month SMA)',
+    'Rate of Change',
+    'Williams %R',
+    'CCI',
+    'Stochastic %K',
+    'Stochastic %D',
+    'ADX',
+  ],
+  'Volatility': [
+    'Standard Deviation',
+    'Standard Deviation of Price',
+    'Max Drawdown',
+    'Drawdown',
+    'Bollinger %B',
+    'Bollinger Bandwidth',
+    'ATR',
+    'ATR %',
+    'Historical Volatility',
+    'Ulcer Index',
+  ],
+  'Trend': [
+    'Cumulative Return',
+    'SMA of Returns',
+    'Trend Clarity',
+    'Ultimate Smoother',
+    'Linear Reg Slope',
+    'Linear Reg Value',
+    'Price vs SMA',
+  ],
+  'Aroon': [
+    'Aroon Up',
+    'Aroon Down',
+    'Aroon Oscillator',
+  ],
+  'MACD/PPO': [
+    'MACD Histogram',
+    'PPO Histogram',
+  ],
+}
 
 type UserId = '1' | '3' | '5' | '7' | '9' | 'admin'
 type ThemeMode = 'light' | 'dark'
@@ -136,6 +305,27 @@ type ConditionLine = {
   rightMetric?: MetricChoice
   rightTicker?: PositionChoice
   forDays?: number // Condition must be true for N consecutive days (default: 1)
+}
+
+// Find/Replace ticker instance tracking
+type TickerInstance = {
+  nodeId: string
+  field: 'position' | 'condition' | 'rightCondition' | 'scaleTicker' | 'cappedFallback' | 'entry' | 'exit'
+  index?: number      // For arrays (positions, conditions)
+  itemId?: string     // For numbered items
+  callChainId?: string // If found in a call chain
+}
+
+// Indicator overlay data from server
+type IndicatorOverlayData = {
+  conditionId: string
+  label: string
+  leftSeries: Array<{ date: string; value: number | null }>
+  rightSeries?: Array<{ date: string; value: number | null }> | null
+  rightLabel?: string | null
+  threshold?: number | null
+  comparator?: string
+  color: string
 }
 
 const normalizeConditionType = (value: unknown, fallback: ConditionLine['type']): ConditionLine['type'] => {
@@ -228,6 +418,7 @@ type EquityCurvePoint = {
 }
 
 const TICKER_DATALIST_ID = 'systemapp-tickers'
+const USED_TICKERS_DATALIST_ID = 'findreplace-used-tickers'
 
 const CURRENT_USER_KEY = 'systemapp.currentUser'
 const userDataKey = (userId: UserId) => `systemapp.user.${userId}.data.v1`
@@ -823,6 +1014,148 @@ const normalizeTickersForUi = (tickers: string[]): string[] => {
   return ['Empty', ...sorted]
 }
 
+// ============================================
+// INDICATOR DROPDOWN WITH SUBMENUS
+// ============================================
+
+// Info tooltip component for indicators - uses fixed positioning to escape overflow containers
+function IndicatorTooltip({ indicator }: { indicator: MetricChoice }) {
+  const [show, setShow] = useState(false)
+  const [pos, setPos] = useState({ x: 0, y: 0 })
+  const triggerRef = useRef<HTMLSpanElement>(null)
+  const info = INDICATOR_INFO[indicator]
+
+  const handleMouseEnter = () => {
+    if (triggerRef.current) {
+      const rect = triggerRef.current.getBoundingClientRect()
+      setPos({ x: rect.right + 8, y: rect.top + rect.height / 2 })
+    }
+    setShow(true)
+  }
+
+  return (
+    <div
+      className="inline-flex items-center"
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={() => setShow(false)}
+    >
+      <span
+        ref={triggerRef}
+        className="w-3.5 h-3.5 rounded-full border border-muted-foreground/50 text-muted-foreground text-[9px] flex items-center justify-center cursor-help hover:border-foreground hover:text-foreground"
+      >
+        ?
+      </span>
+      {show && info && (
+        <div
+          className="fixed z-[9999] bg-white dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-md shadow-xl p-2.5 min-w-[240px] max-w-[300px]"
+          style={{ left: pos.x, top: pos.y, transform: 'translateY(-50%)' }}
+        >
+          <div className="text-xs font-semibold mb-1.5 text-zinc-900 dark:text-zinc-100">{indicator}</div>
+          <div className="text-[11px] text-zinc-600 dark:text-zinc-400 mb-2 leading-relaxed">{info.desc}</div>
+          <div className="text-[10px] font-mono bg-zinc-100 dark:bg-zinc-800 px-2 py-1.5 rounded text-zinc-800 dark:text-zinc-200 border border-zinc-200 dark:border-zinc-700">{info.formula}</div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function IndicatorDropdown({
+  value,
+  onChange,
+  className,
+}: {
+  value: MetricChoice
+  onChange: (metric: MetricChoice) => void
+  className?: string
+}) {
+  const [open, setOpen] = useState(false)
+  const [hoveredCategory, setHoveredCategory] = useState<string | null>(null)
+  const dropdownRef = useRef<HTMLDivElement>(null)
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setOpen(false)
+      }
+    }
+    if (open) {
+      document.addEventListener('mousedown', handleClickOutside)
+      return () => document.removeEventListener('mousedown', handleClickOutside)
+    }
+  }, [open])
+
+  // Find which category the current value belongs to
+  const findCategoryForValue = (v: MetricChoice): string => {
+    for (const [cat, indicators] of Object.entries(INDICATOR_CATEGORIES)) {
+      if (indicators.includes(v)) return cat
+    }
+    return 'Moving Averages'
+  }
+
+  return (
+    <div ref={dropdownRef} className={cn('relative inline-block', className)}>
+      <button
+        type="button"
+        className="h-7 px-2 text-xs border border-border rounded bg-card text-left flex items-center gap-1 hover:bg-accent/50 min-w-[140px]"
+        onClick={() => setOpen(!open)}
+      >
+        <span className="truncate flex-1">{value}</span>
+        <svg className="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {open && (
+        <div className="absolute z-[200] mt-1 bg-card border border-border rounded shadow-lg min-w-[160px] left-0">
+          {Object.entries(INDICATOR_CATEGORIES).map(([category, indicators]) => (
+            <div
+              key={category}
+              className="relative"
+              onMouseEnter={() => setHoveredCategory(category)}
+              onMouseLeave={() => setHoveredCategory(null)}
+            >
+              <div
+                className={cn(
+                  'px-3 py-1.5 text-xs cursor-pointer flex justify-between items-center',
+                  hoveredCategory === category ? 'bg-accent' : 'hover:bg-accent/50',
+                  findCategoryForValue(value) === category && 'font-medium'
+                )}
+              >
+                <span>{category}</span>
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+              </div>
+
+              {hoveredCategory === category && (
+                <div className="absolute left-full top-0 z-[201] bg-card border border-border rounded shadow-lg min-w-[200px] max-h-[300px] overflow-y-auto">
+                  {indicators.map((ind) => (
+                    <div
+                      key={ind}
+                      className={cn(
+                        'px-3 py-1.5 text-xs cursor-pointer flex items-center justify-between gap-2',
+                        ind === value ? 'bg-accent font-medium' : 'hover:bg-accent/50'
+                      )}
+                      onClick={() => {
+                        onChange(ind)
+                        setOpen(false)
+                      }}
+                    >
+                      <span className="truncate">{ind}</span>
+                      <IndicatorTooltip indicator={ind} />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function TickerDatalist({ id, options }: { id: string; options: string[] }) {
   return (
     <datalist id={id}>
@@ -830,6 +1163,121 @@ function TickerDatalist({ id, options }: { id: string; options: string[] }) {
         <option key={t} value={t} />
       ))}
     </datalist>
+  )
+}
+
+/**
+ * FlowchartScrollWrapper - Wrapper with fixed horizontal scrollbar at viewport bottom
+ * The scrollbar floats at the bottom of the screen when the flowchart is visible
+ */
+function FlowchartScrollWrapper({
+  children,
+  className
+}: {
+  children: React.ReactNode
+  className?: string
+}) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const contentRef = useRef<HTMLDivElement>(null)
+  const scrollbarRef = useRef<HTMLDivElement>(null)
+  const [contentWidth, setContentWidth] = useState(0)
+  const [containerWidth, setContainerWidth] = useState(0)
+  const [containerRect, setContainerRect] = useState<{ left: number; right: number; top: number; bottom: number } | null>(null)
+  const [isVisible, setIsVisible] = useState(false)
+
+  // Update content width and container position
+  useEffect(() => {
+    const content = contentRef.current
+    const container = containerRef.current
+    if (!content || !container) return
+
+    const updateDimensions = () => {
+      setContentWidth(content.scrollWidth)
+      setContainerWidth(content.clientWidth)
+      const rect = container.getBoundingClientRect()
+      setContainerRect({ left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom })
+      // Scrollbar visible if container is on screen and content is wider
+      const onScreen = rect.top < window.innerHeight && rect.bottom > 0
+      setIsVisible(onScreen && content.scrollWidth > content.clientWidth)
+    }
+
+    updateDimensions()
+
+    // Track resize
+    const resizeObserver = new ResizeObserver(updateDimensions)
+    resizeObserver.observe(content)
+    resizeObserver.observe(container)
+
+    // Track scroll to update visibility
+    const handleScroll = () => updateDimensions()
+    window.addEventListener('scroll', handleScroll, { passive: true })
+    window.addEventListener('resize', handleScroll, { passive: true })
+
+    return () => {
+      resizeObserver.disconnect()
+      window.removeEventListener('scroll', handleScroll)
+      window.removeEventListener('resize', handleScroll)
+    }
+  }, [children])
+
+  // Sync scrollbar scroll to content
+  const handleScrollbarScroll = () => {
+    if (contentRef.current && scrollbarRef.current) {
+      contentRef.current.scrollLeft = scrollbarRef.current.scrollLeft
+    }
+  }
+
+  // Sync content scroll to scrollbar
+  const handleContentScroll = () => {
+    if (contentRef.current && scrollbarRef.current) {
+      scrollbarRef.current.scrollLeft = contentRef.current.scrollLeft
+    }
+  }
+
+  const needsScroll = contentWidth > containerWidth
+
+  return (
+    <div ref={containerRef} className={className} style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      {/* Scrollable content area */}
+      <div
+        ref={contentRef}
+        onScroll={handleContentScroll}
+        style={{
+          flex: 1,
+          overflowX: 'auto',
+          overflowY: 'visible',
+          // Hide scrollbar on content, we use custom one
+          scrollbarWidth: 'none',
+          msOverflowStyle: 'none',
+        }}
+        className="[&::-webkit-scrollbar]:hidden"
+      >
+        <div style={{ minWidth: 'max-content' }}>
+          {children}
+        </div>
+      </div>
+
+      {/* Fixed scrollbar at bottom of viewport - positioned to match container width */}
+      {needsScroll && isVisible && containerRect && (
+        <div
+          ref={scrollbarRef}
+          onScroll={handleScrollbarScroll}
+          className="flowchart-scrollbar-fixed"
+          style={{
+            position: 'fixed',
+            bottom: 0,
+            left: containerRect.left,
+            width: containerRect.right - containerRect.left,
+            zIndex: 100,
+          }}
+        >
+          <div
+            className="flowchart-scrollbar-inner"
+            style={{ width: contentWidth }}
+          />
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -875,11 +1323,19 @@ function LoginScreen({ onLogin }: { onLogin: (userId: UserId) => void }) {
   )
 }
 
+type BotBacktestState = {
+  status: 'idle' | 'running' | 'done' | 'error'
+  errors: BacktestError[]
+  result: BacktestResult | null
+  focusNodeId: string | null
+}
+
 type BotSession = {
   id: string
   history: FlowNode[]
   historyIndex: number
   savedBotId?: string
+  backtest: BotBacktestState
 }
 
 type AdminStatus = {
@@ -2153,7 +2609,7 @@ const DashboardEquityChart = ({
       lineColor: '#3b82f6',
       topColor: 'rgba(59, 130, 246, 0.3)',
       bottomColor: 'rgba(59, 130, 246, 0.0)',
-      lineWidth: 2,
+      lineWidth: 1,
       priceFormat: { type: 'custom', formatter: (v: number) => `${v.toFixed(1)}%` },
     })
 
@@ -2184,7 +2640,7 @@ const DashboardEquityChart = ({
       lineColor: '#ef4444',
       topColor: 'rgba(239, 68, 68, 0.0)',
       bottomColor: 'rgba(239, 68, 68, 0.4)',
-      lineWidth: 2,
+      lineWidth: 1,
       invertFilledArea: true,
       priceFormat: { type: 'custom', formatter: (v: number) => `${v.toFixed(1)}%` },
     })
@@ -2291,7 +2747,7 @@ const PartnerTBillChart = ({
       lineColor: '#10b981', // emerald-500
       topColor: 'rgba(16, 185, 129, 0.3)',
       bottomColor: 'rgba(16, 185, 129, 0.0)',
-      lineWidth: 2,
+      lineWidth: 1,
       priceFormat: { type: 'custom', formatter: (v: number) => `${v.toFixed(2)}%` },
     })
 
@@ -2410,6 +2866,7 @@ function EquityChart({
   logScale,
   showCursorStats = true,
   heightPx,
+  indicatorOverlays,
 }: {
   points: EquityPoint[]
   benchmarkPoints?: EquityPoint[]
@@ -2419,6 +2876,7 @@ function EquityChart({
   logScale?: boolean
   showCursorStats?: boolean
   heightPx?: number
+  indicatorOverlays?: IndicatorOverlayData[]
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -2427,6 +2885,10 @@ function EquityChart({
   const cursorSegRef = useRef<ISeriesApi<'Line'> | null>(null)
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null)
   const overlayRef = useRef<HTMLDivElement | null>(null)
+  const indicatorSeriesRef = useRef<Array<{ left: ISeriesApi<'Line'>; right?: ISeriesApi<'Line'>; threshold?: ISeriesApi<'Line'> }>>([])
+  const indicatorOverlaysRef = useRef<IndicatorOverlayData[]>([])
+  const [overlayValuesAtCursor, setOverlayValuesAtCursor] = useState<Array<{ label: string; value: number | null; rightLabel?: string | null; rightValue?: number | null; threshold?: number | null; color: string }>>([])
+
   const baseLineRef = useRef<IPriceLine | null>(null)
   const baseEquityRef = useRef<number>(1)
   const pointsRef = useRef<EquityPoint[]>([])
@@ -2763,13 +3225,179 @@ function EquityChart({
     const overlay = overlayRef.current
     if (!overlay) return
     const stats = computeWindowStats(time)
+
+    // Build indicator overlay values HTML
+    const overlayHtml = overlayValuesAtCursor.map(ov => {
+      const leftVal = ov.value != null ? ov.value.toFixed(2) : '—'
+      if (ov.rightLabel && ov.rightValue != null) {
+        // Two-indicator comparison
+        return `<div class="chart-hover-stat" style="border-left: 3px solid ${ov.color}; padding-left: 6px;">
+          <span class="chart-hover-label" style="color: ${ov.color}">${ov.label}</span> <span class="chart-hover-value">${leftVal}</span>
+          <span class="chart-hover-label" style="color: ${ov.color}; margin-left: 8px;">${ov.rightLabel}</span> <span class="chart-hover-value">${ov.rightValue.toFixed(2)}</span>
+        </div>`
+      } else if (ov.threshold != null) {
+        // Threshold comparison
+        return `<div class="chart-hover-stat" style="border-left: 3px solid ${ov.color}; padding-left: 6px;">
+          <span class="chart-hover-label" style="color: ${ov.color}">${ov.label}</span> <span class="chart-hover-value">${leftVal}</span>
+          <span class="chart-hover-label" style="margin-left: 8px;">Thresh</span> <span class="chart-hover-value">${ov.threshold}</span>
+        </div>`
+      }
+      return `<div class="chart-hover-stat" style="border-left: 3px solid ${ov.color}; padding-left: 6px;">
+        <span class="chart-hover-label" style="color: ${ov.color}">${ov.label}</span> <span class="chart-hover-value">${leftVal}</span>
+      </div>`
+    }).join('')
+
     overlay.innerHTML = `<div class="chart-hover-date">${isoFromUtcSeconds(time)}</div>
 <div class="chart-hover-stats">
   <div class="chart-hover-stat"><span class="chart-hover-label">CAGR</span> <span class="chart-hover-value">${stats ? formatPct(stats.cagr) : '—'}</span></div>
   <div class="chart-hover-stat"><span class="chart-hover-label">Max DD</span> <span class="chart-hover-value">${stats ? formatPct(stats.maxDD) : '—'}</span></div>
+  ${overlayHtml}
 </div>`
     updateCursorSegment(time)
-  }, [computeWindowStats, showCursorStats, updateCursorSegment, visibleRange])
+  }, [computeWindowStats, showCursorStats, updateCursorSegment, visibleRange, overlayValuesAtCursor])
+
+  // Handle indicator overlay series creation/updates
+  useEffect(() => {
+    const chart = chartRef.current
+    if (!chart) return
+
+    // Store current overlays ref
+    indicatorOverlaysRef.current = indicatorOverlays || []
+
+    // Remove old indicator series
+    indicatorSeriesRef.current.forEach(s => {
+      try { chart.removeSeries(s.left) } catch { /* ignore */ }
+      if (s.right) try { chart.removeSeries(s.right) } catch { /* ignore */ }
+      if (s.threshold) try { chart.removeSeries(s.threshold) } catch { /* ignore */ }
+    })
+    indicatorSeriesRef.current = []
+
+    // Add new indicator series
+    if (!indicatorOverlays || indicatorOverlays.length === 0) {
+      setOverlayValuesAtCursor([])
+      return
+    }
+
+    // Helper to get a contrasting color for the right indicator
+    const getContrastingColor = (color) => {
+      const colorPairs = {
+        '#f59e0b': '#8b5cf6', // Amber -> Violet
+        '#10b981': '#ec4899', // Emerald -> Pink
+        '#8b5cf6': '#f59e0b', // Violet -> Amber
+        '#ec4899': '#10b981', // Pink -> Emerald
+        '#06b6d4': '#f97316', // Cyan -> Orange
+        '#f97316': '#06b6d4', // Orange -> Cyan
+      }
+      return colorPairs[color] || '#8b5cf6'
+    }
+
+    indicatorOverlays.forEach((overlay) => {
+      // Convert date strings to timestamps and filter null values
+      const leftData = overlay.leftSeries
+        .filter(p => p.value != null)
+        .map(p => ({
+          time: (new Date(p.date).getTime() / 1000) as UTCTimestamp,
+          value: p.value as number
+        }))
+
+      // Create left series with separate left Y-axis
+      const leftSeries = chart.addSeries(LineSeries, {
+        color: overlay.color,
+        lineWidth: 1,
+        priceScaleId: 'left',
+        priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+      })
+      leftSeries.setData(leftData as LineData<UTCTimestamp>[])
+
+      const seriesEntry: { left: ISeriesApi<'Line'>; right?: ISeriesApi<'Line'>; threshold?: ISeriesApi<'Line'> } = { left: leftSeries }
+
+      // Create right series if expanded mode
+      if (overlay.rightSeries && overlay.rightSeries.length > 0) {
+        const rightData = overlay.rightSeries
+          .filter(p => p.value != null)
+          .map(p => ({
+            time: (new Date(p.date).getTime() / 1000) as UTCTimestamp,
+            value: p.value as number
+          }))
+
+        const rightColor = getContrastingColor(overlay.color)
+        const rightSeries = chart.addSeries(LineSeries, {
+          color: rightColor,
+          lineWidth: 1,
+          lineStyle: LineStyle.Dashed,
+          priceScaleId: 'left',
+          priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+        })
+        rightSeries.setData(rightData as LineData<UTCTimestamp>[])
+        seriesEntry.right = rightSeries
+      }
+
+      // Create threshold line if not expanded
+      if (overlay.threshold != null && !overlay.rightSeries) {
+        const thresholdData = leftData.map(p => ({
+          time: p.time,
+          value: overlay.threshold as number
+        }))
+        const thresholdSeries = chart.addSeries(LineSeries, {
+          color: overlay.color,
+          lineWidth: 1,
+          lineStyle: LineStyle.Dotted,
+          priceScaleId: 'left',
+          priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+        })
+        thresholdSeries.setData(thresholdData as LineData<UTCTimestamp>[])
+        seriesEntry.threshold = thresholdSeries
+      }
+
+      indicatorSeriesRef.current.push(seriesEntry)
+    })
+
+    // Enable left price scale if we have overlays
+    chart.applyOptions({
+      leftPriceScale: {
+        visible: true,
+        borderColor: '#cbd5e1',
+      }
+    })
+  }, [indicatorOverlays])
+
+  // Update overlay values on crosshair move
+  useEffect(() => {
+    const chart = chartRef.current
+    if (!chart) return
+    if (!indicatorOverlays || indicatorOverlays.length === 0) return
+
+    const handleCrosshair = (param: MouseEventParams<Time>) => {
+      if (!param.time) {
+        setOverlayValuesAtCursor([])
+        return
+      }
+
+      const cursorTime = param.time as UTCTimestamp
+      const isoDate = isoFromUtcSeconds(cursorTime)
+
+      const values = indicatorOverlays.map(overlay => {
+        const leftPoint = overlay.leftSeries.find(p => p.date === isoDate)
+        const rightPoint = overlay.rightSeries?.find(p => p.date === isoDate)
+
+        return {
+          label: overlay.label,
+          value: leftPoint?.value ?? null,
+          rightLabel: overlay.rightLabel,
+          rightValue: rightPoint?.value ?? null,
+          threshold: overlay.threshold,
+          color: overlay.color
+        }
+      })
+
+      setOverlayValuesAtCursor(values)
+    }
+
+    chart.subscribeCrosshairMove(handleCrosshair)
+    return () => {
+      chart.unsubscribeCrosshairMove(handleCrosshair)
+    }
+  }, [indicatorOverlays])
 
   return (
     <div
@@ -2833,7 +3461,7 @@ function DrawdownChart({
       lineColor: '#ef4444',
       topColor: 'rgba(239, 68, 68, 0.22)',
       bottomColor: 'rgba(239, 68, 68, 0.02)',
-      lineWidth: 2,
+      lineWidth: 1,
       priceFormat: {
         type: 'custom',
         formatter: (v: number) => {
@@ -5656,6 +6284,337 @@ const findNode = (node: FlowNode, id: string): FlowNode | null => {
   return null
 }
 
+// Find all instances of a ticker in the tree
+const findTickerInstances = (
+  root: FlowNode,
+  ticker: string,
+  includePositions: boolean,
+  includeIndicators: boolean,
+  callChainId?: string
+): TickerInstance[] => {
+  const instances: TickerInstance[] = []
+  if (!ticker.trim()) return instances
+  const normalized = ticker.trim().toUpperCase()
+
+  const traverse = (node: FlowNode) => {
+    // Check positions (Trade Tickers)
+    if (includePositions && node.positions) {
+      node.positions.forEach((p, idx) => {
+        if (p.toUpperCase() === normalized) {
+          instances.push({ nodeId: node.id, field: 'position', index: idx, callChainId })
+        }
+      })
+    }
+
+    // Check conditions (Indicator Tickers)
+    if (includeIndicators && node.conditions) {
+      node.conditions.forEach((cond, idx) => {
+        if (cond.ticker?.toUpperCase() === normalized) {
+          instances.push({ nodeId: node.id, field: 'condition', index: idx, callChainId })
+        }
+        if (cond.rightTicker?.toUpperCase() === normalized) {
+          instances.push({ nodeId: node.id, field: 'rightCondition', index: idx, callChainId })
+        }
+      })
+    }
+
+    // Check numbered items
+    if (includeIndicators && node.numbered?.items) {
+      node.numbered.items.forEach(item => {
+        item.conditions?.forEach((cond, idx) => {
+          if (cond.ticker?.toUpperCase() === normalized) {
+            instances.push({ nodeId: node.id, field: 'condition', index: idx, itemId: item.id, callChainId })
+          }
+          if (cond.rightTicker?.toUpperCase() === normalized) {
+            instances.push({ nodeId: node.id, field: 'rightCondition', index: idx, itemId: item.id, callChainId })
+          }
+        })
+      })
+    }
+
+    // Check entry/exit conditions (Alt Exit nodes)
+    if (includeIndicators && node.entryConditions) {
+      node.entryConditions.forEach((cond, idx) => {
+        if (cond.ticker?.toUpperCase() === normalized) {
+          instances.push({ nodeId: node.id, field: 'entry', index: idx, callChainId })
+        }
+        if (cond.rightTicker?.toUpperCase() === normalized) {
+          instances.push({ nodeId: node.id, field: 'rightCondition', index: idx, callChainId })
+        }
+      })
+    }
+    if (includeIndicators && node.exitConditions) {
+      node.exitConditions.forEach((cond, idx) => {
+        if (cond.ticker?.toUpperCase() === normalized) {
+          instances.push({ nodeId: node.id, field: 'exit', index: idx, callChainId })
+        }
+        if (cond.rightTicker?.toUpperCase() === normalized) {
+          instances.push({ nodeId: node.id, field: 'rightCondition', index: idx, callChainId })
+        }
+      })
+    }
+
+    // Check scaleTicker
+    if (includeIndicators && node.scaleTicker?.toUpperCase() === normalized) {
+      instances.push({ nodeId: node.id, field: 'scaleTicker', callChainId })
+    }
+
+    // Check capped fallbacks (considered as positions)
+    if (includePositions) {
+      if (node.cappedFallback?.toUpperCase() === normalized) {
+        instances.push({ nodeId: node.id, field: 'cappedFallback', callChainId })
+      }
+      if (node.cappedFallbackThen?.toUpperCase() === normalized) {
+        instances.push({ nodeId: node.id, field: 'cappedFallback', callChainId })
+      }
+      if (node.cappedFallbackElse?.toUpperCase() === normalized) {
+        instances.push({ nodeId: node.id, field: 'cappedFallback', callChainId })
+      }
+    }
+
+    // Recurse into children
+    for (const slot of getAllSlotsForNode(node)) {
+      const arr = node.children[slot]
+      if (arr) {
+        arr.forEach(child => { if (child) traverse(child) })
+      }
+    }
+  }
+
+  traverse(root)
+  return instances
+}
+
+
+// Collect all unique tickers used in the tree (for Find/Replace autocomplete)
+const collectUsedTickers = (root: FlowNode, callChains?: { id: string; root: string | FlowNode }[]): string[] => {
+  const tickers = new Set<string>()
+
+  const traverse = (node: FlowNode) => {
+    // Positions
+    if (node.positions) {
+      node.positions.forEach(p => {
+        if (p && p !== 'Empty') tickers.add(p.toUpperCase())
+      })
+    }
+
+    // Conditions (ticker and rightTicker)
+    if (node.conditions) {
+      node.conditions.forEach(cond => {
+        if (cond.ticker) tickers.add(cond.ticker.toUpperCase())
+        if (cond.rightTicker) tickers.add(cond.rightTicker.toUpperCase())
+      })
+    }
+
+    // Numbered items
+    if (node.numbered?.items) {
+      node.numbered.items.forEach(item => {
+        item.conditions?.forEach(cond => {
+          if (cond.ticker) tickers.add(cond.ticker.toUpperCase())
+          if (cond.rightTicker) tickers.add(cond.rightTicker.toUpperCase())
+        })
+      })
+    }
+
+    // Entry/Exit conditions (Alt Exit nodes)
+    if (node.entryConditions) {
+      node.entryConditions.forEach(cond => {
+        if (cond.ticker) tickers.add(cond.ticker.toUpperCase())
+        if (cond.rightTicker) tickers.add(cond.rightTicker.toUpperCase())
+      })
+    }
+    if (node.exitConditions) {
+      node.exitConditions.forEach(cond => {
+        if (cond.ticker) tickers.add(cond.ticker.toUpperCase())
+        if (cond.rightTicker) tickers.add(cond.rightTicker.toUpperCase())
+      })
+    }
+
+    // scaleTicker
+    if (node.scaleTicker) tickers.add(node.scaleTicker.toUpperCase())
+
+    // Capped fallbacks
+    if (node.cappedFallback && node.cappedFallback !== 'Empty') tickers.add(node.cappedFallback.toUpperCase())
+    if (node.cappedFallbackThen && node.cappedFallbackThen !== 'Empty') tickers.add(node.cappedFallbackThen.toUpperCase())
+    if (node.cappedFallbackElse && node.cappedFallbackElse !== 'Empty') tickers.add(node.cappedFallbackElse.toUpperCase())
+
+    // Recurse into children
+    for (const slot of getAllSlotsForNode(node)) {
+      const arr = node.children[slot]
+      if (arr) {
+        arr.forEach(child => { if (child) traverse(child) })
+      }
+    }
+  }
+
+  traverse(root)
+
+  // Also check call chains if provided
+  if (callChains) {
+    callChains.forEach(chain => {
+      try {
+        const chainRoot = typeof chain.root === 'string' ? JSON.parse(chain.root) : chain.root
+        traverse(chainRoot)
+      } catch { /* ignore parse errors */ }
+    })
+  }
+
+  return [...tickers].sort()
+}
+
+// Collect enabled conditions from the tree for indicator overlay
+const collectEnabledConditions = (
+  root: FlowNode,
+  enabledSet: Set<string>
+): ConditionLine[] => {
+  const conditions: ConditionLine[] = []
+  if (enabledSet.size === 0) return conditions
+
+  const traverse = (node: FlowNode) => {
+    // Check regular conditions
+    if (node.conditions) {
+      node.conditions.forEach(cond => {
+        const key = `${node.id}:${cond.id}`
+        if (enabledSet.has(key)) {
+          conditions.push(cond)
+        }
+      })
+    }
+
+    // Check numbered items
+    if (node.numbered?.items) {
+      node.numbered.items.forEach(item => {
+        item.conditions?.forEach(cond => {
+          const key = `${node.id}:${item.id}:${cond.id}`
+          if (enabledSet.has(key)) {
+            conditions.push(cond)
+          }
+        })
+      })
+    }
+
+    // Check entry/exit conditions (Alt Exit nodes)
+    if (node.entryConditions) {
+      node.entryConditions.forEach(cond => {
+        const key = `${node.id}:entry:${cond.id}`
+        if (enabledSet.has(key)) {
+          conditions.push(cond)
+        }
+      })
+    }
+    if (node.exitConditions) {
+      node.exitConditions.forEach(cond => {
+        const key = `${node.id}:exit:${cond.id}`
+        if (enabledSet.has(key)) {
+          conditions.push(cond)
+        }
+      })
+    }
+
+    // Recurse into children
+    for (const slot of getAllSlotsForNode(node)) {
+      const arr = node.children[slot]
+      if (arr) {
+        arr.forEach(child => { if (child) traverse(child) })
+      }
+    }
+  }
+
+  traverse(root)
+  return conditions
+}
+
+// Replace all instances of a ticker in the tree (returns new tree)
+const replaceTickerInTree = (
+  root: FlowNode,
+  fromTicker: string,
+  toTicker: string,
+  includePositions: boolean,
+  includeIndicators: boolean
+): FlowNode => {
+  const from = fromTicker.trim().toUpperCase()
+  const to = toTicker.trim().toUpperCase() || 'Empty'
+
+  const replaceInNode = (node: FlowNode): FlowNode => {
+    const next = { ...node }
+
+    // Replace in positions
+    if (includePositions && next.positions) {
+      next.positions = next.positions.map(p =>
+        p.toUpperCase() === from ? to : p
+      )
+    }
+
+    // Replace in conditions
+    if (includeIndicators && next.conditions) {
+      next.conditions = next.conditions.map(c => ({
+        ...c,
+        ticker: c.ticker?.toUpperCase() === from ? to : c.ticker,
+        rightTicker: c.rightTicker?.toUpperCase() === from ? to : c.rightTicker,
+      }))
+    }
+
+    // Replace in numbered items
+    if (includeIndicators && next.numbered?.items) {
+      next.numbered = {
+        ...next.numbered,
+        items: next.numbered.items.map(item => ({
+          ...item,
+          conditions: item.conditions?.map(c => ({
+            ...c,
+            ticker: c.ticker?.toUpperCase() === from ? to : c.ticker,
+            rightTicker: c.rightTicker?.toUpperCase() === from ? to : c.rightTicker,
+          }))
+        }))
+      }
+    }
+
+    // Replace in entry/exit conditions
+    if (includeIndicators && next.entryConditions) {
+      next.entryConditions = next.entryConditions.map(c => ({
+        ...c,
+        ticker: c.ticker?.toUpperCase() === from ? to : c.ticker,
+        rightTicker: c.rightTicker?.toUpperCase() === from ? to : c.rightTicker,
+      }))
+    }
+    if (includeIndicators && next.exitConditions) {
+      next.exitConditions = next.exitConditions.map(c => ({
+        ...c,
+        ticker: c.ticker?.toUpperCase() === from ? to : c.ticker,
+        rightTicker: c.rightTicker?.toUpperCase() === from ? to : c.rightTicker,
+      }))
+    }
+
+    // Replace scaleTicker
+    if (includeIndicators && next.scaleTicker?.toUpperCase() === from) {
+      next.scaleTicker = to
+    }
+
+    // Replace capped fallbacks
+    if (includePositions) {
+      if (next.cappedFallback?.toUpperCase() === from) next.cappedFallback = to
+      if (next.cappedFallbackThen?.toUpperCase() === from) next.cappedFallbackThen = to
+      if (next.cappedFallbackElse?.toUpperCase() === from) next.cappedFallbackElse = to
+    }
+
+    // Recurse into children
+    if (next.children) {
+      const newChildren: typeof next.children = {}
+      for (const slot of getAllSlotsForNode(node)) {
+        const arr = next.children[slot]
+        newChildren[slot] = arr?.map(child =>
+          child ? replaceInNode(child) : child
+        )
+      }
+      next.children = newChildren
+    }
+
+    return next
+  }
+
+  return replaceInNode(root)
+}
+
 type LineView =
   | { id: string; depth: number; kind: 'text'; text: string; tone?: 'tag' | 'title' }
   | { id: string; depth: number; kind: 'slot'; slot: SlotId }
@@ -5870,6 +6829,11 @@ type CardProps = {
       scaleTo: number
     }>,
   ) => void
+  // Find/Replace highlighting
+  highlightedInstance?: TickerInstance | null
+  // Indicator overlay toggle
+  enabledOverlays?: Set<string>
+  onToggleOverlay?: (key: string) => void
 }
 
 // Check if all descendants of a node are collapsed
@@ -5939,6 +6903,9 @@ const NodeCard = ({
   onUpdateEntryCondition,
   onUpdateExitCondition,
   onUpdateScaling,
+  highlightedInstance,
+  enabledOverlays,
+  onToggleOverlay,
 }: CardProps) => {
   const [addRowOpen, setAddRowOpen] = useState<string | null>(null)
   const [editing, setEditing] = useState(false)
@@ -6119,6 +7086,9 @@ const NodeCard = ({
                   onUpdateEntryCondition={onUpdateEntryCondition}
                   onUpdateExitCondition={onUpdateExitCondition}
                   onUpdateScaling={onUpdateScaling}
+                  highlightedInstance={highlightedInstance}
+                  enabledOverlays={enabledOverlays}
+                  onToggleOverlay={onToggleOverlay}
                 />
                 {node.kind === 'function' && slot === 'next' && index > 0 ? (
                   <Button variant="destructive" size="icon" className="h-7 w-7" onClick={() => onRemoveSlotEntry(node.id, slot, index)}>
@@ -6398,32 +7368,11 @@ const NodeCard = ({
               d{' '}
             </>
           )}
-          <Select
-            className="h-7 px-1.5 mx-1"
+          <IndicatorDropdown
             value={cond.metric}
-            onChange={(e) => onUpdateCondition(ownerId, cond.id, { metric: e.target.value as MetricChoice }, itemId)}
-          >
-            <option value="Current Price">Current Price</option>
-            <option value="Simple Moving Average">Simple Moving Average</option>
-            <option value="Exponential Moving Average">Exponential Moving Average</option>
-            <option value="Relative Strength Index">Relative Strength Index</option>
-            <option value="Max Drawdown">Max Drawdown</option>
-            <option value="Standard Deviation">Standard Deviation</option>
-            <option value="Standard Deviation of Price">Standard Deviation of Price</option>
-            <option value="Cumulative Return">Cumulative Return</option>
-            <option value="SMA of Returns">SMA of Returns</option>
-            <option value="Momentum (Weighted)">Momentum (Weighted)</option>
-            <option value="Momentum (Unweighted)">Momentum (Unweighted)</option>
-            <option value="Momentum (12-Month SMA)">Momentum (12-Month SMA)</option>
-            <option value="Drawdown">Drawdown</option>
-            <option value="Aroon Up">Aroon Up</option>
-            <option value="Aroon Down">Aroon Down</option>
-            <option value="Aroon Oscillator">Aroon Oscillator</option>
-            <option value="MACD Histogram">MACD Histogram</option>
-            <option value="PPO Histogram">PPO Histogram</option>
-            <option value="Trend Clarity">Trend Clarity</option>
-            <option value="Ultimate Smoother">Ultimate Smoother</option>
-          </Select>
+            onChange={(m) => onUpdateCondition(ownerId, cond.id, { metric: m }, itemId)}
+            className="h-7 px-1.5 mx-1"
+          />
           {' of '}
           <Select
             className="h-7 px-1.5 mx-1"
@@ -6470,32 +7419,11 @@ const NodeCard = ({
                   d{' '}
                 </>
               )}
-              <Select
-                className="h-7 px-1.5 mx-1"
+              <IndicatorDropdown
                 value={cond.rightMetric ?? 'Relative Strength Index'}
-                onChange={(e) => onUpdateCondition(ownerId, cond.id, { rightMetric: e.target.value as MetricChoice }, itemId)}
-              >
-                <option value="Current Price">Current Price</option>
-                <option value="Simple Moving Average">Simple Moving Average</option>
-                <option value="Exponential Moving Average">Exponential Moving Average</option>
-                <option value="Relative Strength Index">Relative Strength Index</option>
-                <option value="Max Drawdown">Max Drawdown</option>
-                <option value="Standard Deviation">Standard Deviation</option>
-                <option value="Standard Deviation of Price">Standard Deviation of Price</option>
-                <option value="Cumulative Return">Cumulative Return</option>
-                <option value="SMA of Returns">SMA of Returns</option>
-                <option value="Momentum (Weighted)">Momentum (Weighted)</option>
-                <option value="Momentum (Unweighted)">Momentum (Unweighted)</option>
-                <option value="Momentum (12-Month SMA)">Momentum (12-Month SMA)</option>
-                <option value="Drawdown">Drawdown</option>
-                <option value="Aroon Up">Aroon Up</option>
-                <option value="Aroon Down">Aroon Down</option>
-                <option value="Aroon Oscillator">Aroon Oscillator</option>
-                <option value="MACD Histogram">MACD Histogram</option>
-                <option value="PPO Histogram">PPO Histogram</option>
-                <option value="Trend Clarity">Trend Clarity</option>
-                <option value="Ultimate Smoother">Ultimate Smoother</option>
-              </Select>{' '}
+                onChange={(m) => onUpdateCondition(ownerId, cond.id, { rightMetric: m }, itemId)}
+                className="h-7 px-1.5 mx-1"
+              />{' '}
               of{' '}
               <Select
                 className="h-7 px-1.5 mx-1"
@@ -6564,7 +7492,8 @@ const NodeCard = ({
   return (
     <div
       id={`node-${node.id}`}
-      className={`node-card${hasBacktestError ? ' backtest-error' : ''}${hasBacktestFocus ? ' backtest-focus' : ''}`}
+      data-node-id={node.id}
+      className={`node-card${hasBacktestError ? ' backtest-error' : ''}${hasBacktestFocus ? ' backtest-focus' : ''}${highlightedInstance?.nodeId === node.id ? ' find-highlight' : ''}`}
       style={{ background: node.bgColor || undefined }}
     >
       <div className="node-head" onClick={() => onToggleCollapse(node.id, !collapsed)}>
@@ -6628,7 +7557,7 @@ const NodeCard = ({
             </Button>
             {colorOpen ? (
               <div
-                className="absolute top-full mt-1 left-0 flex gap-1 p-2 bg-surface border border-border rounded-lg shadow-lg z-10"
+                className="absolute top-full mt-1 left-0 flex gap-1 p-2 bg-surface border border-border rounded-lg shadow-lg z-[200]"
                 onClick={(e) => {
                   e.stopPropagation()
                 }}
@@ -6745,9 +7674,23 @@ const NodeCard = ({
                 {node.conditions?.map((cond, idx) => {
                   const prefix =
                     cond.type === 'and' ? 'And if the ' : cond.type === 'or' ? 'Or if the ' : 'If the '
+                  const overlayKey = `${node.id}:${cond.id}`
+                  const isOverlayActive = enabledOverlays?.has(overlayKey)
                   return (
                     <div className="flex items-center gap-2" key={cond.id}>
                       <div className="w-3.5 h-full border-l border-border" />
+                      {/* Indicator overlay toggle button */}
+                      {onToggleOverlay && idx === 0 && (
+                        <Button
+                          variant={isOverlayActive ? 'accent' : 'ghost'}
+                          size="sm"
+                          className={`h-6 w-6 p-0 text-xs ${isOverlayActive ? 'ring-2 ring-accent' : ''}`}
+                          onClick={() => onToggleOverlay(overlayKey)}
+                          title={isOverlayActive ? 'Hide indicator on chart' : 'Show indicator on chart'}
+                        >
+                          📈
+                        </Button>
+                      )}
                       <Badge variant="default" className="gap-1 py-1 px-2.5">
                         {prefix}
                         {isWindowlessIndicator(cond.metric) ? null : (
@@ -6761,34 +7704,11 @@ const NodeCard = ({
                             d{' '}
                           </>
                         )}
-                        <Select
-                          className="h-7 px-1.5 mx-1"
+                        <IndicatorDropdown
                           value={cond.metric}
-                          onChange={(e) =>
-                            onUpdateCondition(node.id, cond.id, { metric: e.target.value as MetricChoice })
-                          }
-                        >
-                          <option value="Current Price">Current Price</option>
-                          <option value="Simple Moving Average">Simple Moving Average</option>
-                          <option value="Exponential Moving Average">Exponential Moving Average</option>
-                          <option value="Relative Strength Index">Relative Strength Index</option>
-                          <option value="Max Drawdown">Max Drawdown</option>
-                          <option value="Standard Deviation">Standard Deviation</option>
-                          <option value="Standard Deviation of Price">Standard Deviation of Price</option>
-                          <option value="Cumulative Return">Cumulative Return</option>
-                          <option value="SMA of Returns">SMA of Returns</option>
-                          <option value="Momentum (Weighted)">Momentum (Weighted)</option>
-                          <option value="Momentum (Unweighted)">Momentum (Unweighted)</option>
-                          <option value="Momentum (12-Month SMA)">Momentum (12-Month SMA)</option>
-                          <option value="Drawdown">Drawdown</option>
-                          <option value="Aroon Up">Aroon Up</option>
-                          <option value="Aroon Down">Aroon Down</option>
-                          <option value="Aroon Oscillator">Aroon Oscillator</option>
-                          <option value="MACD Histogram">MACD Histogram</option>
-                          <option value="PPO Histogram">PPO Histogram</option>
-                          <option value="Trend Clarity">Trend Clarity</option>
-                          <option value="Ultimate Smoother">Ultimate Smoother</option>
-                        </Select>
+                          onChange={(m) => onUpdateCondition(node.id, cond.id, { metric: m })}
+                          className="h-7 px-1.5 mx-1"
+                        />
                         {' of '}
                         <Select
                           className="h-7 px-1.5 mx-1"
@@ -6839,34 +7759,11 @@ const NodeCard = ({
                                 d{' '}
                               </>
                             )}
-                            <Select
-                              className="h-7 px-1.5 mx-1"
+                            <IndicatorDropdown
                               value={cond.rightMetric ?? 'Relative Strength Index'}
-                              onChange={(e) =>
-                                onUpdateCondition(node.id, cond.id, { rightMetric: e.target.value as MetricChoice })
-                              }
-                            >
-                              <option value="Current Price">Current Price</option>
-                              <option value="Simple Moving Average">Simple Moving Average</option>
-                              <option value="Exponential Moving Average">Exponential Moving Average</option>
-                              <option value="Relative Strength Index">Relative Strength Index</option>
-                              <option value="Max Drawdown">Max Drawdown</option>
-                              <option value="Standard Deviation">Standard Deviation</option>
-                              <option value="Standard Deviation of Price">Standard Deviation of Price</option>
-                              <option value="Cumulative Return">Cumulative Return</option>
-                              <option value="SMA of Returns">SMA of Returns</option>
-                              <option value="Momentum (Weighted)">Momentum (Weighted)</option>
-                              <option value="Momentum (Unweighted)">Momentum (Unweighted)</option>
-                              <option value="Momentum (12-Month SMA)">Momentum (12-Month SMA)</option>
-                              <option value="Drawdown">Drawdown</option>
-                              <option value="Aroon Up">Aroon Up</option>
-                              <option value="Aroon Down">Aroon Down</option>
-                              <option value="Aroon Oscillator">Aroon Oscillator</option>
-                              <option value="MACD Histogram">MACD Histogram</option>
-                              <option value="PPO Histogram">PPO Histogram</option>
-                              <option value="Trend Clarity">Trend Clarity</option>
-                              <option value="Ultimate Smoother">Ultimate Smoother</option>
-                            </Select>{' '}
+                              onChange={(m) => onUpdateCondition(node.id, cond.id, { rightMetric: m })}
+                              className="h-7 px-1.5 mx-1"
+                            />{' '}
                             of{' '}
                             <Select
                               className="h-7 px-1.5 mx-1"
@@ -6955,7 +7852,7 @@ const NodeCard = ({
                   {renderWeightDetailChip('then')}
                   {weightThenOpen ? (
                     <div
-                      className="absolute top-full mt-1 left-0 flex flex-col bg-surface border border-border rounded-lg shadow-lg z-10 min-w-[120px]"
+                      className="absolute top-full mt-1 left-0 flex flex-col bg-surface border border-border rounded-lg shadow-lg z-[200] min-w-[120px]"
                       onClick={(e) => {
                         e.stopPropagation()
                       }}
@@ -7004,7 +7901,7 @@ const NodeCard = ({
                   {renderWeightDetailChip('else')}
                   {weightElseOpen ? (
                     <div
-                      className="absolute top-full mt-1 left-0 flex flex-col bg-surface border border-border rounded-lg shadow-lg z-10 min-w-[120px]"
+                      className="absolute top-full mt-1 left-0 flex flex-col bg-surface border border-border rounded-lg shadow-lg z-[200] min-w-[120px]"
                       onClick={(e) => {
                         e.stopPropagation()
                       }}
@@ -7258,7 +8155,7 @@ const NodeCard = ({
                     {renderWeightDetailChip('then')}
                     {weightThenOpen ? (
                       <div
-                        className="absolute top-full mt-1 left-0 flex flex-col bg-surface border border-border rounded-lg shadow-lg z-10 min-w-[120px]"
+                        className="absolute top-full mt-1 left-0 flex flex-col bg-surface border border-border rounded-lg shadow-lg z-[200] min-w-[120px]"
                         onClick={(e) => {
                           e.stopPropagation()
                         }}
@@ -7308,7 +8205,7 @@ const NodeCard = ({
                     {renderWeightDetailChip('else')}
                     {weightElseOpen ? (
                       <div
-                        className="absolute top-full mt-1 left-0 flex flex-col bg-surface border border-border rounded-lg shadow-lg z-10 min-w-[120px]"
+                        className="absolute top-full mt-1 left-0 flex flex-col bg-surface border border-border rounded-lg shadow-lg z-[200] min-w-[120px]"
                         onClick={(e) => {
                           e.stopPropagation()
                         }}
@@ -7360,32 +8257,11 @@ const NodeCard = ({
                               d{' '}
                             </>
                           )}
-                          <Select
-                            className="h-7 px-1.5 mx-1"
+                          <IndicatorDropdown
                             value={cond.metric}
-                            onChange={(e) => onUpdateEntryCondition(node.id, cond.id, { metric: e.target.value as MetricChoice })}
-                          >
-                            <option value="Current Price">Current Price</option>
-                            <option value="Simple Moving Average">Simple Moving Average</option>
-                            <option value="Exponential Moving Average">Exponential Moving Average</option>
-                            <option value="Relative Strength Index">Relative Strength Index</option>
-                            <option value="Max Drawdown">Max Drawdown</option>
-                            <option value="Standard Deviation">Standard Deviation</option>
-                            <option value="Standard Deviation of Price">Standard Deviation of Price</option>
-                            <option value="Cumulative Return">Cumulative Return</option>
-                            <option value="SMA of Returns">SMA of Returns</option>
-                            <option value="Momentum (Weighted)">Momentum (Weighted)</option>
-                            <option value="Momentum (Unweighted)">Momentum (Unweighted)</option>
-                            <option value="Momentum (12-Month SMA)">Momentum (12-Month SMA)</option>
-                            <option value="Drawdown">Drawdown</option>
-                            <option value="Aroon Up">Aroon Up</option>
-                            <option value="Aroon Down">Aroon Down</option>
-                            <option value="Aroon Oscillator">Aroon Oscillator</option>
-                            <option value="MACD Histogram">MACD Histogram</option>
-                            <option value="PPO Histogram">PPO Histogram</option>
-                            <option value="Trend Clarity">Trend Clarity</option>
-                            <option value="Ultimate Smoother">Ultimate Smoother</option>
-                          </Select>
+                            onChange={(m) => onUpdateEntryCondition(node.id, cond.id, { metric: m })}
+                            className="h-7 px-1.5 mx-1"
+                          />
                           {' of '}
                           <Select
                             className="h-7 px-1.5 mx-1"
@@ -7427,32 +8303,11 @@ const NodeCard = ({
                                   d{' '}
                                 </>
                               )}
-                              <Select
-                                className="h-7 px-1.5 mx-1"
+                              <IndicatorDropdown
                                 value={cond.rightMetric ?? 'Relative Strength Index'}
-                                onChange={(e) => onUpdateEntryCondition(node.id, cond.id, { rightMetric: e.target.value as MetricChoice })}
-                              >
-                                <option value="Current Price">Current Price</option>
-                                <option value="Simple Moving Average">Simple Moving Average</option>
-                                <option value="Exponential Moving Average">Exponential Moving Average</option>
-                                <option value="Relative Strength Index">Relative Strength Index</option>
-                                <option value="Max Drawdown">Max Drawdown</option>
-                                <option value="Standard Deviation">Standard Deviation</option>
-                                <option value="Standard Deviation of Price">Standard Deviation of Price</option>
-                                <option value="Cumulative Return">Cumulative Return</option>
-                                <option value="SMA of Returns">SMA of Returns</option>
-                                <option value="Momentum (Weighted)">Momentum (Weighted)</option>
-                                <option value="Momentum (Unweighted)">Momentum (Unweighted)</option>
-                                <option value="Momentum (12-Month SMA)">Momentum (12-Month SMA)</option>
-                                <option value="Drawdown">Drawdown</option>
-                                <option value="Aroon Up">Aroon Up</option>
-                                <option value="Aroon Down">Aroon Down</option>
-                                <option value="Aroon Oscillator">Aroon Oscillator</option>
-                                <option value="MACD Histogram">MACD Histogram</option>
-                                <option value="PPO Histogram">PPO Histogram</option>
-                                <option value="Trend Clarity">Trend Clarity</option>
-                                <option value="Ultimate Smoother">Ultimate Smoother</option>
-                              </Select>{' '}
+                                onChange={(m) => onUpdateEntryCondition(node.id, cond.id, { rightMetric: m })}
+                                className="h-7 px-1.5 mx-1"
+                              />{' '}
                               of{' '}
                               <Select
                                 className="h-7 px-1.5 mx-1"
@@ -7522,7 +8377,7 @@ const NodeCard = ({
                     {renderWeightDetailChip('then')}
                     {weightThenOpen ? (
                       <div
-                        className="absolute top-full mt-1 left-0 flex flex-col bg-surface border border-border rounded-lg shadow-lg z-10 min-w-[120px]"
+                        className="absolute top-full mt-1 left-0 flex flex-col bg-surface border border-border rounded-lg shadow-lg z-[200] min-w-[120px]"
                         onClick={(e) => { e.stopPropagation() }}
                       >
                         {(['equal', 'defined', 'inverse', 'pro', 'capped'] as WeightMode[]).map((w) => (
@@ -7572,32 +8427,11 @@ const NodeCard = ({
                               d{' '}
                             </>
                           )}
-                          <Select
-                            className="h-7 px-1.5 mx-1"
+                          <IndicatorDropdown
                             value={cond.metric}
-                            onChange={(e) => onUpdateExitCondition(node.id, cond.id, { metric: e.target.value as MetricChoice })}
-                          >
-                            <option value="Current Price">Current Price</option>
-                            <option value="Simple Moving Average">Simple Moving Average</option>
-                            <option value="Exponential Moving Average">Exponential Moving Average</option>
-                            <option value="Relative Strength Index">Relative Strength Index</option>
-                            <option value="Max Drawdown">Max Drawdown</option>
-                            <option value="Standard Deviation">Standard Deviation</option>
-                            <option value="Standard Deviation of Price">Standard Deviation of Price</option>
-                            <option value="Cumulative Return">Cumulative Return</option>
-                            <option value="SMA of Returns">SMA of Returns</option>
-                            <option value="Momentum (Weighted)">Momentum (Weighted)</option>
-                            <option value="Momentum (Unweighted)">Momentum (Unweighted)</option>
-                            <option value="Momentum (12-Month SMA)">Momentum (12-Month SMA)</option>
-                            <option value="Drawdown">Drawdown</option>
-                            <option value="Aroon Up">Aroon Up</option>
-                            <option value="Aroon Down">Aroon Down</option>
-                            <option value="Aroon Oscillator">Aroon Oscillator</option>
-                            <option value="MACD Histogram">MACD Histogram</option>
-                            <option value="PPO Histogram">PPO Histogram</option>
-                            <option value="Trend Clarity">Trend Clarity</option>
-                            <option value="Ultimate Smoother">Ultimate Smoother</option>
-                          </Select>
+                            onChange={(m) => onUpdateExitCondition(node.id, cond.id, { metric: m })}
+                            className="h-7 px-1.5 mx-1"
+                          />
                           {' of '}
                           <Select
                             className="h-7 px-1.5 mx-1"
@@ -7639,32 +8473,11 @@ const NodeCard = ({
                                   d{' '}
                                 </>
                               )}
-                              <Select
-                                className="h-7 px-1.5 mx-1"
+                              <IndicatorDropdown
                                 value={cond.rightMetric ?? 'Relative Strength Index'}
-                                onChange={(e) => onUpdateExitCondition(node.id, cond.id, { rightMetric: e.target.value as MetricChoice })}
-                              >
-                                <option value="Current Price">Current Price</option>
-                                <option value="Simple Moving Average">Simple Moving Average</option>
-                                <option value="Exponential Moving Average">Exponential Moving Average</option>
-                                <option value="Relative Strength Index">Relative Strength Index</option>
-                                <option value="Max Drawdown">Max Drawdown</option>
-                                <option value="Standard Deviation">Standard Deviation</option>
-                                <option value="Standard Deviation of Price">Standard Deviation of Price</option>
-                                <option value="Cumulative Return">Cumulative Return</option>
-                                <option value="SMA of Returns">SMA of Returns</option>
-                                <option value="Momentum (Weighted)">Momentum (Weighted)</option>
-                                <option value="Momentum (Unweighted)">Momentum (Unweighted)</option>
-                                <option value="Momentum (12-Month SMA)">Momentum (12-Month SMA)</option>
-                                <option value="Drawdown">Drawdown</option>
-                                <option value="Aroon Up">Aroon Up</option>
-                                <option value="Aroon Down">Aroon Down</option>
-                                <option value="Aroon Oscillator">Aroon Oscillator</option>
-                                <option value="MACD Histogram">MACD Histogram</option>
-                                <option value="PPO Histogram">PPO Histogram</option>
-                                <option value="Trend Clarity">Trend Clarity</option>
-                                <option value="Ultimate Smoother">Ultimate Smoother</option>
-                              </Select>{' '}
+                                onChange={(m) => onUpdateExitCondition(node.id, cond.id, { rightMetric: m })}
+                                className="h-7 px-1.5 mx-1"
+                              />{' '}
                               of{' '}
                               <Select
                                 className="h-7 px-1.5 mx-1"
@@ -7734,7 +8547,7 @@ const NodeCard = ({
                     {renderWeightDetailChip('else')}
                     {weightElseOpen ? (
                       <div
-                        className="absolute top-full mt-1 left-0 flex flex-col bg-surface border border-border rounded-lg shadow-lg z-10 min-w-[120px]"
+                        className="absolute top-full mt-1 left-0 flex flex-col bg-surface border border-border rounded-lg shadow-lg z-[200] min-w-[120px]"
                         onClick={(e) => { e.stopPropagation() }}
                       >
                         {(['equal', 'defined', 'inverse', 'pro', 'capped'] as WeightMode[]).map((w) => (
@@ -7862,7 +8675,7 @@ const NodeCard = ({
                     {renderWeightDetailChip('then')}
                     {weightThenOpen ? (
                       <div
-                        className="absolute top-full mt-1 left-0 flex flex-col bg-surface border border-border rounded-lg shadow-lg z-10 min-w-[120px]"
+                        className="absolute top-full mt-1 left-0 flex flex-col bg-surface border border-border rounded-lg shadow-lg z-[200] min-w-[120px]"
                         onClick={(e) => { e.stopPropagation() }}
                       >
                         {(['equal', 'defined', 'inverse', 'pro', 'capped'] as WeightMode[]).map((w) => (
@@ -7911,7 +8724,7 @@ const NodeCard = ({
                     {renderWeightDetailChip('else')}
                     {weightElseOpen ? (
                       <div
-                        className="absolute top-full mt-1 left-0 flex flex-col bg-surface border border-border rounded-lg shadow-lg z-10 min-w-[120px]"
+                        className="absolute top-full mt-1 left-0 flex flex-col bg-surface border border-border rounded-lg shadow-lg z-[200] min-w-[120px]"
                         onClick={(e) => { e.stopPropagation() }}
                       >
                         {(['equal', 'defined', 'inverse', 'pro', 'capped'] as WeightMode[]).map((w) => (
@@ -10622,6 +11435,7 @@ type BacktesterPanelProps = {
   errors: BacktestError[]
   onRun: () => void
   onJumpToError: (err: BacktestError) => void
+  indicatorOverlays?: IndicatorOverlayData[]
 }
 
 function BacktesterPanel({
@@ -10639,6 +11453,7 @@ function BacktesterPanel({
   errors,
   onRun,
   onJumpToError,
+  indicatorOverlays,
 }: BacktesterPanelProps) {
   const [tab, setTab] = useState<'Overview' | 'In Depth'>('Overview')
   const [selectedRange, setSelectedRange] = useState<VisibleRange | null>(null)
@@ -11109,6 +11924,7 @@ function BacktesterPanel({
                   markers={result.markers}
                   visibleRange={visibleRange}
                   logScale={logScale}
+                  indicatorOverlays={indicatorOverlays}
                 />
               </div>
               {rangePopover}
@@ -11345,10 +12161,7 @@ function App() {
   const [backtestCostBps, setBacktestCostBps] = useState<number>(5)
   const [backtestBenchmark, setBacktestBenchmark] = useState<string>('SPY')
   const [backtestShowBenchmark, setBacktestShowBenchmark] = useState<boolean>(true)
-  const [backtestStatus, setBacktestStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle')
-  const [backtestErrors, setBacktestErrors] = useState<BacktestError[]>([])
-  const [backtestResult, setBacktestResult] = useState<BacktestResult | null>(null)
-  const [backtestFocusNodeId, setBacktestFocusNodeId] = useState<string | null>(null)
+  // Per-bot backtest state moved to BotSession.backtest - see derived values after activeBot
 
   // Load bots from API on mount/user change (database is source of truth)
   const [_botsLoadedFromApi, setBotsLoadedFromApi] = useState(false)
@@ -11698,12 +12511,16 @@ function App() {
   }, [loadAvailableTickers])
 
   const tickerOptions = useMemo(() => normalizeTickersForUi(availableTickers), [availableTickers])
-  const backtestErrorNodeIds = useMemo(() => new Set(backtestErrors.map((e) => e.nodeId)), [backtestErrors])
 
   const createBotSession = useCallback((title: string): BotSession => {
     const root = ensureSlots(createNode('basic'))
     root.title = title
-    return { id: `bot-${newId()}`, history: [root], historyIndex: 0 }
+    return {
+      id: `bot-${newId()}`,
+      history: [root],
+      historyIndex: 0,
+      backtest: { status: 'idle', errors: [], result: null, focusNodeId: null },
+    }
   }, [])
 
   const initialBot = useMemo(() => createBotSession('Algo Name Here'), [createBotSession])
@@ -11750,11 +12567,82 @@ function App() {
   const [nexusBuyAmount, setNexusBuyAmount] = useState<string>('')
   const [nexusBuyMode, setNexusBuyMode] = useState<'$' | '%'>('$')
 
+  // Find/Replace ticker state
+  const [findTicker, setFindTicker] = useState('')
+  const [replaceTicker, setReplaceTicker] = useState('')
+  const [includePositions, setIncludePositions] = useState(true)
+  const [includeIndicators, setIncludeIndicators] = useState(true)
+  const [includeCallChains, setIncludeCallChains] = useState(false)
+  const [foundInstances, setFoundInstances] = useState<TickerInstance[]>([])
+  const [currentInstanceIndex, setCurrentInstanceIndex] = useState(-1)
+  const [highlightedInstance, setHighlightedInstance] = useState<TickerInstance | null>(null)
+
+  // Indicator overlay state - set of condition IDs to show on chart
+  // Format: `${nodeId}:${conditionId}` or `${nodeId}:entry:${condId}` for altExit
+  const [enabledOverlays, setEnabledOverlays] = useState<Set<string>>(new Set())
+
+  // Indicator overlay data fetched from server
+  const [indicatorOverlayData, setIndicatorOverlayData] = useState<IndicatorOverlayData[]>([])
+
+  // Toggle an indicator overlay on/off
+  const handleToggleOverlay = useCallback((key: string) => {
+    setEnabledOverlays(prev => {
+      const next = new Set(prev)
+      if (next.has(key)) {
+        next.delete(key)
+      } else {
+        next.add(key)
+      }
+      return next
+    })
+  }, [])
+
   const activeBot = useMemo(() => {
     return bots.find((b) => b.id === activeBotId) ?? bots[0]
   }, [bots, activeBotId])
 
   const current = activeBot.history[activeBot.historyIndex]
+
+  // Per-bot backtest state (derived from activeBot)
+  const backtestStatus = activeBot.backtest.status
+  const backtestErrors = activeBot.backtest.errors
+  const backtestResult = activeBot.backtest.result
+  const backtestFocusNodeId = activeBot.backtest.focusNodeId
+
+  // Fetch indicator overlay data when enabled overlays change
+  useEffect(() => {
+    // Only fetch if we have enabled overlays and a backtest result
+    if (enabledOverlays.size === 0 || !backtestResult) {
+      setIndicatorOverlayData([])
+      return
+    }
+
+    // Collect enabled conditions from the tree
+    const conditions = collectEnabledConditions(current, enabledOverlays)
+    if (conditions.length === 0) {
+      setIndicatorOverlayData([])
+      return
+    }
+
+    // Fetch indicator series from server
+    const fetchOverlays = async () => {
+      try {
+        const res = await fetch(API_BASE + "/indicator-series", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ conditions, mode: backtestMode })
+        })
+        if (!res.ok) throw new Error("Failed to fetch indicator series")
+        const data = await res.json()
+        setIndicatorOverlayData(data.indicatorOverlays || [])
+      } catch (err) {
+        console.error("Failed to fetch indicator overlays:", err)
+        setIndicatorOverlayData([])
+      }
+    }
+    fetchOverlays()
+  }, [enabledOverlays, backtestResult, current, backtestMode])
+  const backtestErrorNodeIds = useMemo(() => new Set(backtestErrors.map((e) => e.nodeId)), [backtestErrors])
 
   const watchlistsById = useMemo(() => new Map(watchlists.map((w) => [w.id, w])), [watchlists])
   const watchlistsByBotId = useMemo(() => {
@@ -12417,16 +13305,25 @@ function App() {
     [current, push],
   )
 
+  // Helper to update backtest state for the active bot
+  const updateActiveBotBacktest = useCallback((update: Partial<BotBacktestState>) => {
+    setBots((prev) =>
+      prev.map((b) =>
+        b.id === activeBotId ? { ...b, backtest: { ...b.backtest, ...update } } : b,
+      ),
+    )
+  }, [activeBotId])
+
   const handleJumpToBacktestError = useCallback(
     (err: BacktestError) => {
-      setBacktestFocusNodeId(err.nodeId)
+      updateActiveBotBacktest({ focusNodeId: err.nodeId })
       const expanded = expandToNode(current, err.nodeId)
       if (expanded.found) push(expanded.next)
       setTimeout(() => {
         document.getElementById(`node-${err.nodeId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
       }, 30)
     },
-    [current, push],
+    [current, push, updateActiveBotBacktest],
   )
 
   const runBacktestForNode = useCallback(
@@ -12757,25 +13654,20 @@ function App() {
   )
 
   const handleRunBacktest = useCallback(async () => {
-    setBacktestStatus('running')
-    setBacktestFocusNodeId(null)
-    setBacktestResult(null)
-    setBacktestErrors([])
+    updateActiveBotBacktest({ status: 'running', focusNodeId: null, result: null, errors: [] })
     try {
       const { result } = await runBacktestForNode(current)
-      setBacktestResult(result)
-      setBacktestStatus('done')
+      updateActiveBotBacktest({ result, status: 'done' })
     } catch (e) {
       if (isValidationError(e)) {
-        setBacktestErrors(e.errors)
+        updateActiveBotBacktest({ errors: e.errors, status: 'error' })
       } else {
         const msg = String((e as Error)?.message || e)
         const friendly = msg.includes('Failed to fetch') ? `${msg}. Is the backend running? (npm run api)` : msg
-        setBacktestErrors([{ nodeId: current.id, field: 'backtest', message: friendly }])
+        updateActiveBotBacktest({ errors: [{ nodeId: current.id, field: 'backtest', message: friendly }], status: 'error' })
       }
-      setBacktestStatus('error')
     }
-  }, [current, runBacktestForNode])
+  }, [current, runBacktestForNode, updateActiveBotBacktest])
   const handleNewBot = () => {
     const bot = createBotSession('Algo Name Here')
     setBots((prev) => [...prev, bot])
@@ -12831,7 +13723,7 @@ function App() {
       if (!bot || !bot.payload) throw new Error('Bot payload not available (IP protected)')
       // Parse payload if it's a string
       const payload = typeof bot.payload === 'string' ? JSON.parse(bot.payload) : bot.payload
-      setCurrent(payload)
+      push(ensureSlots(payload))
       setTab('Model')
     } catch (e) {
       console.error('Open failed:', e)
@@ -13444,7 +14336,8 @@ function App() {
         id: `bot-${newId()}`,
         history: [clonedPayload],
         historyIndex: 0,
-        savedBotId: newBot.id
+        savedBotId: newBot.id,
+        backtest: { status: 'idle', errors: [], result: null, focusNodeId: null },
       }
       setBots((prev) => [...prev, session])
       setActiveBotId(session.id)
@@ -13481,7 +14374,13 @@ function App() {
         return
       }
       const payload = ensureSlots(cloneNode(bot.payload))
-      const session: BotSession = { id: `bot-${newId()}`, history: [payload], historyIndex: 0, savedBotId: bot.id }
+      const session: BotSession = {
+        id: `bot-${newId()}`,
+        history: [payload],
+        historyIndex: 0,
+        savedBotId: bot.id,
+        backtest: { status: 'idle', errors: [], result: null, focusNodeId: null },
+      }
       setBots((prev) => [...prev, session])
       setActiveBotId(session.id)
       setTab('Model')
@@ -13596,12 +14495,16 @@ function App() {
             if (b.id !== activeBot.id) return b
             // Truncate any redo history and append the imported tree
             const newHistory = [...b.history.slice(0, b.historyIndex + 1), ensured]
-            return { ...b, history: newHistory, historyIndex: newHistory.length - 1 }
+            return {
+              ...b,
+              history: newHistory,
+              historyIndex: newHistory.length - 1,
+              backtest: { status: 'idle', errors: [], result: null, focusNodeId: null }, // Clear previous backtest results when importing new algo
+            }
           }),
         )
         setClipboard(null)
         setCopiedNodeId(null)
-        setBacktestResult(null) // Clear previous backtest results when importing new algo
         setIsImporting(false)
         console.log(`[Import] Successfully imported ${format} format as: ${ensured.title}`)
       } catch (err) {
@@ -13913,7 +14816,7 @@ function App() {
                 </Button>
                 {saveMenuOpen ? (
                   <Card
-                    className="absolute top-full left-0 z-50 min-w-60 p-1.5 mt-1"
+                    className="absolute top-full left-0 z-[200] min-w-60 p-1.5 mt-1"
                     onClick={(e) => e.stopPropagation()}
                   >
                     <div className="flex flex-col gap-1">
@@ -13998,6 +14901,195 @@ function App() {
               })}
             </div>
           )}
+          {/* Find/Replace Ticker Panel - Model tab only */}
+          {tab === 'Model' && (
+            <div className="flex items-center gap-2 mt-3 px-3 py-2 bg-surface border border-border rounded-lg">
+              {/* Datalist for used tickers autocomplete */}
+              <datalist id={USED_TICKERS_DATALIST_ID}>
+                {collectUsedTickers(current, includeCallChains ? callChains : undefined).map(t => (
+                  <option key={t} value={t} />
+                ))}
+              </datalist>
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs text-muted">From</span>
+                <Input
+                  list={USED_TICKERS_DATALIST_ID}
+                  className="h-7 w-24 text-xs"
+                  placeholder="Ticker"
+                  value={findTicker}
+                  onChange={(e) => {
+                    const val = e.target.value.toUpperCase()
+                    setFindTicker(val)
+                    // Auto-search on change
+                    let instances = findTickerInstances(current, val, includePositions, includeIndicators)
+                    // Include call chains if enabled
+                    if (includeCallChains && callChains.length > 0) {
+                      callChains.forEach(chain => {
+                        try {
+                          const chainRoot = typeof chain.root === 'string' ? JSON.parse(chain.root) : chain.root
+                          const chainInstances = findTickerInstances(chainRoot, val, includePositions, includeIndicators, chain.id)
+                          instances = [...instances, ...chainInstances]
+                        } catch { /* ignore parse errors */ }
+                      })
+                    }
+                    setFoundInstances(instances)
+                    setCurrentInstanceIndex(instances.length > 0 ? 0 : -1)
+                    setHighlightedInstance(instances.length > 0 ? instances[0] : null)
+                  }}
+                />
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs text-muted">To</span>
+                <Input
+                  className="h-7 w-24 text-xs"
+                  placeholder="Ticker"
+                  value={replaceTicker}
+                  onChange={(e) => setReplaceTicker(e.target.value.toUpperCase())}
+                />
+              </div>
+              <label className="flex items-center gap-1 text-xs cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={includePositions}
+                  onChange={(e) => {
+                    setIncludePositions(e.target.checked)
+                    // Re-search with new settings
+                    let instances = findTickerInstances(current, findTicker, e.target.checked, includeIndicators)
+                    if (includeCallChains && callChains.length > 0) {
+                      callChains.forEach(chain => {
+                        try {
+                          const chainRoot = typeof chain.root === 'string' ? JSON.parse(chain.root) : chain.root
+                          instances = [...instances, ...findTickerInstances(chainRoot, findTicker, e.target.checked, includeIndicators, chain.id)]
+                        } catch { /* ignore */ }
+                      })
+                    }
+                    setFoundInstances(instances)
+                    setCurrentInstanceIndex(instances.length > 0 ? 0 : -1)
+                  }}
+                />
+                Trade Tickers
+              </label>
+              <label className="flex items-center gap-1 text-xs cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={includeIndicators}
+                  onChange={(e) => {
+                    setIncludeIndicators(e.target.checked)
+                    // Re-search with new settings
+                    let instances = findTickerInstances(current, findTicker, includePositions, e.target.checked)
+                    if (includeCallChains && callChains.length > 0) {
+                      callChains.forEach(chain => {
+                        try {
+                          const chainRoot = typeof chain.root === 'string' ? JSON.parse(chain.root) : chain.root
+                          instances = [...instances, ...findTickerInstances(chainRoot, findTicker, includePositions, e.target.checked, chain.id)]
+                        } catch { /* ignore */ }
+                      })
+                    }
+                    setFoundInstances(instances)
+                    setCurrentInstanceIndex(instances.length > 0 ? 0 : -1)
+                  }}
+                />
+                Indicator Tickers
+              </label>
+              <label className="flex items-center gap-1 text-xs cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={includeCallChains}
+                  onChange={(e) => {
+                    setIncludeCallChains(e.target.checked)
+                    // Re-search with new settings
+                    let instances = findTickerInstances(current, findTicker, includePositions, includeIndicators)
+                    if (e.target.checked && callChains.length > 0) {
+                      callChains.forEach(chain => {
+                        try {
+                          const chainRoot = typeof chain.root === 'string' ? JSON.parse(chain.root) : chain.root
+                          instances = [...instances, ...findTickerInstances(chainRoot, findTicker, includePositions, includeIndicators, chain.id)]
+                        } catch { /* ignore */ }
+                      })
+                    }
+                    setFoundInstances(instances)
+                    setCurrentInstanceIndex(instances.length > 0 ? 0 : -1)
+                  }}
+                />
+                Call Chains
+              </label>
+              {findTicker && (
+                <span className="text-xs text-muted ml-2">
+                  {foundInstances.length} found
+                  {currentInstanceIndex >= 0 && foundInstances.length > 0 && ` (${currentInstanceIndex + 1}/${foundInstances.length})`}
+                </span>
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={foundInstances.length === 0}
+                onClick={() => {
+                  const newIdx = (currentInstanceIndex - 1 + foundInstances.length) % foundInstances.length
+                  setCurrentInstanceIndex(newIdx)
+                  const instance = foundInstances[newIdx]
+                  setHighlightedInstance(instance)
+                  // Scroll to node
+                  const nodeEl = document.querySelector(`[data-node-id="${instance.nodeId}"]`)
+                  if (nodeEl) {
+                    nodeEl.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                  }
+                }}
+              >
+                ◀ Prev
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={foundInstances.length === 0}
+                onClick={() => {
+                  const newIdx = (currentInstanceIndex + 1) % foundInstances.length
+                  setCurrentInstanceIndex(newIdx)
+                  const instance = foundInstances[newIdx]
+                  setHighlightedInstance(instance)
+                  // Scroll to node
+                  const nodeEl = document.querySelector(`[data-node-id="${instance.nodeId}"]`)
+                  if (nodeEl) {
+                    nodeEl.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                  }
+                }}
+              >
+                Next ▶
+              </Button>
+              <Button
+                variant="default"
+                size="sm"
+                disabled={!findTicker || !replaceTicker || foundInstances.length === 0}
+                onClick={() => {
+                  // Replace in main tree
+                  const nextRoot = replaceTickerInTree(current, findTicker, replaceTicker, includePositions, includeIndicators)
+                  push(nextRoot)
+                  // Replace in call chains if enabled
+                  if (includeCallChains && callChains.length > 0) {
+                    callChains.forEach(chain => {
+                      try {
+                        const chainRoot = typeof chain.root === 'string' ? JSON.parse(chain.root) : chain.root
+                        const updatedRoot = replaceTickerInTree(chainRoot, findTicker, replaceTicker, includePositions, includeIndicators)
+                        // Update call chain via API
+                        fetch(`/api/call-chains/${chain.id}`, {
+                          method: 'PUT',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ root: JSON.stringify(updatedRoot) })
+                        }).then(() => refreshCallChains())
+                      } catch { /* ignore parse errors */ }
+                    })
+                  }
+                  // Clear state
+                  setFindTicker('')
+                  setReplaceTicker('')
+                  setFoundInstances([])
+                  setCurrentInstanceIndex(-1)
+                  setHighlightedInstance(null)
+                }}
+              >
+                Replace
+              </Button>
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-4">
           <div className="flex gap-2">
@@ -14048,11 +15140,12 @@ function App() {
                   errors={backtestErrors}
                   onRun={handleRunBacktest}
                   onJumpToError={handleJumpToBacktestError}
+                  indicatorOverlays={indicatorOverlayData}
                 />
               </div>
 
               {/* Bottom Row - 2 Zones Side by Side */}
-              <div className="flex gap-4">
+              <div className="flex gap-4 flex-1">
                 {/* Bottom Left Zone - Sticky Labels + Content */}
                 <div className={`flex items-start transition-all ${callbackNodesCollapsed && customIndicatorsCollapsed ? 'w-auto' : 'w-1/2'}`}>
                   {/* Left Side - Labels and Buttons (sticky, fills visible height, split 50/50) */}
@@ -14304,6 +15397,9 @@ function App() {
                                   const next = setCollapsedBelow(c.root, id, !currentlyCollapsed)
                                   pushCallChain(c.id, next)
                                 }}
+                                highlightedInstance={highlightedInstance}
+                                enabledOverlays={enabledOverlays}
+                                onToggleOverlay={handleToggleOverlay}
                               />
                             </div>
                           ) : null}
@@ -14323,9 +15419,8 @@ function App() {
                   </div>
                 </div>
 
-                {/* Bottom Right Zone - Flow Tree Builder */}
-                <div className={`flex flex-col border border-border rounded-lg bg-card p-4 transition-all ${callbackNodesCollapsed && customIndicatorsCollapsed ? 'flex-1' : 'w-1/2'}`}>
-                  <div className="flex-1 flex flex-col min-h-0">
+                {/* Bottom Right Zone - Flow Tree Builder with Sticky Scrollbar */}
+                <FlowchartScrollWrapper className={`flex flex-col border border-border rounded-lg bg-card p-4 transition-all ${callbackNodesCollapsed && customIndicatorsCollapsed ? 'flex-1' : 'w-1/2'}`}>
                   <NodeCard
                     node={current}
                     depth={0}
@@ -14379,9 +15474,11 @@ function App() {
                       const next = setCollapsedBelow(current, id, !currentlyCollapsed)
                       push(next)
                     }}
+                    highlightedInstance={highlightedInstance}
+                    enabledOverlays={enabledOverlays}
+                    onToggleOverlay={handleToggleOverlay}
                   />
-                  </div>
-                </div>
+                </FlowchartScrollWrapper>
               </div>
             </CardContent>
           </Card>
@@ -15871,10 +16968,10 @@ function App() {
                         {dashboardBuyBotDropdownOpen && (
                           <>
                             <div
-                              className="fixed inset-0 z-40"
+                              className="fixed inset-0 z-[199]"
                               onClick={() => setDashboardBuyBotDropdownOpen(false)}
                             />
-                            <div className="absolute top-full left-0 right-0 z-50 mt-1 max-h-48 overflow-y-auto bg-card border border-border rounded-md shadow-lg">
+                            <div className="absolute top-full left-0 right-0 z-[200] mt-1 max-h-48 overflow-y-auto bg-card border border-border rounded-md shadow-lg">
                               {(() => {
                                 const availableBots = eligibleBots.filter(
                                   (bot) => !dashboardPortfolio.investments.some((inv) => inv.botId === bot.id)
