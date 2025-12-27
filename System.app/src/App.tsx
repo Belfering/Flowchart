@@ -16393,7 +16393,58 @@ function App() {
                                 </Badge>
                               ))}
                             </div>
-                            <div className="ml-auto flex gap-2 flex-wrap">
+                            <div className="ml-auto flex gap-2 flex-wrap items-center">
+                              {/* FRD-025: Show key metrics when collapsed */}
+                              {collapsed && r.oosCagr != null && (
+                                <div className="flex gap-3 mr-4 text-xs">
+                                  <span className={r.oosCagr >= 0 ? 'text-success' : 'text-danger'}>
+                                    CAGR: {(r.oosCagr * 100).toFixed(1)}%
+                                  </span>
+                                  <span className={r.oosSharpe >= 1 ? 'text-success' : 'text-muted'}>
+                                    Sharpe: {r.oosSharpe?.toFixed(2) ?? '--'}
+                                  </span>
+                                  <span className={r.oosMaxDD > -0.2 ? 'text-success' : 'text-danger'}>
+                                    MaxDD: {(r.oosMaxDD * 100).toFixed(1)}%
+                                  </span>
+                                </div>
+                              )}
+                              {/* FRD-023: Export JSON for owner/admin */}
+                              {(b.builderId === userId || userId === 'admin') && b.payload && (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => {
+                                    const blob = new Blob([typeof b.payload === 'string' ? b.payload : JSON.stringify(b.payload, null, 2)], { type: 'application/json' })
+                                    const url = URL.createObjectURL(blob)
+                                    const a = document.createElement('a')
+                                    a.href = url
+                                    a.download = `${b.name || 'system'}.json`
+                                    a.click()
+                                    URL.revokeObjectURL(url)
+                                  }}
+                                >
+                                  Export JSON
+                                </Button>
+                              )}
+                              {/* FRD-023: Open in Model (respects IP) */}
+                              {b.payload && (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => {
+                                    try {
+                                      const parsed = typeof b.payload === 'string' ? JSON.parse(b.payload) : b.payload
+                                      setRoot(parsed)
+                                      push(parsed)
+                                      setTab('Model')
+                                    } catch (e) {
+                                      console.error('Failed to open model:', e)
+                                    }
+                                  }}
+                                >
+                                  Open in Model
+                                </Button>
+                              )}
                               {/* FRD-012: Show Copy to New for published systems (Nexus/Atlas are always published) */}
                               {b.builderId === userId && (
                                 <Button size="sm" onClick={() => handleCopyToNew(b)}>Copy to New System</Button>
@@ -16647,7 +16698,30 @@ function App() {
                   {/* Left Column - Atlas Systems and Search */}
                   <Card className="flex flex-col gap-4 p-4">
                     <Card className="flex-[2] flex flex-col p-4 border-2 overflow-auto">
-                      <div className="font-bold mb-3">Atlas Sponsored Systems</div>
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="font-bold">Atlas Sponsored Systems</div>
+                        {/* FRD-023: Sort dropdown */}
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-muted">Sort:</span>
+                          <select
+                            className="h-7 px-2 rounded border border-border bg-background text-xs"
+                            value={`${atlasSort.key}-${atlasSort.dir}`}
+                            onChange={(e) => {
+                              const [key, dir] = e.target.value.split('-')
+                              setAtlasSort({ key: key as CommunitySortKey, dir: dir as SortDir })
+                            }}
+                          >
+                            <option value="oosCagr-desc">CAGR (High-Low)</option>
+                            <option value="oosCagr-asc">CAGR (Low-High)</option>
+                            <option value="oosSharpe-desc">Sharpe (High-Low)</option>
+                            <option value="oosSharpe-asc">Sharpe (Low-High)</option>
+                            <option value="oosMaxdd-desc">MaxDD (Low-High)</option>
+                            <option value="oosMaxdd-asc">MaxDD (High-Low)</option>
+                            <option value="name-asc">Name (A-Z)</option>
+                            <option value="name-desc">Name (Z-A)</option>
+                          </select>
+                        </div>
+                      </div>
                       {renderBotCards(atlasBotRows, atlasSort, setAtlasSort, {
                         emptyMessage: 'No Atlas sponsored systems yet.',
                       })}
@@ -16756,6 +16830,32 @@ function App() {
                           + Add Filter
                         </Button>
                       </div>
+                      {/* FRD-023: Sort dropdown for search results */}
+                      {communitySearchFilters.some(f => f.value.trim()) && searchedBots.length > 0 && (
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="text-sm font-bold">Results: {searchedBots.length} systems</div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-muted">Sort:</span>
+                            <select
+                              className="h-7 px-2 rounded border border-border bg-background text-xs"
+                              value={`${communitySearchSort.key}-${communitySearchSort.dir}`}
+                              onChange={(e) => {
+                                const [key, dir] = e.target.value.split('-')
+                                setCommunitySearchSort({ key: key as CommunitySortKey, dir: dir as SortDir })
+                              }}
+                            >
+                              <option value="oosCagr-desc">CAGR (High-Low)</option>
+                              <option value="oosCagr-asc">CAGR (Low-High)</option>
+                              <option value="oosSharpe-desc">Sharpe (High-Low)</option>
+                              <option value="oosSharpe-asc">Sharpe (Low-High)</option>
+                              <option value="oosMaxdd-desc">MaxDD (Low-High)</option>
+                              <option value="oosMaxdd-asc">MaxDD (High-Low)</option>
+                              <option value="name-asc">Name (A-Z)</option>
+                              <option value="name-desc">Name (Z-A)</option>
+                            </select>
+                          </div>
+                        </div>
+                      )}
                       <div className="flex-1 overflow-auto">
                         {communitySearchFilters.some(f => f.value.trim()) ? (
                           searchedBots.length > 0 ? (
