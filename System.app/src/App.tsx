@@ -16308,7 +16308,6 @@ function App() {
                                     const rowData: RowData[] = [
                                       { label: 'Monte Carlo Comparison', metrics: mcMetrics, isBaseline: true },
                                       { label: 'K-Fold Comparison', metrics: kfMetrics },
-                                      { label: 'Null Set Comparison', metrics: undefined }, // Skip null set
                                       { label: 'Benchmark VTI', metrics: benchmarks['VTI'], ticker: 'VTI' },
                                       { label: 'Benchmark SPY', metrics: benchmarks['SPY'], ticker: 'SPY' },
                                       { label: 'Benchmark QQQ', metrics: benchmarks['QQQ'], ticker: 'QQQ' },

@@ -1347,6 +1347,51 @@ async function getTickerReturns(ticker) {
   })
 }
 
+// Helper: Get daily returns WITH dates for a ticker (for beta alignment)
+async function getTickerReturnsWithDates(ticker) {
+  const tableName = `ticker_${ticker.replace(/[^A-Z0-9]/g, '_')}`
+
+  if (!loadedTickers.has(ticker)) {
+    return null // Ticker not loaded
+  }
+
+  return new Promise((resolve, reject) => {
+    const sql = `
+      SELECT "Date", "Adj Close" as adjClose
+      FROM ${tableName}
+      WHERE "Adj Close" IS NOT NULL
+      ORDER BY "Date" ASC
+    `
+    conn.all(sql, (err, rows) => {
+      if (err) {
+        reject(err)
+        return
+      }
+      if (!rows || rows.length < 2) {
+        resolve(null)
+        return
+      }
+
+      // Compute daily returns with dates
+      // Convert Date objects to YYYY-MM-DD strings to match equity curve format
+      const returns = []
+      for (let i = 1; i < rows.length; i++) {
+        const prev = rows[i - 1].adjClose
+        const curr = rows[i].adjClose
+        if (prev > 0 && curr > 0) {
+          // Convert Date object to YYYY-MM-DD string format
+          const dateObj = rows[i].Date
+          const dateStr = dateObj instanceof Date
+            ? dateObj.toISOString().split('T')[0]
+            : String(dateObj).split('T')[0]
+          returns.push({ date: dateStr, return: (curr - prev) / prev })
+        }
+      }
+      resolve(returns)
+    })
+  })
+}
+
 // POST /api/bots/:id/sanity-report - Generate sanity & risk report
 // Runs Monte Carlo and K-Fold analysis on daily returns
 // Results are cached and invalidated on payload/data changes
@@ -1421,15 +1466,46 @@ app.post('/api/bots/:id/sanity-report', async (req, res) => {
       seed: req.body.seed || 42,
     }, spyReturns)
 
-    // Compute strategy beta vs each benchmark ticker
+    // Compute strategy beta vs each benchmark ticker with proper date alignment
     const benchmarkTickers = ['VTI', 'SPY', 'QQQ', 'DIA', 'DBC', 'DBO', 'GLD', 'BND', 'TLT', 'GBTC']
     const strategyBetas = {}
+
+    // Build strategy returns map keyed by date
+    // equityCurve has dates, dailyReturns is the return for each day
+    // Note: equityCurve[0] is day 0, equityCurve[1] is day 1, etc.
+    // dailyReturns[i] is the return from day i to day i+1
+    const strategyDates = backtestResult.equityCurve.map(p => p.date)
+    const strategyReturnsMap = new Map()
+    for (let i = 0; i < backtestResult.dailyReturns.length; i++) {
+      // The return at index i corresponds to the transition from strategyDates[i] to strategyDates[i+1]
+      // We associate it with strategyDates[i+1] (the end date of the return period)
+      if (i + 1 < strategyDates.length) {
+        strategyReturnsMap.set(strategyDates[i + 1], backtestResult.dailyReturns[i])
+      }
+    }
+
     for (const ticker of benchmarkTickers) {
       if (loadedTickers.has(ticker)) {
         try {
-          const benchReturns = await getTickerReturns(ticker)
-          if (benchReturns && benchReturns.length > 0) {
-            strategyBetas[ticker] = computeBeta(backtestResult.dailyReturns, benchReturns)
+          const benchWithDates = await getTickerReturnsWithDates(ticker)
+          if (benchWithDates && benchWithDates.length > 0) {
+            // Build benchmark returns map keyed by date
+            const benchMap = new Map(benchWithDates.map(r => [r.date, r.return]))
+
+            // Find intersection of dates and build aligned arrays
+            const alignedStrategy = []
+            const alignedBench = []
+            for (const [date, stratReturn] of strategyReturnsMap) {
+              if (benchMap.has(date)) {
+                alignedStrategy.push(stratReturn)
+                alignedBench.push(benchMap.get(date))
+              }
+            }
+
+            // Compute beta with properly aligned data
+            if (alignedStrategy.length >= 50) {
+              strategyBetas[ticker] = computeBeta(alignedStrategy, alignedBench)
+            }
           }
         } catch (e) {
           // Skip this ticker if we can't get returns
@@ -1473,10 +1549,14 @@ app.get('/api/benchmarks/metrics', async (req, res) => {
 
     const dataDate = await getLatestTickerDataDate()
 
-    // First, get SPY returns (needed for beta/treynor calculation)
-    let spyReturns = null
+    // First, get SPY returns WITH DATES (needed for beta/treynor calculation with proper alignment)
+    let spyReturnsWithDates = null
+    let spyReturnsMap = null
     if (loadedTickers.has('SPY')) {
-      spyReturns = await getTickerReturns('SPY')
+      spyReturnsWithDates = await getTickerReturnsWithDates('SPY')
+      if (spyReturnsWithDates) {
+        spyReturnsMap = new Map(spyReturnsWithDates.map(r => [r.date, r.return]))
+      }
     }
 
     const results = {}
@@ -1491,16 +1571,35 @@ app.get('/api/benchmarks/metrics', async (req, res) => {
           continue
         }
 
-        // Cache miss - compute metrics
-        const returns = await getTickerReturns(ticker)
-        if (!returns || returns.length < 50) {
-          errors.push(`${ticker}: insufficient data (${returns?.length || 0} days)`)
+        // Cache miss - compute metrics with date-aligned returns
+        const tickerWithDates = await getTickerReturnsWithDates(ticker)
+        if (!tickerWithDates || tickerWithDates.length < 50) {
+          errors.push(`${ticker}: insufficient data (${tickerWithDates?.length || 0} days)`)
           continue
         }
 
-        // Compute metrics (pass SPY returns for beta/treynor, except for SPY itself)
-        const benchmarkSpyReturns = ticker === 'SPY' ? null : spyReturns
-        const metrics = computeBenchmarkMetrics(returns, benchmarkSpyReturns)
+        // Build aligned arrays for beta computation
+        let alignedTickerReturns = tickerWithDates.map(r => r.return)
+        let alignedSpyReturns = null
+
+        if (ticker !== 'SPY' && spyReturnsMap) {
+          // Align this ticker's returns with SPY by date
+          const alignedTicker = []
+          const alignedSpy = []
+          for (const r of tickerWithDates) {
+            if (spyReturnsMap.has(r.date)) {
+              alignedTicker.push(r.return)
+              alignedSpy.push(spyReturnsMap.get(r.date))
+            }
+          }
+          if (alignedTicker.length >= 50) {
+            alignedTickerReturns = alignedTicker
+            alignedSpyReturns = alignedSpy
+          }
+        }
+
+        // Compute metrics with aligned SPY returns
+        const metrics = computeBenchmarkMetrics(alignedTickerReturns, alignedSpyReturns)
 
         if (metrics) {
           // Cache the result
