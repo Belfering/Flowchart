@@ -4,7 +4,7 @@ import { Button } from './ui/button'
 import { Input } from './ui/input'
 import loginBg from '../assets/login-bg.png'
 
-type AuthMode = 'login' | 'register' | 'forgot' | 'resend'
+type AuthMode = 'login' | 'register' | 'forgot' | 'resend' | 'reset-password'
 
 export function LoginScreen({ onLogin }: { onLogin: (userId: string) => void }) {
   const [mode, setMode] = useState<AuthMode>('login')
@@ -18,6 +18,42 @@ export function LoginScreen({ onLogin }: { onLogin: (userId: string) => void }) 
   const [showPassword, setShowPassword] = useState(false)
   const [showConfirmPassword, setShowConfirmPassword] = useState(false)
   const [rememberMe, setRememberMe] = useState(false)
+  const [resetToken, setResetToken] = useState<string | null>(null)
+
+  // Handle URL paths for verify-email and reset-password
+  useEffect(() => {
+    const path = window.location.pathname
+    const params = new URLSearchParams(window.location.search)
+    const token = params.get('token')
+
+    if (path === '/verify-email' && token) {
+      // Call verify API
+      fetch('/api/auth/verify-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token })
+      })
+        .then(res => res.json())
+        .then(data => {
+          if (data.success) {
+            setSuccess('Email verified successfully! You can now sign in.')
+          } else {
+            setError(data.error || 'Verification failed. The link may have expired.')
+          }
+          // Clean up URL
+          window.history.replaceState({}, '', '/')
+        })
+        .catch(() => {
+          setError('Verification failed. Please try again.')
+          window.history.replaceState({}, '', '/')
+        })
+    } else if (path === '/reset-password' && token) {
+      setResetToken(token)
+      setMode('reset-password')
+      // Clean up URL but keep in reset mode
+      window.history.replaceState({}, '', '/')
+    }
+  }, [])
 
   // Load remembered email on mount
   useEffect(() => {
@@ -150,11 +186,50 @@ export function LoginScreen({ onLogin }: { onLogin: (userId: string) => void }) 
     }
   }
 
+  const handleResetPassword = async () => {
+    setError(null)
+    if (!resetToken) {
+      setError('Invalid reset token')
+      return
+    }
+    if (password !== confirmPassword) {
+      setError('Passwords do not match')
+      return
+    }
+    if (password.length < 8) {
+      setError('Password must be at least 8 characters')
+      return
+    }
+    setLoading(true)
+    try {
+      const res = await fetch('/api/auth/reset-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: resetToken, newPassword: password })
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setError(data.error || 'Failed to reset password')
+        return
+      }
+      setSuccess('Password reset successfully! You can now sign in.')
+      setMode('login')
+      setPassword('')
+      setConfirmPassword('')
+      setResetToken(null)
+    } catch {
+      setError('Network error. Please try again.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   const submit = () => {
     if (mode === 'login') handleLogin()
     else if (mode === 'register') handleRegister()
     else if (mode === 'forgot') handleForgotPassword()
     else if (mode === 'resend') handleResendVerification()
+    else if (mode === 'reset-password') handleResetPassword()
   }
 
   return (
@@ -175,25 +250,28 @@ export function LoginScreen({ onLogin }: { onLogin: (userId: string) => void }) 
             {mode === 'register' && 'Create a new account'}
             {mode === 'forgot' && 'Reset your password'}
             {mode === 'resend' && 'Resend verification email'}
+            {mode === 'reset-password' && 'Enter your new password'}
           </p>
         </CardHeader>
         <CardContent className="grid gap-3">
           {success && <div className="text-sm text-green-600 bg-green-50 p-2 rounded">{success}</div>}
 
-          <label className="grid gap-1.5">
-            <div className="font-bold text-xs">Email</div>
-            <Input
-              type="email"
-              value={email}
-              onChange={(e) => { setEmail(e.target.value); setError(null); setSuccess(null) }}
-              placeholder="you@example.com"
-              autoFocus
-            />
-          </label>
+          {mode !== 'reset-password' && (
+            <label className="grid gap-1.5">
+              <div className="font-bold text-xs">Email</div>
+              <Input
+                type="email"
+                value={email}
+                onChange={(e) => { setEmail(e.target.value); setError(null); setSuccess(null) }}
+                placeholder="you@example.com"
+                autoFocus
+              />
+            </label>
+          )}
 
           {mode !== 'forgot' && mode !== 'resend' && (
             <label className="grid gap-1.5">
-              <div className="font-bold text-xs">Password</div>
+              <div className="font-bold text-xs">{mode === 'reset-password' ? 'New Password' : 'Password'}</div>
               <div className="relative">
                 <Input
                   type={showPassword ? 'text' : 'password'}
@@ -225,7 +303,7 @@ export function LoginScreen({ onLogin }: { onLogin: (userId: string) => void }) 
             </label>
           )}
 
-          {mode === 'register' && (
+          {(mode === 'register' || mode === 'reset-password') && (
             <>
               <label className="grid gap-1.5">
                 <div className="font-bold text-xs">Confirm Password</div>
@@ -257,16 +335,19 @@ export function LoginScreen({ onLogin }: { onLogin: (userId: string) => void }) 
                   </button>
                 </div>
               </label>
-              <label className="grid gap-1.5">
-                <div className="font-bold text-xs">Invite Code</div>
-                <Input
-                  value={inviteCode}
-                  onChange={(e) => { setInviteCode(e.target.value); setError(null) }}
-                  placeholder="Enter your invite code"
-                  onKeyDown={(e) => e.key === 'Enter' && submit()}
-                />
-              </label>
             </>
+          )}
+
+          {mode === 'register' && (
+            <label className="grid gap-1.5">
+              <div className="font-bold text-xs">Invite Code</div>
+              <Input
+                value={inviteCode}
+                onChange={(e) => { setInviteCode(e.target.value); setError(null) }}
+                placeholder="Enter your invite code"
+                onKeyDown={(e) => e.key === 'Enter' && submit()}
+              />
+            </label>
           )}
 
           {mode === 'login' && (
@@ -284,7 +365,7 @@ export function LoginScreen({ onLogin }: { onLogin: (userId: string) => void }) 
           {error && <div className="text-sm text-red-600 bg-red-50 p-2 rounded">{error}</div>}
 
           <Button onClick={submit} disabled={loading} className="w-full">
-            {loading ? 'Please wait...' : mode === 'login' ? 'Sign In' : mode === 'register' ? 'Create Account' : mode === 'forgot' ? 'Send Reset Link' : 'Resend Verification'}
+            {loading ? 'Please wait...' : mode === 'login' ? 'Sign In' : mode === 'register' ? 'Create Account' : mode === 'forgot' ? 'Send Reset Link' : mode === 'reset-password' ? 'Reset Password' : 'Resend Verification'}
           </Button>
 
           <div className="flex flex-col gap-2 text-center text-sm">
@@ -341,6 +422,15 @@ export function LoginScreen({ onLogin }: { onLogin: (userId: string) => void }) 
               <button
                 type="button"
                 onClick={() => { setMode('login'); setError(null); setSuccess(null) }}
+                className="text-primary hover:underline font-medium"
+              >
+                Back to sign in
+              </button>
+            )}
+            {mode === 'reset-password' && (
+              <button
+                type="button"
+                onClick={() => { setMode('login'); setError(null); setSuccess(null); setResetToken(null); setPassword(''); setConfirmPassword('') }}
                 className="text-primary hover:underline font-medium"
               >
                 Back to sign in
