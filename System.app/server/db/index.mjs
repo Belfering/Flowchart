@@ -409,6 +409,18 @@ export function initializeDatabase() {
     console.log(`[DB] Cleaned up ${deletedDemoUsers.changes} legacy demo users`)
   }
 
+  // Clean up unverified users (stuck from before email was configured)
+  // Delete users who are pending_verification and were created more than 1 hour ago
+  const stuckUsers = sqlite.prepare(`
+    DELETE FROM users
+    WHERE status = 'pending_verification'
+      AND email_verified = 0
+      AND role != 'admin'
+  `).run()
+  if (stuckUsers.changes > 0) {
+    console.log(`[DB] Cleaned up ${stuckUsers.changes} unverified users`)
+  }
+
   console.log('[DB] Database initialized')
 }
 
