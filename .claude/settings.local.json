@@ -61,7 +61,30 @@
       "Bash(for ticker in SPY XLU XLV XLP XLY VIG UVXY BIL)",
       "Bash(cmd /c \"taskkill /PID 56868 /F\")",
       "Bash(npm run test:run:*)",
-      "Bash(cmd /c \"taskkill /F /PID 50696\")"
+      "Bash(cmd /c \"taskkill /F /PID 50696\")",
+      "Bash(wmic process where \"name=''node.exe''\" get processid,commandline)",
+      "Bash(wmic process where \"processid=74972\" call terminate)",
+      "Bash(wmic process where \"processid=270272\" call terminate)",
+      "Bash(wmic process where \"processid=147392\" call terminate)",
+      "Bash(wmic process where \"processid=189856\" call terminate)",
+      "Bash(wmic process where \"processid=48520\" call terminate)",
+      "Bash(wmic process where \"processid=174036\" call terminate)",
+      "Bash(wmic process where \"commandline like ''%vscode%''\" get processid,commandline)",
+      "Bash(wmic process where \"name=''node.exe''\" get processid)",
+      "Bash(xargs -I{} wmic process where \"processid={}\" call terminate)",
+      "Bash(wmic process where \"processid=183608\" call terminate)",
+      "Bash(wmic process where \"processid=206556\" call terminate)",
+      "Bash(wmic process where \"processid=93064\" call terminate:*)",
+      "Bash(wmic process where \"processid=156772\" call terminate)",
+      "Bash(cmd //c \"del nul\")",
+      "Bash(wmic process where \"processid=173536\" call terminate)",
+      "Bash(wmic process where \"processid=102724\" call terminate)",
+      "Bash(wmic process:*)",
+      "Bash(del \"c:\\\\Users\\\\Trader\\\\Desktop\\\\Flowchart\\\\System.app\\\\server\\\\data\\\\backtest_cache.db\")",
+      "Bash(set \"TIINGO_API_KEY=2ad4af55cc51c2138c5385be2f02569ad06410c7\")",
+      "Bash(cmd /c \"taskkill /PID 142840 /F\")",
+      "Bash(npm run lint:*)",
+      "Bash(git check-ignore:*)"
     ]
   }
 }
