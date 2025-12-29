@@ -1119,7 +1119,7 @@ function IndicatorDropdown({
     <div ref={dropdownRef} className={cn('relative inline-block', className)}>
       <button
         type="button"
-        className="h-7 px-2 text-xs border border-border rounded bg-card text-left flex items-center gap-1 hover:bg-accent/50 min-w-[140px]"
+        className="h-8 px-2 text-xs border border-border rounded bg-card text-left flex items-center gap-1 hover:bg-accent/50 min-w-[140px]"
         onClick={() => setOpen(!open)}
       >
         <span className="truncate flex-1">{value}</span>
@@ -1450,10 +1450,25 @@ type EligibilityMetric = 'cagr' | 'maxDrawdown' | 'calmar' | 'sharpe' | 'sortino
 
 type EligibilityRequirement = {
   id: string
-  type: 'live_months' | 'metric'
+  type: 'live_months' | 'metric' | 'etfs_only'
   metric?: EligibilityMetric
   comparison?: 'at_least' | 'at_most'
   value: number
+}
+
+// Labels for eligibility metrics (used in both AdminPanel and Partner Program)
+const METRIC_LABELS: Record<EligibilityMetric, string> = {
+  cagr: 'CAGR',
+  maxDrawdown: 'Max Drawdown',
+  calmar: 'Calmar Ratio',
+  sharpe: 'Sharpe Ratio',
+  sortino: 'Sortino Ratio',
+  treynor: 'Treynor Ratio',
+  beta: 'Beta',
+  vol: 'Volatility',
+  winRate: 'Win Rate',
+  avgTurnover: 'Avg Turnover',
+  avgHoldings: 'Avg Holdings'
 }
 
 type AdminConfig = {
@@ -2817,7 +2832,7 @@ type CommunityBotRow = {
 }
 
 // Sanity & Risk Report Types
-type SanityReportPercentiles = { p5: number; p25: number; p50: number; p75: number; p95: number }
+type SanityReportPercentiles = { p5: number; p25: number; p50: number; p75: number; p95: number; histogram?: { min: number; max: number; midpoint: number; count: number }[] }
 type ComparisonMetrics = {
   cagr50: number
   maxdd50: number
@@ -2832,8 +2847,8 @@ type ComparisonMetrics = {
   treynor: number
 }
 type SanityReportPathRisk = {
-  monteCarlo: { drawdowns: SanityReportPercentiles; cagrs: SanityReportPercentiles }
-  kfold: { drawdowns: SanityReportPercentiles; cagrs: SanityReportPercentiles }
+  monteCarlo: { drawdowns: SanityReportPercentiles; cagrs: SanityReportPercentiles; sharpes?: SanityReportPercentiles; volatilities?: SanityReportPercentiles }
+  kfold: { drawdowns: SanityReportPercentiles; cagrs: SanityReportPercentiles; sharpes?: SanityReportPercentiles; volatilities?: SanityReportPercentiles }
   drawdownProbabilities: { gt20: number; gt30: number; gt40: number; gt50: number }
   comparisonMetrics?: { monteCarlo: ComparisonMetrics; kfold: ComparisonMetrics }
 }
@@ -4131,6 +4146,7 @@ function AdminPanel({
   savedBots,
   setSavedBots,
   onRefreshNexusBots,
+  onPrewarmComplete,
 }: {
   adminTab: AdminSubtab
   setAdminTab: (t: AdminSubtab) => void
@@ -4140,6 +4156,7 @@ function AdminPanel({
   savedBots: SavedBot[]
   setSavedBots: React.Dispatch<React.SetStateAction<SavedBot[]>>
   onRefreshNexusBots?: () => Promise<void>
+  onPrewarmComplete?: () => void
 }) {
   const [status, setStatus] = useState<AdminStatus | null>(null)
   const [tickers, setTickers] = useState<string[]>([])
@@ -4148,8 +4165,8 @@ function AdminPanel({
   const [tickersSaving, setTickersSaving] = useState(false)
   const [tickersSaveMsg, setTickersSaveMsg] = useState<string | null>(null)
   const [downloadConfig, setDownloadConfig] = useState<{ batchSize: number; sleepSeconds: number; maxRetries: number; threads: boolean; limit: number }>(() => ({
-    batchSize: 100,
-    sleepSeconds: 3,
+    batchSize: 50,
+    sleepSeconds: 0.2,
     maxRetries: 3,
     threads: true,
     limit: 0,
@@ -4182,6 +4199,17 @@ function AdminPanel({
   const [cacheRefreshing, setCacheRefreshing] = useState(false)
   const [prewarmRunning, setPrewarmRunning] = useState(false)
   const [prewarmProgress, setPrewarmProgress] = useState<{ processed: number; cached: number; sanityCached?: number; errors: number; total: number } | null>(null)
+
+  // Ticker Registry state
+  const [registryStats, setRegistryStats] = useState<{ total: number; active: number; syncedToday: number; pending: number; lastSync: string | null } | null>(null)
+  const [registrySyncing, setRegistrySyncing] = useState(false)
+  const [registryDownloading, setRegistryDownloading] = useState(false)
+  const [registryMsg, setRegistryMsg] = useState<string | null>(null)
+
+  // Tiingo API Key state
+  const [tiingoKeyStatus, setTiingoKeyStatus] = useState<{ hasKey: boolean; loading: boolean }>({ hasKey: false, loading: true })
+  const [tiingoKeyInput, setTiingoKeyInput] = useState('')
+  const [tiingoKeySaving, setTiingoKeySaving] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -4295,6 +4323,29 @@ function AdminPanel({
         }
       } catch {
         // Ignore cache stats errors
+      }
+
+      // Fetch ticker registry stats
+      try {
+        const regRes = await fetch('/api/tickers/registry/stats')
+        if (regRes.ok && !cancelled) {
+          setRegistryStats(await regRes.json())
+        }
+      } catch {
+        // Ignore registry stats errors
+      }
+
+      // Fetch Tiingo API key status
+      try {
+        const keyRes = await fetch('/api/admin/tiingo-key')
+        if (keyRes.ok && !cancelled) {
+          const keyData = await keyRes.json()
+          setTiingoKeyStatus({ hasKey: keyData.hasKey, loading: false })
+        } else {
+          setTiingoKeyStatus({ hasKey: false, loading: false })
+        }
+      } catch {
+        setTiingoKeyStatus({ hasKey: false, loading: false })
       }
     }
     void run()
@@ -4527,20 +4578,6 @@ function AdminPanel({
     const newReqs = eligibilityRequirements.filter(r => r.id !== id)
     saveEligibilityRequirements(newReqs)
   }, [eligibilityRequirements, saveEligibilityRequirements])
-
-  const METRIC_LABELS: Record<EligibilityMetric, string> = {
-    cagr: 'CAGR',
-    maxDrawdown: 'Max Drawdown',
-    calmar: 'Calmar Ratio',
-    sharpe: 'Sharpe Ratio',
-    sortino: 'Sortino Ratio',
-    treynor: 'Treynor Ratio',
-    beta: 'Beta',
-    vol: 'Volatility',
-    winRate: 'Win Rate',
-    avgTurnover: 'Avg Turnover',
-    avgHoldings: 'Avg Holdings'
-  }
 
   useEffect(() => {
     if (!downloadJob?.id) return
@@ -4953,6 +4990,37 @@ function AdminPanel({
                     </Button>
                   </div>
                 </div>
+
+                {/* ETFs Only Requirement */}
+                <div className="p-4 bg-muted/30 rounded-lg">
+                  <div className="text-sm font-medium mb-2">Asset Type Requirement</div>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={eligibilityRequirements.some(r => r.type === 'etfs_only')}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          // Add ETFs Only requirement
+                          const newReq: EligibilityRequirement = {
+                            id: `etfs-only-${Date.now()}`,
+                            type: 'etfs_only',
+                            value: 1 // Just a placeholder value
+                          }
+                          saveEligibilityRequirements([...eligibilityRequirements, newReq])
+                        } else {
+                          // Remove ETFs Only requirement
+                          saveEligibilityRequirements(eligibilityRequirements.filter(r => r.type !== 'etfs_only'))
+                        }
+                      }}
+                      disabled={eligibilitySaving}
+                      className="w-4 h-4 rounded border-border cursor-pointer"
+                    />
+                    <span className="text-sm">Require ETFs Only</span>
+                  </label>
+                  <div className="text-xs text-muted mt-1">
+                    Systems must only contain ETF positions (no individual stocks)
+                  </div>
+                </div>
               </div>
 
               {/* Right Half - Saved Requirements List */}
@@ -4967,6 +5035,8 @@ function AdminPanel({
                         <span>
                           {req.type === 'live_months' ? (
                             <>Must be live for {req.value} months</>
+                          ) : req.type === 'etfs_only' ? (
+                            <>Must only contain ETF positions</>
                           ) : (
                             <>Must have {METRIC_LABELS[req.metric!]} of {req.comparison === 'at_least' ? 'at least' : 'at most'} {req.value}</>
                           )}
@@ -5065,6 +5135,94 @@ function AdminPanel({
 
       {adminTab === 'Ticker Data' && (
         <>
+        {/* Section 0: Tiingo API Key */}
+        <div className="mb-6">
+          <div className="font-black text-lg mb-4">Tiingo API Key</div>
+          <div className="p-3 bg-muted rounded-lg text-sm space-y-3">
+            <div className="flex items-center gap-2">
+              <strong>Status:</strong>
+              {tiingoKeyStatus.loading ? (
+                <span className="text-muted">Checking...</span>
+              ) : tiingoKeyStatus.hasKey ? (
+                <span className="text-success">✓ Saved (encrypted)</span>
+              ) : (
+                <span className="text-destructive">Not configured</span>
+              )}
+            </div>
+            {!tiingoKeyStatus.hasKey && (
+              <div className="flex gap-2 items-end">
+                <div className="flex-1">
+                  <label className="text-xs font-semibold text-muted mb-1 block">Enter API Key</label>
+                  <input
+                    type="password"
+                    value={tiingoKeyInput}
+                    onChange={(e) => setTiingoKeyInput(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg border border-border bg-background text-sm"
+                    placeholder="Your Tiingo API key"
+                  />
+                </div>
+                <Button
+                  variant="default"
+                  size="sm"
+                  disabled={!tiingoKeyInput.trim() || tiingoKeySaving}
+                  onClick={async () => {
+                    setTiingoKeySaving(true)
+                    try {
+                      const res = await fetch('/api/admin/tiingo-key', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ key: tiingoKeyInput.trim() })
+                      })
+                      if (res.ok) {
+                        setTiingoKeyStatus({ hasKey: true, loading: false })
+                        setTiingoKeyInput('')
+                      }
+                    } catch {
+                      // Ignore errors
+                    } finally {
+                      setTiingoKeySaving(false)
+                    }
+                  }}
+                >
+                  {tiingoKeySaving ? 'Saving...' : 'Save Key'}
+                </Button>
+              </div>
+            )}
+            {tiingoKeyStatus.hasKey && (
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={tiingoKeySaving}
+                  onClick={async () => {
+                    if (!confirm('Are you sure you want to remove the saved Tiingo API key?')) return
+                    setTiingoKeySaving(true)
+                    try {
+                      const res = await fetch('/api/admin/tiingo-key', { method: 'DELETE' })
+                      if (res.ok) {
+                        setTiingoKeyStatus({ hasKey: false, loading: false })
+                      }
+                    } catch {
+                      // Ignore errors
+                    } finally {
+                      setTiingoKeySaving(false)
+                    }
+                  }}
+                >
+                  {tiingoKeySaving ? 'Removing...' : 'Remove Key'}
+                </Button>
+              </div>
+            )}
+            <div className="text-xs text-muted">
+              Your Tiingo API key is stored encrypted and used automatically for all data downloads.
+              Get your API key at <a href="https://www.tiingo.com" target="_blank" rel="noopener noreferrer" className="text-primary underline">tiingo.com</a>
+            </div>
+          </div>
+        </div>
+
+        {/* Divider */}
+        <div className="border-t border-border mb-6"></div>
+
         {/* Section 1: Ticker Management */}
         <div className="mb-6">
           <div className="flex items-center justify-between mb-4">
@@ -5269,6 +5427,8 @@ function AdminPanel({
                     if (statsRes.ok) {
                       setCacheStats(await statsRes.json())
                     }
+                    // Clear frontend cache so Nexus/Analyze tabs refetch fresh data
+                    onPrewarmComplete?.()
                   } else {
                     const err = await res.json()
                     alert(`Failed to run data: ${err.error || 'Unknown error'}`)
@@ -5297,13 +5457,145 @@ function AdminPanel({
         {/* Divider */}
         <div className="border-t border-border mb-6"></div>
 
+        {/* Section: Ticker Registry (Full US Stock Database) */}
+        <div className="mb-6">
+          <div className="font-black text-lg mb-4">Ticker Registry (Full US Market)</div>
+
+          {/* Registry stats */}
+          <div className="mb-4 p-3 bg-muted rounded-lg text-sm space-y-1">
+            <div>
+              <strong>Total tickers:</strong> {registryStats?.total?.toLocaleString() ?? '...'} (active: {registryStats?.active?.toLocaleString() ?? '...'})
+            </div>
+            <div>
+              <strong>Synced today:</strong> {registryStats?.syncedToday?.toLocaleString() ?? '0'} / {registryStats?.active?.toLocaleString() ?? '0'}
+            </div>
+            <div>
+              <strong>Pending download:</strong> {registryStats?.pending?.toLocaleString() ?? '...'}
+            </div>
+            <div>
+              <strong>Last sync:</strong> {registryStats?.lastSync ?? 'Never'}
+            </div>
+          </div>
+
+          {/* Registry actions */}
+          <div className="flex gap-2 flex-wrap mb-3">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={registrySyncing}
+              onClick={async () => {
+                setRegistrySyncing(true)
+                setRegistryMsg(null)
+                try {
+                  const res = await fetch('/api/tickers/registry/sync', { method: 'POST' })
+                  const data = await res.json()
+                  if (res.ok) {
+                    setRegistryMsg(`Synced ${data.imported?.toLocaleString() ?? 0} tickers from Tiingo master list`)
+                    // Refresh stats
+                    const statsRes = await fetch('/api/tickers/registry/stats')
+                    if (statsRes.ok) {
+                      setRegistryStats(await statsRes.json())
+                    }
+                  } else {
+                    setRegistryMsg(`Error: ${data.error || 'Sync failed'}`)
+                  }
+                } catch (e) {
+                  setRegistryMsg(`Error: ${e}`)
+                } finally {
+                  setRegistrySyncing(false)
+                }
+              }}
+            >
+              {registrySyncing ? 'Syncing...' : 'Sync Ticker List'}
+            </Button>
+            <Button
+              variant="default"
+              size="sm"
+              disabled={registryDownloading || !registryStats?.pending}
+              onClick={async () => {
+                if (!confirm(`This will download OHLCV data for ${registryStats?.pending?.toLocaleString() ?? 0} pending tickers. This may take a while. Continue?`)) return
+                setRegistryDownloading(true)
+                setRegistryMsg('Starting download...')
+                try {
+                  const res = await fetch('/api/tickers/registry/download', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({})
+                  })
+                  const data = await res.json()
+                  if (res.ok) {
+                    setRegistryMsg(`Download complete! Success: ${data.success ?? 0}, Failed: ${data.failed ?? 0}`)
+                    // Refresh stats
+                    const statsRes = await fetch('/api/tickers/registry/stats')
+                    if (statsRes.ok) {
+                      setRegistryStats(await statsRes.json())
+                    }
+                  } else {
+                    setRegistryMsg(`Error: ${data.error || 'Download failed'}`)
+                  }
+                } catch (e) {
+                  setRegistryMsg(`Error: ${e}`)
+                } finally {
+                  setRegistryDownloading(false)
+                }
+              }}
+            >
+              {registryDownloading ? 'Downloading...' : `Download Pending (${registryStats?.pending?.toLocaleString() ?? 0})`}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={async () => {
+                try {
+                  const res = await fetch('/api/tickers/registry/stats')
+                  if (res.ok) {
+                    setRegistryStats(await res.json())
+                  }
+                } catch {
+                  // Ignore
+                }
+              }}
+            >
+              Refresh Stats
+            </Button>
+          </div>
+
+          {registryMsg && (
+            <div className={`text-sm ${registryMsg.includes('Error') ? 'text-destructive' : 'text-success'}`}>
+              {registryMsg}
+            </div>
+          )}
+
+          <div className="mt-3 text-xs text-muted">
+            The ticker registry contains all US stocks and ETFs from Tiingo (~27,500 tickers). Use "Sync Ticker List" to update the registry from Tiingo's master list. Use "Download Pending" to download OHLCV data for all registered tickers that haven't been synced today.
+          </div>
+        </div>
+
+        {/* Divider */}
+        <div className="border-t border-border mb-6"></div>
+
         {/* Section 4: Data Download */}
         <div className="mb-6">
-          <div className="font-black text-lg mb-4">Download Ticker Data</div>
+          <div className="font-black text-lg mb-4">Download Ticker Data (Custom List)</div>
 
           {/* Download configuration */}
           <div className="mb-4">
             <div className="text-sm font-semibold mb-3">Download Settings</div>
+
+            {/* API Key Status */}
+            <div className="mb-4 p-2 bg-muted/50 rounded-lg">
+              <div className="text-xs">
+                <strong>Tiingo API Key:</strong>{' '}
+                {tiingoKeyStatus.loading ? (
+                  <span className="text-muted">Checking...</span>
+                ) : tiingoKeyStatus.hasKey ? (
+                  <span className="text-success">✓ Saved (will be used automatically)</span>
+                ) : (
+                  <span className="text-destructive">Not configured - save your key above first</span>
+                )}
+              </div>
+            </div>
+
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="text-xs font-semibold text-muted mb-1 block">Batch Size</label>
@@ -7424,7 +7716,7 @@ const NodeCard = ({
           {isWindowlessIndicator(cond.metric) ? null : (
             <>
               <Input
-                className="w-14 h-7 px-1.5 mx-1 inline-flex"
+                className="w-14 h-8 px-1.5 mx-1 inline-flex"
                 type="number"
                 value={cond.window}
                 onChange={(e) => onUpdateCondition(ownerId, cond.id, { window: Number(e.target.value) }, itemId)}
@@ -7435,11 +7727,11 @@ const NodeCard = ({
           <IndicatorDropdown
             value={cond.metric}
             onChange={(m) => onUpdateCondition(ownerId, cond.id, { metric: m }, itemId)}
-            className="h-7 px-1.5 mx-1"
+            className="h-8 px-1.5 mx-1"
           />
           {' of '}
           <Select
-            className="h-7 px-1.5 mx-1"
+            className="h-8 px-1.5 mx-1"
             value={cond.ticker}
             onChange={(e) => onUpdateCondition(ownerId, cond.id, { ticker: e.target.value as PositionChoice }, itemId)}
           >
@@ -7451,7 +7743,7 @@ const NodeCard = ({
           </Select>{' '}
           is{' '}
           <Select
-            className="h-7 px-1.5 mx-1"
+            className="h-8 px-1.5 mx-1"
             value={cond.comparator}
             onChange={(e) =>
               onUpdateCondition(ownerId, cond.id, { comparator: e.target.value as ComparatorChoice }, itemId)
@@ -7462,7 +7754,7 @@ const NodeCard = ({
           </Select>{' '}
           {cond.expanded ? null : (
             <Input
-              className="w-14 h-7 px-1.5 mx-1 inline-flex"
+              className="w-14 h-8 px-1.5 mx-1 inline-flex"
               type="number"
               value={cond.threshold}
               onChange={(e) => onUpdateCondition(ownerId, cond.id, { threshold: Number(e.target.value) }, itemId)}
@@ -7475,7 +7767,7 @@ const NodeCard = ({
               {isWindowlessIndicator(cond.rightMetric ?? 'Relative Strength Index') ? null : (
                 <>
                   <Input
-                    className="w-14 h-7 px-1.5 mx-1 inline-flex"
+                    className="w-14 h-8 px-1.5 mx-1 inline-flex"
                     type="number"
                     value={cond.rightWindow ?? 14}
                     onChange={(e) => onUpdateCondition(ownerId, cond.id, { rightWindow: Number(e.target.value) }, itemId)}
@@ -7486,11 +7778,11 @@ const NodeCard = ({
               <IndicatorDropdown
                 value={cond.rightMetric ?? 'Relative Strength Index'}
                 onChange={(m) => onUpdateCondition(ownerId, cond.id, { rightMetric: m }, itemId)}
-                className="h-7 px-1.5 mx-1"
+                className="h-8 px-1.5 mx-1"
               />{' '}
               of{' '}
               <Select
-                className="h-7 px-1.5 mx-1"
+                className="h-8 px-1.5 mx-1"
                 value={cond.rightTicker ?? 'SPY'}
                 onChange={(e) =>
                   onUpdateCondition(ownerId, cond.id, { rightTicker: e.target.value as PositionChoice }, itemId)
@@ -7760,7 +8052,7 @@ const NodeCard = ({
                         {isWindowlessIndicator(cond.metric) ? null : (
                           <>
                             <Input
-                              className="w-14 h-7 px-1.5 mx-1 inline-flex"
+                              className="w-14 h-8 px-1.5 mx-1 inline-flex"
                               type="number"
                               value={cond.window}
                               onChange={(e) => onUpdateCondition(node.id, cond.id, { window: Number(e.target.value) })}
@@ -7771,11 +8063,11 @@ const NodeCard = ({
                         <IndicatorDropdown
                           value={cond.metric}
                           onChange={(m) => onUpdateCondition(node.id, cond.id, { metric: m })}
-                          className="h-7 px-1.5 mx-1"
+                          className="h-8 px-1.5 mx-1"
                         />
                         {' of '}
                         <Select
-                          className="h-7 px-1.5 mx-1"
+                          className="h-8 px-1.5 mx-1"
                           value={cond.ticker}
                           onChange={(e) =>
                             onUpdateCondition(node.id, cond.id, { ticker: e.target.value as PositionChoice })
@@ -7789,7 +8081,7 @@ const NodeCard = ({
                         </Select>{' '}
                         is{' '}
                         <Select
-                          className="h-7 px-1.5 mx-1"
+                          className="h-8 px-1.5 mx-1"
                           value={cond.comparator}
                           onChange={(e) =>
                             onUpdateCondition(node.id, cond.id, { comparator: e.target.value as ComparatorChoice })
@@ -7800,7 +8092,7 @@ const NodeCard = ({
                         </Select>{' '}
                         {cond.expanded ? null : (
                           <Input
-                            className="w-14 h-7 px-1.5 mx-1 inline-flex"
+                            className="w-14 h-8 px-1.5 mx-1 inline-flex"
                             type="number"
                             value={cond.threshold}
                             onChange={(e) => onUpdateCondition(node.id, cond.id, { threshold: Number(e.target.value) })}
@@ -7813,7 +8105,7 @@ const NodeCard = ({
                             {isWindowlessIndicator(cond.rightMetric ?? 'Relative Strength Index') ? null : (
                               <>
                                 <Input
-                                  className="w-14 h-7 px-1.5 mx-1 inline-flex"
+                                  className="w-14 h-8 px-1.5 mx-1 inline-flex"
                                   type="number"
                                   value={cond.rightWindow ?? 14}
                                   onChange={(e) =>
@@ -7826,11 +8118,11 @@ const NodeCard = ({
                             <IndicatorDropdown
                               value={cond.rightMetric ?? 'Relative Strength Index'}
                               onChange={(m) => onUpdateCondition(node.id, cond.id, { rightMetric: m })}
-                              className="h-7 px-1.5 mx-1"
+                              className="h-8 px-1.5 mx-1"
                             />{' '}
                             of{' '}
                             <Select
-                              className="h-7 px-1.5 mx-1"
+                              className="h-8 px-1.5 mx-1"
                               value={cond.rightTicker ?? 'SPY'}
                               onChange={(e) =>
                                 onUpdateCondition(node.id, cond.id, { rightTicker: e.target.value as PositionChoice })
@@ -8313,7 +8605,7 @@ const NodeCard = ({
                           {isWindowlessIndicator(cond.metric) ? null : (
                             <>
                               <Input
-                                className="w-14 h-7 px-1.5 mx-1 inline-flex"
+                                className="w-14 h-8 px-1.5 mx-1 inline-flex"
                                 type="number"
                                 value={cond.window}
                                 onChange={(e) => onUpdateEntryCondition(node.id, cond.id, { window: Number(e.target.value) })}
@@ -8324,11 +8616,11 @@ const NodeCard = ({
                           <IndicatorDropdown
                             value={cond.metric}
                             onChange={(m) => onUpdateEntryCondition(node.id, cond.id, { metric: m })}
-                            className="h-7 px-1.5 mx-1"
+                            className="h-8 px-1.5 mx-1"
                           />
                           {' of '}
                           <Select
-                            className="h-7 px-1.5 mx-1"
+                            className="h-8 px-1.5 mx-1"
                             value={cond.ticker}
                             onChange={(e) => onUpdateEntryCondition(node.id, cond.id, { ticker: e.target.value as PositionChoice })}
                           >
@@ -8338,7 +8630,7 @@ const NodeCard = ({
                           </Select>{' '}
                           is{' '}
                           <Select
-                            className="h-7 px-1.5 mx-1"
+                            className="h-8 px-1.5 mx-1"
                             value={cond.comparator}
                             onChange={(e) => onUpdateEntryCondition(node.id, cond.id, { comparator: e.target.value as ComparatorChoice })}
                           >
@@ -8347,7 +8639,7 @@ const NodeCard = ({
                           </Select>{' '}
                           {cond.expanded ? null : (
                             <Input
-                              className="w-14 h-7 px-1.5 mx-1 inline-flex"
+                              className="w-14 h-8 px-1.5 mx-1 inline-flex"
                               type="number"
                               value={cond.threshold}
                               onChange={(e) => onUpdateEntryCondition(node.id, cond.id, { threshold: Number(e.target.value) })}
@@ -8359,7 +8651,7 @@ const NodeCard = ({
                               {isWindowlessIndicator(cond.rightMetric ?? 'Relative Strength Index') ? null : (
                                 <>
                                   <Input
-                                    className="w-14 h-7 px-1.5 mx-1 inline-flex"
+                                    className="w-14 h-8 px-1.5 mx-1 inline-flex"
                                     type="number"
                                     value={cond.rightWindow ?? 14}
                                     onChange={(e) => onUpdateEntryCondition(node.id, cond.id, { rightWindow: Number(e.target.value) })}
@@ -8370,11 +8662,11 @@ const NodeCard = ({
                               <IndicatorDropdown
                                 value={cond.rightMetric ?? 'Relative Strength Index'}
                                 onChange={(m) => onUpdateEntryCondition(node.id, cond.id, { rightMetric: m })}
-                                className="h-7 px-1.5 mx-1"
+                                className="h-8 px-1.5 mx-1"
                               />{' '}
                               of{' '}
                               <Select
-                                className="h-7 px-1.5 mx-1"
+                                className="h-8 px-1.5 mx-1"
                                 value={cond.rightTicker ?? 'SPY'}
                                 onChange={(e) => onUpdateEntryCondition(node.id, cond.id, { rightTicker: e.target.value as PositionChoice })}
                               >
@@ -8483,7 +8775,7 @@ const NodeCard = ({
                           {isWindowlessIndicator(cond.metric) ? null : (
                             <>
                               <Input
-                                className="w-14 h-7 px-1.5 mx-1 inline-flex"
+                                className="w-14 h-8 px-1.5 mx-1 inline-flex"
                                 type="number"
                                 value={cond.window}
                                 onChange={(e) => onUpdateExitCondition(node.id, cond.id, { window: Number(e.target.value) })}
@@ -8494,11 +8786,11 @@ const NodeCard = ({
                           <IndicatorDropdown
                             value={cond.metric}
                             onChange={(m) => onUpdateExitCondition(node.id, cond.id, { metric: m })}
-                            className="h-7 px-1.5 mx-1"
+                            className="h-8 px-1.5 mx-1"
                           />
                           {' of '}
                           <Select
-                            className="h-7 px-1.5 mx-1"
+                            className="h-8 px-1.5 mx-1"
                             value={cond.ticker}
                             onChange={(e) => onUpdateExitCondition(node.id, cond.id, { ticker: e.target.value as PositionChoice })}
                           >
@@ -8508,7 +8800,7 @@ const NodeCard = ({
                           </Select>{' '}
                           is{' '}
                           <Select
-                            className="h-7 px-1.5 mx-1"
+                            className="h-8 px-1.5 mx-1"
                             value={cond.comparator}
                             onChange={(e) => onUpdateExitCondition(node.id, cond.id, { comparator: e.target.value as ComparatorChoice })}
                           >
@@ -8517,7 +8809,7 @@ const NodeCard = ({
                           </Select>{' '}
                           {cond.expanded ? null : (
                             <Input
-                              className="w-14 h-7 px-1.5 mx-1 inline-flex"
+                              className="w-14 h-8 px-1.5 mx-1 inline-flex"
                               type="number"
                               value={cond.threshold}
                               onChange={(e) => onUpdateExitCondition(node.id, cond.id, { threshold: Number(e.target.value) })}
@@ -8529,7 +8821,7 @@ const NodeCard = ({
                               {isWindowlessIndicator(cond.rightMetric ?? 'Relative Strength Index') ? null : (
                                 <>
                                   <Input
-                                    className="w-14 h-7 px-1.5 mx-1 inline-flex"
+                                    className="w-14 h-8 px-1.5 mx-1 inline-flex"
                                     type="number"
                                     value={cond.rightWindow ?? 14}
                                     onChange={(e) => onUpdateExitCondition(node.id, cond.id, { rightWindow: Number(e.target.value) })}
@@ -8540,11 +8832,11 @@ const NodeCard = ({
                               <IndicatorDropdown
                                 value={cond.rightMetric ?? 'Relative Strength Index'}
                                 onChange={(m) => onUpdateExitCondition(node.id, cond.id, { rightMetric: m })}
-                                className="h-7 px-1.5 mx-1"
+                                className="h-8 px-1.5 mx-1"
                               />{' '}
                               of{' '}
                               <Select
-                                className="h-7 px-1.5 mx-1"
+                                className="h-8 px-1.5 mx-1"
                                 value={cond.rightTicker ?? 'SPY'}
                                 onChange={(e) => onUpdateExitCondition(node.id, cond.id, { rightTicker: e.target.value as PositionChoice })}
                               >
@@ -9628,6 +9920,31 @@ const collectPositionTickers = (root: FlowNode, callMap: Map<string, CallChain>)
   walk(root, [])
 
   return Array.from(tickers).sort()
+}
+
+// Check if a bot only contains ETF positions
+// Returns true if all position tickers are ETFs, false if any are stocks or unknown
+const isEtfsOnlyBot = (
+  root: FlowNode,
+  callMap: Map<string, CallChain>,
+  tickerMetadata: Map<string, { assetType?: string; name?: string }>
+): boolean => {
+  const positionTickers = collectPositionTickers(root, callMap)
+
+  // Exclude special values that aren't real tickers
+  const realTickers = positionTickers.filter(t =>
+    t !== 'Empty' && t !== 'CASH' && t !== 'BIL'
+  )
+
+  // If no real tickers, consider it ETF-only (vacuously true)
+  if (realTickers.length === 0) return true
+
+  // Check if all tickers are ETFs
+  return realTickers.every(ticker => {
+    const meta = tickerMetadata.get(ticker.toUpperCase())
+    // If we don't have metadata for the ticker, assume it's not an ETF (be conservative)
+    return meta?.assetType === 'ETF'
+  })
 }
 
 // Collect only indicator tickers (from conditions, function nodes, scaling nodes)
@@ -12234,7 +12551,9 @@ function App() {
   const theme = userId ? uiState.theme : deviceTheme
 
   const [availableTickers, setAvailableTickers] = useState<string[]>([])
+  const [tickerMetadata, setTickerMetadata] = useState<Map<string, { assetType?: string; name?: string }>>(new Map())
   const [tickerApiError, setTickerApiError] = useState<string | null>(null)
+  const [etfsOnlyMode, setEtfsOnlyMode] = useState(false)
   const [backtestMode, setBacktestMode] = useState<BacktestMode>('CC')
   const [backtestCostBps, setBacktestCostBps] = useState<number>(5)
   const [backtestBenchmark, setBacktestBenchmark] = useState<string>('SPY')
@@ -12588,7 +12907,40 @@ function App() {
     return () => window.clearTimeout(t)
   }, [loadAvailableTickers])
 
-  const tickerOptions = useMemo(() => normalizeTickersForUi(availableTickers), [availableTickers])
+  // Load ticker metadata for ETFs Only filtering
+  useEffect(() => {
+    const loadMetadata = async () => {
+      try {
+        const res = await fetch('/api/tickers/registry/metadata')
+        if (res.ok) {
+          const data = await res.json()
+          if (data.tickers && Array.isArray(data.tickers)) {
+            const map = new Map<string, { assetType?: string; name?: string }>()
+            for (const t of data.tickers) {
+              if (t.ticker) {
+                map.set(t.ticker.toUpperCase(), { assetType: t.assetType, name: t.name })
+              }
+            }
+            setTickerMetadata(map)
+          }
+        }
+      } catch {
+        // Ignore metadata loading errors - ETFs Only mode just won't filter
+      }
+    }
+    void loadMetadata()
+  }, [])
+
+  const tickerOptions = useMemo(() => {
+    const normalized = normalizeTickersForUi(availableTickers)
+    if (!etfsOnlyMode) return normalized
+    // Filter to ETFs only using metadata
+    return normalized.filter(t => {
+      const meta = tickerMetadata.get(t.toUpperCase())
+      // Include if it's an ETF, or if we don't have metadata (don't exclude unknowns)
+      return meta?.assetType === 'ETF' || !meta
+    })
+  }, [availableTickers, etfsOnlyMode, tickerMetadata])
 
   const createBotSession = useCallback((title: string): BotSession => {
     const root = ensureSlots(createNode('basic'))
@@ -12612,6 +12964,9 @@ function App() {
   const [analyzeSubtab, setAnalyzeSubtab] = useState<'Systems' | 'Correlation Tool'>('Systems')
   const [adminTab, setAdminTab] = useState<'Atlas Overview' | 'Nexus Maintenance' | 'Ticker Data'>('Atlas Overview')
   const [databasesTab, setDatabasesTab] = useState<'Users' | 'Systems' | 'Portfolios' | 'Cache' | 'Admin Config'>('Users')
+
+  // Eligibility requirements (fetched for Admin tab and Partner Program page)
+  const [appEligibilityRequirements, setAppEligibilityRequirements] = useState<EligibilityRequirement[]>([])
   const [saveMenuOpen, setSaveMenuOpen] = useState(false)
   const [saveNewWatchlistName, setSaveNewWatchlistName] = useState('')
   const [addToWatchlistBotId, setAddToWatchlistBotId] = useState<string | null>(null)
@@ -12720,6 +13075,30 @@ function App() {
     }
     fetchOverlays()
   }, [enabledOverlays, backtestResult, current, backtestMode])
+
+  // Fetch eligibility requirements when viewing Partner Program page
+  useEffect(() => {
+    if (tab !== 'Dashboard' || dashboardSubtab !== 'Partner Program') return
+    // Don't fetch if already loaded
+    if (appEligibilityRequirements.length > 0) return
+    let cancelled = false
+
+    const fetchEligibility = async () => {
+      try {
+        const res = await fetch('/api/admin/eligibility')
+        if (!res.ok) return
+        const data = (await res.json()) as { eligibilityRequirements: EligibilityRequirement[] }
+        if (cancelled) return
+        setAppEligibilityRequirements(data.eligibilityRequirements || [])
+      } catch (e) {
+        console.error('Failed to fetch eligibility for Partner Program:', e)
+      }
+    }
+
+    fetchEligibility()
+    return () => { cancelled = true }
+  }, [tab, dashboardSubtab, appEligibilityRequirements.length])
+
   const backtestErrorNodeIds = useMemo(() => new Set(backtestErrors.map((e) => e.nodeId)), [backtestErrors])
 
   const watchlistsById = useMemo(() => new Map(watchlists.map((w) => [w.id, w])), [watchlists])
@@ -13862,6 +14241,19 @@ function App() {
 
   const activeSavedBotId = activeBot?.savedBotId
 
+  // Compute ETFs Only tag for a bot payload
+  const computeEtfsOnlyTag = useCallback((payload: FlowNode, existingTags: string[]): string[] => {
+    const isEtfOnly = isEtfsOnlyBot(payload, callChainsById, tickerMetadata)
+    const hasTag = existingTags.includes('ETFs Only')
+
+    if (isEtfOnly && !hasTag) {
+      return [...existingTags, 'ETFs Only']
+    } else if (!isEtfOnly && hasTag) {
+      return existingTags.filter(t => t !== 'ETFs Only')
+    }
+    return existingTags
+  }, [callChainsById, tickerMetadata])
+
   const handleSaveToWatchlist = useCallback(
     async (watchlistNameOrId: string) => {
       if (!current) return
@@ -13877,6 +14269,8 @@ function App() {
         savedBotId = `saved-${newId()}`
         // Admin bots get 'Atlas Eligible' tag by default, others get 'Private'
         const defaultTags = userId === 'admin' ? ['Private', 'Atlas Eligible'] : ['Private']
+        // Auto-tag with "ETFs Only" if all positions are ETFs
+        const tagsWithEtf = computeEtfsOnlyTag(payload, defaultTags)
         const entry: SavedBot = {
           id: savedBotId,
           name: current.title || 'Algo',
@@ -13884,7 +14278,7 @@ function App() {
           payload,
           visibility: 'private',
           createdAt: now,
-          tags: defaultTags,
+          tags: tagsWithEtf,
           backtestMode,
           backtestCostBps,
         }
@@ -13899,11 +14293,15 @@ function App() {
       } else {
         // Update existing bot - save to API first
         const existingBot = savedBots.find((b) => b.id === savedBotId)
+        // Auto-update "ETFs Only" tag based on current positions
+        const existingTags = existingBot?.tags || []
+        const tagsWithEtf = computeEtfsOnlyTag(payload, existingTags)
         const updatedBot: SavedBot = {
           ...(existingBot || { id: savedBotId, createdAt: now, visibility: 'private' as const }),
           payload,
           name: current.title || existingBot?.name || 'Algo',
           builderId: existingBot?.builderId ?? userId,
+          tags: tagsWithEtf,
           backtestMode,
           backtestCostBps,
         }
@@ -13925,7 +14323,7 @@ function App() {
         setAnalyzeBacktests((prev) => ({ ...prev, [savedBotId]: { status: 'idle' } }))
       }
     },
-    [current, activeBotId, activeSavedBotId, resolveWatchlistId, addBotToWatchlist, userId, savedBots, backtestMode, backtestCostBps],
+    [current, activeBotId, activeSavedBotId, resolveWatchlistId, addBotToWatchlist, userId, savedBots, backtestMode, backtestCostBps, computeEtfsOnlyTag],
   )
 
   const handleConfirmAddToWatchlist = useCallback(
@@ -14023,6 +14421,19 @@ function App() {
               .map(([ticker, weight]) => ({ ticker, weight })),
           }))
 
+          // Build days array from allocations for ticker stats table
+          const days: BacktestDayRow[] = allocations.map((a, i) => ({
+            time: safeParseDate(a.date) as UTCTimestamp,
+            date: a.date,
+            equity: points[i]?.value ?? 1,
+            drawdown: drawdownPoints[i]?.value ?? 0,
+            grossReturn: 0,
+            netReturn: 0,
+            turnover: 0,
+            cost: 0,
+            holdings: a.entries.map((e) => ({ ticker: e.ticker, weight: e.weight })),
+          }))
+
           const result: BacktestResult = {
             points,
             benchmarkPoints,
@@ -14048,7 +14459,7 @@ function App() {
               avgTurnover: metrics.avgTurnover ?? 0,
               avgHoldings: metrics.avgHoldings ?? 0,
             },
-            days: [],
+            days,
             allocations,
             warnings: [],
             monthly: [],
@@ -15571,7 +15982,25 @@ function App() {
                 </div>
 
                 {/* Bottom Right Zone - Flow Tree Builder with Sticky Scrollbar */}
-                <FlowchartScrollWrapper className={`flex flex-col border border-border rounded-lg bg-card p-4 transition-all ${callbackNodesCollapsed && customIndicatorsCollapsed ? 'flex-1' : 'w-1/2'}`}>
+                <div className={`flex flex-col border border-border rounded-lg bg-card transition-all ${callbackNodesCollapsed && customIndicatorsCollapsed ? 'flex-1' : 'w-1/2'}`}>
+                  {/* ETFs Only Toggle - near ticker dropdown */}
+                  <div className="flex items-center gap-3 px-4 pt-3 pb-2 border-b border-border shrink-0">
+                    <label className="flex items-center gap-2 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={etfsOnlyMode}
+                        onChange={(e) => setEtfsOnlyMode(e.target.checked)}
+                        className="w-4 h-4 rounded border-border cursor-pointer"
+                      />
+                      <span className="text-sm font-semibold">ETFs Only</span>
+                    </label>
+                    <span className="text-xs text-muted">
+                      {etfsOnlyMode
+                        ? `Showing ${tickerOptions.length} ETFs`
+                        : `Showing all ${tickerOptions.length} tickers`}
+                    </span>
+                  </div>
+                  <FlowchartScrollWrapper className="flex-1 p-4">
                   <NodeCard
                     node={current}
                     depth={0}
@@ -15629,7 +16058,8 @@ function App() {
                     enabledOverlays={enabledOverlays}
                     onToggleOverlay={handleToggleOverlay}
                   />
-                </FlowchartScrollWrapper>
+                  </FlowchartScrollWrapper>
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -15668,6 +16098,13 @@ function App() {
                 savedBots={savedBots}
                 setSavedBots={setSavedBots}
                 onRefreshNexusBots={refreshAllNexusBots}
+                onPrewarmComplete={() => {
+                  // Clear frontend state so tabs will refetch fresh cached data
+                  setAnalyzeBacktests({})
+                  setSanityReports({})
+                  // Refresh Nexus bots from API to get updated metrics
+                  void refreshAllNexusBots()
+                }}
               />
             </CardContent>
           </Card>
@@ -16290,13 +16727,16 @@ function App() {
 
                                     // Helper to format alpha difference with color
                                     // MC is the baseline - shows how much better MC is vs the row
-                                    // For "higher is better" metrics: if MC > row, green (strategy beats benchmark)
-                                    // For "lower is better" metrics: if MC < row, green (strategy beats benchmark)
+                                    // For "higher is better" metrics (CAGR, Sharpe): if MC > row, green (strategy beats benchmark)
+                                    // For "lower is better" metrics (MaxDD, Volatility): if MC > row, green (less negative = better)
+                                    // Note: MaxDD values are negative, so MC -16% vs benchmark -18% gives diff +2%, which is better
                                     const fmtAlpha = (mcVal: number | undefined, rowVal: number | undefined, isPct = false, isHigherBetter = true) => {
                                       if (mcVal === undefined || rowVal === undefined || !Number.isFinite(mcVal) || !Number.isFinite(rowVal)) return null
                                       const diff = mcVal - rowVal // MC minus row value
-                                      // Green when MC is better: higher for "higher is better", lower for "lower is better"
-                                      const mcIsBetter = isHigherBetter ? diff > 0 : diff < 0
+                                      // For drawdown metrics (negative values where less negative is better), positive diff = MC is better
+                                      // For volatility/beta (positive values where lower is better), negative diff = MC is better
+                                      // Simplified: for "lower is better", flip the comparison for negative metrics like MaxDD
+                                      const mcIsBetter = isHigherBetter ? diff > 0 : (mcVal < 0 ? diff > 0 : diff < 0)
                                       const color = mcIsBetter ? 'text-success' : diff === 0 ? 'text-muted' : 'text-danger'
                                       const sign = diff > 0 ? '+' : ''
                                       const formatted = isPct ? `${sign}${(diff * 100).toFixed(1)}%` : `${sign}${diff.toFixed(2)}`
@@ -16880,7 +17320,8 @@ function App() {
                   const tagNames = (watchlistsByBotId.get(bot.id) ?? []).map((w) => w.name)
                   // Since this is specifically for Nexus bots, primary tag is always Nexus
                   const tags = ['Nexus', `Builder: ${bot.builderId}`, ...tagNames]
-                  const metrics = analyzeBacktests[bot.id]?.result?.metrics
+                  // Use frontend-cached metrics if available, otherwise fall back to API-provided backtestResult
+                  const metrics = analyzeBacktests[bot.id]?.result?.metrics ?? bot.backtestResult
                   // Display anonymized name: "X's Fund #Y" instead of actual bot name
                   // Use fundSlot from bot, or look up from fundZones as fallback
                   const fundSlot = bot.fundSlot ?? getFundSlotForBot(bot.id)
@@ -16903,7 +17344,8 @@ function App() {
                 .map((bot) => {
                   const tagNames = (watchlistsByBotId.get(bot.id) ?? []).map((w) => w.name)
                   const tags = ['Atlas', 'Sponsored', ...tagNames]
-                  const metrics = analyzeBacktests[bot.id]?.result?.metrics
+                  // Use frontend-cached metrics if available, otherwise fall back to API-provided backtestResult
+                  const metrics = analyzeBacktests[bot.id]?.result?.metrics ?? bot.backtestResult
                   return {
                     id: bot.id,
                     name: bot.name, // Atlas systems show real names, not anonymized
@@ -16953,7 +17395,8 @@ function App() {
                   .map((bot) => {
                     const tagNames = (watchlistsByBotId.get(bot.id) ?? []).map((w) => w.name)
                     const tags = ['Private', `Builder: ${bot.builderId}`, ...tagNames]
-                    const metrics = analyzeBacktests[bot.id]?.result?.metrics
+                    // Use frontend-cached metrics if available, otherwise fall back to API-provided backtestResult
+                    const metrics = analyzeBacktests[bot.id]?.result?.metrics ?? bot.backtestResult
                     return {
                       id: bot.id,
                       name: bot.name,
@@ -17028,7 +17471,7 @@ function App() {
                 rows: CommunityBotRow[],
                 sort: CommunitySort,
                 _setSort: Dispatch<SetStateAction<CommunitySort>>,
-                opts?: { emptyMessage?: string },
+                opts?: { emptyMessage?: string; showCollapsedMetrics?: boolean },
               ) => {
                 const sorted = sortRows(rows, sort)
                 if (sorted.length === 0) {
@@ -17098,8 +17541,8 @@ function App() {
                               ))}
                             </div>
                             <div className="ml-auto flex gap-2 flex-wrap items-center">
-                              {/* FRD-025: Show key metrics when collapsed */}
-                              {collapsed && r.oosCagr != null && (
+                              {/* FRD-025: Show key metrics when collapsed (only for Atlas Sponsored) */}
+                              {collapsed && opts?.showCollapsedMetrics && r.oosCagr != null && (
                                 <div className="flex gap-3 mr-4 text-xs">
                                   <span className={r.oosCagr >= 0 ? 'text-success' : 'text-danger'}>
                                     CAGR: {(r.oosCagr * 100).toFixed(1)}%
@@ -17107,7 +17550,7 @@ function App() {
                                   <span className={r.oosSharpe >= 1 ? 'text-success' : 'text-muted'}>
                                     Sharpe: {r.oosSharpe?.toFixed(2) ?? '--'}
                                   </span>
-                                  <span className={(r.oosMaxdd ?? 0) > -0.2 ? 'text-success' : 'text-danger'}>
+                                  <span className="text-danger">
                                     MaxDD: {((r.oosMaxdd ?? 0) * 100).toFixed(1)}%
                                   </span>
                                 </div>
@@ -17427,6 +17870,7 @@ function App() {
                       </div>
                       {renderBotCards(atlasBotRows, atlasSort, setAtlasSort, {
                         emptyMessage: 'No Atlas sponsored systems yet.',
+                        showCollapsedMetrics: true,
                       })}
                     </Card>
                     <Card className="flex-1 flex flex-col p-3 border-2">
@@ -18256,6 +18700,33 @@ function App() {
               </div>
             ) : (
               <div className="mt-3 space-y-4">
+                {/* Nexus Eligibility Requirements Section */}
+                <Card className="p-4">
+                  <div className="font-black mb-3">Nexus Eligibility Requirements</div>
+                  <div className="p-3 bg-muted/30 rounded-lg text-sm space-y-2">
+                    {appEligibilityRequirements.length === 0 ? (
+                      <div className="text-muted">No eligibility requirements set. Contact admin for more information.</div>
+                    ) : (
+                      <ul className="list-disc list-inside space-y-1">
+                        {appEligibilityRequirements.map((req) => (
+                          <li key={req.id}>
+                            {req.type === 'live_months' ? (
+                              <>System must be live for at least {req.value} months</>
+                            ) : req.type === 'etfs_only' ? (
+                              <>System must only contain ETF positions (no individual stocks)</>
+                            ) : (
+                              <>System must have {METRIC_LABELS[req.metric!]} of {req.comparison === 'at_least' ? 'at least' : 'at most'} {req.value}</>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <div className="text-xs text-muted mt-2 pt-2 border-t border-border">
+                      Systems that meet all requirements above can be added to the Nexus Fund to earn partner program revenue.
+                    </div>
+                  </div>
+                </Card>
+
                 {/* T-Bill Zone at Top with working equity chart */}
                 <Card className="p-4">
                   <div className="font-black mb-3">T-Bill Performance</div>
