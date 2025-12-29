@@ -12465,10 +12465,31 @@ function BacktesterPanel({
 function App() {
   const [deviceTheme] = useState<ThemeMode>(() => loadDeviceThemeMode())
 
+  // Load initial user from stored user object (set by LoginScreen)
   const initialUserId: UserId | null = (() => {
     try {
+      const userJson = localStorage.getItem('user')
+      if (userJson) {
+        const user = JSON.parse(userJson)
+        return user.id as UserId
+      }
+      // Fallback for legacy local-only mode
       const v = localStorage.getItem(CURRENT_USER_KEY)
       return v === '1' || v === '9' || v === 'admin' ? (v as UserId) : null
+    } catch {
+      return null
+    }
+  })()
+
+  // Load user role from stored user object
+  const initialUserRole: string | null = (() => {
+    try {
+      const userJson = localStorage.getItem('user')
+      if (userJson) {
+        const user = JSON.parse(userJson)
+        return user.role || null
+      }
+      return null
     } catch {
       return null
     }
@@ -12482,6 +12503,10 @@ function App() {
   })()
 
   const [userId, setUserId] = useState<UserId | null>(() => initialUserId)
+  const [userRole, setUserRole] = useState<string | null>(() => initialUserRole)
+
+  // Check if current user is admin
+  const isAdmin = userRole === 'admin'
 
   const [savedBots, setSavedBots] = useState<SavedBot[]>(() => initialUserData.savedBots)
   const [watchlists, setWatchlists] = useState<Watchlist[]>(() => initialUserData.watchlists)
@@ -13137,7 +13162,7 @@ function App() {
 
   // Sync portfolio summary to server for admin aggregation
   useEffect(() => {
-    if (!userId || userId === 'admin') return
+    if (!userId || isAdmin) return
 
     const syncPortfolioSummary = async () => {
       try {
@@ -14228,7 +14253,7 @@ function App() {
         // Create new bot - save to API first
         savedBotId = `saved-${newId()}`
         // Admin bots get 'Atlas Eligible' tag by default, others get 'Private'
-        const defaultTags = userId === 'admin' ? ['Private', 'Atlas Eligible'] : ['Private']
+        const defaultTags = isAdmin ? ['Private', 'Atlas Eligible'] : ['Private']
         // Auto-tag with "ETFs Only" if all positions are ETFs
         const tagsWithEtf = computeEtfsOnlyTag(payload, defaultTags)
         const entry: SavedBot = {
@@ -14431,7 +14456,7 @@ function App() {
           }))
 
           // Auto eligibility tagging (only for regular users, not admin)
-          if (userId && userId !== 'admin' && result?.metrics) {
+          if (userId && !isAdmin && result?.metrics) {
           console.log('[Eligibility] Checking bot:', bot.name, 'userId:', userId)
           try {
             // Fetch eligibility requirements
@@ -14835,7 +14860,7 @@ function App() {
 
       // Create new bot with (Copy) suffix, stripped of Fund tags
       // Admin bots get 'Atlas Eligible' tag by default, others get 'Private'
-      const defaultTags = userId === 'admin' ? ['Private', 'Atlas Eligible'] : ['Private']
+      const defaultTags = isAdmin ? ['Private', 'Atlas Eligible'] : ['Private']
       const newBot: SavedBot = {
         id: `saved-bot-${Date.now()}`,
         name: `${bot.name} (Copy)`,
@@ -15226,6 +15251,16 @@ function App() {
     } catch {
       // ignore
     }
+    // Load role from stored user object
+    try {
+      const userJson = localStorage.getItem('user')
+      if (userJson) {
+        const user = JSON.parse(userJson)
+        setUserRole(user.role || null)
+      }
+    } catch {
+      // ignore
+    }
     const data = loadUserData(nextUser)
     setUserId(nextUser)
     // Bots, watchlists, call chains, and preferences will be loaded from database API via useEffects when userId changes
@@ -15243,10 +15278,16 @@ function App() {
   const handleLogout = () => {
     try {
       localStorage.removeItem(CURRENT_USER_KEY)
+      localStorage.removeItem('user')
+      localStorage.removeItem('accessToken')
+      localStorage.removeItem('refreshToken')
+      sessionStorage.removeItem('accessToken')
+      sessionStorage.removeItem('refreshToken')
     } catch {
       // ignore
     }
     setUserId(null)
+    setUserRole(null)
     setSavedBots([])
     setWatchlists([])
     setCallChains([])
@@ -15316,7 +15357,7 @@ function App() {
             </div>
           </div>
           <div className="flex gap-2 mt-3">
-            {(['Dashboard', 'Nexus', 'Analyze', 'Model', 'Help/Support', ...(userId === 'admin' ? ['Admin', 'Databases'] : [])] as ('Dashboard' | 'Nexus' | 'Analyze' | 'Model' | 'Help/Support' | 'Admin' | 'Databases')[]).map((t) => (
+            {(['Dashboard', 'Nexus', 'Analyze', 'Model', 'Help/Support', ...(isAdmin ? ['Admin', 'Databases'] : [])] as ('Dashboard' | 'Nexus' | 'Analyze' | 'Model' | 'Help/Support' | 'Admin' | 'Databases')[]).map((t) => (
               <Button
                 key={t}
                 variant={tab === t ? 'accent' : 'secondary'}
@@ -16074,8 +16115,8 @@ function App() {
               <DatabasesPanel
                 databasesTab={databasesTab}
                 setDatabasesTab={setDatabasesTab}
-                onOpenBot={userId === 'admin' ? handleOpenBot : undefined}
-                onExportBot={userId === 'admin' ? handleExportBot : undefined}
+                onOpenBot={isAdmin ? handleOpenBot : undefined}
+                onExportBot={isAdmin ? handleExportBot : undefined}
               />
             </CardContent>
           </Card>
@@ -17516,7 +17557,7 @@ function App() {
                                 </div>
                               )}
                               {/* FRD-023: Export JSON for owner/admin */}
-                              {(b.builderId === userId || userId === 'admin') && b.payload && (
+                              {(b.builderId === userId || isAdmin) && b.payload && (
                                 <Button
                                   size="sm"
                                   variant="outline"
