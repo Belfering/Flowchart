@@ -33,8 +33,8 @@ FROM node:20-alpine AS production
 
 WORKDIR /app
 
-# Install Python for ticker data scripts (optional for full app)
-RUN apk add --no-cache python3 py3-pip
+# Install Python and glibc compatibility (DuckDB requires glibc, not musl)
+RUN apk add --no-cache python3 py3-pip libc6-compat
 
 # Create non-root user for security
 RUN addgroup -g 1001 -S nodejs && adduser -S nodejs -u 1001
