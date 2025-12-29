@@ -318,6 +318,52 @@ router.post('/verify-email', async (req, res) => {
 })
 
 /**
+ * POST /api/auth/resend-verification
+ * Resend email verification link
+ */
+router.post('/resend-verification', async (req, res) => {
+  const { email } = req.body
+
+  if (!email) {
+    return res.status(400).json({ error: 'Email is required' })
+  }
+
+  try {
+    const user = sqlite.prepare(`
+      SELECT id, email, email_verified, status FROM users WHERE email = ?
+    `).get(email.toLowerCase())
+
+    // Always return success to prevent email enumeration
+    if (!user) {
+      return res.json({ success: true, message: 'If an unverified account exists, a new verification link will be sent.' })
+    }
+
+    // Already verified
+    if (user.email_verified) {
+      return res.json({ success: true, message: 'If an unverified account exists, a new verification link will be sent.' })
+    }
+
+    // Delete any existing verification tokens for this user
+    sqlite.prepare(`DELETE FROM email_verification_tokens WHERE user_id = ?`).run(user.id)
+
+    // Create new verification token
+    const verifyToken = crypto.randomBytes(32).toString('hex')
+    sqlite.prepare(`
+      INSERT INTO email_verification_tokens (user_id, token, expires_at, created_at)
+      VALUES (?, ?, datetime('now', '+24 hours'), datetime('now'))
+    `).run(user.id, verifyToken)
+
+    // Send verification email
+    await sendVerificationEmail(email.toLowerCase(), verifyToken)
+
+    res.json({ success: true, message: 'If an unverified account exists, a new verification link will be sent.' })
+  } catch (err) {
+    console.error('Resend verification error:', err)
+    res.status(500).json({ error: 'Failed to resend verification email' })
+  }
+})
+
+/**
  * GET /api/auth/me
  * Get current user info (requires authentication)
  */

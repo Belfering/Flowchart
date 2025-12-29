@@ -4,7 +4,7 @@ import { Button } from './ui/button'
 import { Input } from './ui/input'
 import loginBg from '../assets/login-bg.png'
 
-type AuthMode = 'login' | 'register' | 'forgot'
+type AuthMode = 'login' | 'register' | 'forgot' | 'resend'
 
 export function LoginScreen({ onLogin }: { onLogin: (userId: string) => void }) {
   const [mode, setMode] = useState<AuthMode>('login')
@@ -123,10 +123,38 @@ export function LoginScreen({ onLogin }: { onLogin: (userId: string) => void }) 
     }
   }
 
+  const handleResendVerification = async () => {
+    setError(null)
+    if (!email.trim()) {
+      setError('Please enter your email address')
+      return
+    }
+    setLoading(true)
+    try {
+      const res = await fetch('/api/auth/resend-verification', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim() })
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setError(data.error || 'Failed to resend verification email')
+        return
+      }
+      setSuccess(data.message || 'If an unverified account exists, a new verification link will be sent.')
+      setMode('login')
+    } catch {
+      setError('Network error. Please try again.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   const submit = () => {
     if (mode === 'login') handleLogin()
     else if (mode === 'register') handleRegister()
     else if (mode === 'forgot') handleForgotPassword()
+    else if (mode === 'resend') handleResendVerification()
   }
 
   return (
@@ -146,6 +174,7 @@ export function LoginScreen({ onLogin }: { onLogin: (userId: string) => void }) 
             {mode === 'login' && 'Sign in to your account'}
             {mode === 'register' && 'Create a new account'}
             {mode === 'forgot' && 'Reset your password'}
+            {mode === 'resend' && 'Resend verification email'}
           </p>
         </CardHeader>
         <CardContent className="grid gap-3">
@@ -162,7 +191,7 @@ export function LoginScreen({ onLogin }: { onLogin: (userId: string) => void }) 
             />
           </label>
 
-          {mode !== 'forgot' && (
+          {mode !== 'forgot' && mode !== 'resend' && (
             <label className="grid gap-1.5">
               <div className="font-bold text-xs">Password</div>
               <div className="relative">
@@ -255,7 +284,7 @@ export function LoginScreen({ onLogin }: { onLogin: (userId: string) => void }) 
           {error && <div className="text-sm text-red-600 bg-red-50 p-2 rounded">{error}</div>}
 
           <Button onClick={submit} disabled={loading} className="w-full">
-            {loading ? 'Please wait...' : mode === 'login' ? 'Sign In' : mode === 'register' ? 'Create Account' : 'Send Reset Link'}
+            {loading ? 'Please wait...' : mode === 'login' ? 'Sign In' : mode === 'register' ? 'Create Account' : mode === 'forgot' ? 'Send Reset Link' : 'Resend Verification'}
           </Button>
 
           <div className="flex flex-col gap-2 text-center text-sm">
@@ -267,6 +296,13 @@ export function LoginScreen({ onLogin }: { onLogin: (userId: string) => void }) 
                   className="text-muted hover:text-foreground transition-colors"
                 >
                   Forgot your password?
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setMode('resend'); setError(null); setSuccess(null) }}
+                  className="text-muted hover:text-foreground transition-colors"
+                >
+                  Resend verification email
                 </button>
                 <div className="text-muted">
                   Don't have an account?{' '}
@@ -293,6 +329,15 @@ export function LoginScreen({ onLogin }: { onLogin: (userId: string) => void }) 
               </div>
             )}
             {mode === 'forgot' && (
+              <button
+                type="button"
+                onClick={() => { setMode('login'); setError(null); setSuccess(null) }}
+                className="text-primary hover:underline font-medium"
+              >
+                Back to sign in
+              </button>
+            )}
+            {mode === 'resend' && (
               <button
                 type="button"
                 onClick={() => { setMode('login'); setError(null); setSuccess(null) }}
