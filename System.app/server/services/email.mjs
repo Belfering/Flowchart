@@ -16,7 +16,7 @@ const FROM_EMAIL = process.env.EMAIL_FROM || 'Atlas Engine <onboarding@resend.de
  * Send email verification link
  */
 export async function sendVerificationEmail(email, token) {
-  const verifyUrl = `${process.env.APP_URL || 'https://a7m5rpkp.up.railway.app'}/verify-email?token=${token}`
+  const verifyUrl = `${process.env.APP_URL || 'https://www.quantnexus.io'}/verify-email?token=${token}`
 
   try {
     const { data, error } = await resend.emails.send({
@@ -55,7 +55,7 @@ export async function sendVerificationEmail(email, token) {
  * Send password reset link
  */
 export async function sendPasswordResetEmail(email, token) {
-  const resetUrl = `${process.env.APP_URL || 'https://a7m5rpkp.up.railway.app'}/reset-password?token=${token}`
+  const resetUrl = `${process.env.APP_URL || 'https://www.quantnexus.io'}/reset-password?token=${token}`
 
   try {
     const { data, error } = await resend.emails.send({
