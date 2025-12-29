@@ -299,6 +299,17 @@ export async function getAllTickerMetadata() {
 }
 
 /**
+ * Get tickers that already have metadata (name is NOT NULL)
+ * Used to skip metadata fetch for tickers we already have info for
+ */
+export async function getTickersWithMetadata() {
+  const rows = await db.select({ ticker: tickerRegistry.ticker })
+    .from(tickerRegistry)
+    .where(sql`${tickerRegistry.name} IS NOT NULL`)
+  return rows.map(r => r.ticker)
+}
+
+/**
  * Clear all tickers (for testing/reset)
  */
 export async function clearRegistry() {

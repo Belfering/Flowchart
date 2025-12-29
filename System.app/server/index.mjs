@@ -509,6 +509,11 @@ app.post('/api/tickers/registry/download', async (req, res) => {
     const tempTickersPath = path.join(TICKER_DATA_ROOT, '_pending_tickers.json')
     await fs.writeFile(tempTickersPath, JSON.stringify(tickers), 'utf-8')
 
+    // Get tickers that already have metadata (to skip redundant API calls)
+    const tickersWithMetadata = await tickerRegistry.getTickersWithMetadata()
+    const skipMetadataPath = path.join(TICKER_DATA_ROOT, '_skip_metadata.json')
+    await fs.writeFile(skipMetadataPath, JSON.stringify(tickersWithMetadata), 'utf-8')
+
     const batchSize = Math.max(1, Math.min(500, Number(req.body?.batchSize ?? 50)))
     const sleepSeconds = Math.max(0, Math.min(60, Number(req.body?.sleepSeconds ?? 0.2)))
     const limit = Math.max(0, Number(req.body?.limit ?? 0))
@@ -532,6 +537,9 @@ app.post('/api/tickers/registry/download', async (req, res) => {
     if (limit > 0) {
       args.push('--limit', String(limit))
     }
+
+    // Pass skip-metadata list to avoid redundant API calls
+    args.push('--skip-metadata-json', skipMetadataPath)
 
     // Add Tiingo API key if available
     const tiingoApiKey = await getTiingoApiKey(req.body?.tiingoApiKey)

@@ -211,6 +211,7 @@ def download_to_parquet(
     cfg: DownloadConfig,
     api_key: str | None = None,
     progress_cb: Optional[Callable[[dict], None]] = None,
+    skip_metadata: Optional[set[str]] = None,
 ) -> list[Path]:
     """Download ticker data from Tiingo and save as Parquet files."""
     out_root = ensure_dir(out_dir)
@@ -262,9 +263,10 @@ def download_to_parquet(
             normalized.to_parquet(out_path, index=False)
             out_paths.append(out_path)
 
-            # Fetch metadata (name, description) alongside OHLCV
+            # Fetch metadata (name, description) only if not already saved
             metadata = None
-            if source_used == "tiingo":
+            skip_set = skip_metadata or set()
+            if source_used == "tiingo" and ticker not in skip_set:
                 metadata = _fetch_ticker_metadata(ticker, api_key)
 
             save_event = {
@@ -311,6 +313,7 @@ def _cli() -> int:
     ap.add_argument("--offset", type=int, default=0, help="Skip first N tickers (for resuming)")
     ap.add_argument("--start-date", type=str, default="1990-01-01", help="Start date for historical data")
     ap.add_argument("--api-key", type=str, default=None, help="Tiingo API key (or set TIINGO_API_KEY env var)")
+    ap.add_argument("--skip-metadata-json", type=str, default=None, help="JSON file with tickers to skip metadata fetch for")
     args = ap.parse_args()
 
     # Load tickers from either txt or json
@@ -334,6 +337,16 @@ def _cli() -> int:
         print(json.dumps({"type": "complete", "saved": 0, "message": "No tickers to process"}))
         return 0
 
+    # Load skip-metadata set (tickers that already have metadata saved)
+    skip_metadata_set: set[str] = set()
+    if args.skip_metadata_json:
+        try:
+            skip_tickers = read_tickers_from_json(args.skip_metadata_json)
+            skip_metadata_set = set(skip_tickers)
+            print(json.dumps({"type": "info", "message": f"Skipping metadata fetch for {len(skip_metadata_set)} tickers that already have it"}), flush=True)
+        except Exception as e:
+            print(json.dumps({"type": "warning", "message": f"Could not load skip-metadata file: {e}"}), flush=True)
+
     cfg = DownloadConfig(
         batch_size=int(args.batch_size),
         sleep_seconds=float(args.sleep_seconds),
@@ -344,7 +357,7 @@ def _cli() -> int:
     def cb(ev: dict) -> None:
         print(json.dumps(ev), flush=True)
 
-    out = download_to_parquet(tickers, out_dir=args.out_dir, cfg=cfg, api_key=args.api_key, progress_cb=cb)
+    out = download_to_parquet(tickers, out_dir=args.out_dir, cfg=cfg, api_key=args.api_key, progress_cb=cb, skip_metadata=skip_metadata_set)
     print(json.dumps({"type": "complete", "saved": len(out)}), flush=True)
     return 0
 
