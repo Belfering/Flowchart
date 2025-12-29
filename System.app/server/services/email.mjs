@@ -3,7 +3,10 @@
 
 import { Resend } from 'resend'
 
-const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null
+// TEMPORARY: Hardcoded key to bypass Railway env var issue
+// TODO: Remove this and use process.env.RESEND_API_KEY once Railway issue is resolved
+const RESEND_KEY = process.env.RESEND_API_KEY || 're_VBRvt4NP_CuUxgyzQ6QWZDycNz5AgeqDd'
+const resend = new Resend(RESEND_KEY)
 
 // Use verified domain or Resend's test domain
 // To use your own domain: verify it at https://resend.com/domains
@@ -13,12 +16,6 @@ const FROM_EMAIL = process.env.EMAIL_FROM || 'Atlas Engine <onboarding@resend.de
  * Send email verification link
  */
 export async function sendVerificationEmail(email, token) {
-  if (!resend) {
-    console.log('[email] RESEND_API_KEY not set, skipping email')
-    console.log(`[email] Verification token for ${email}: ${token}`)
-    return false
-  }
-
   const verifyUrl = `${process.env.APP_URL || 'https://quantnexus.io'}/verify-email?token=${token}`
 
   try {
@@ -58,12 +55,6 @@ export async function sendVerificationEmail(email, token) {
  * Send password reset link
  */
 export async function sendPasswordResetEmail(email, token) {
-  if (!resend) {
-    console.log('[email] RESEND_API_KEY not set, skipping email')
-    console.log(`[email] Password reset token for ${email}: ${token}`)
-    return false
-  }
-
   const resetUrl = `${process.env.APP_URL || 'https://quantnexus.io'}/reset-password?token=${token}`
 
   try {
