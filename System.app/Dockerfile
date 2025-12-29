@@ -37,6 +37,9 @@ WORKDIR /app
 # Install Python for ticker data scripts
 RUN apt-get update && apt-get install -y python3 python3-pip wget && rm -rf /var/lib/apt/lists/*
 
+# Install Python dependencies for ticker scripts (requests, pandas, pyarrow for parquet)
+RUN pip3 install --break-system-packages requests pandas pyarrow
+
 # Copy built frontend
 COPY --from=builder /app/dist ./dist
 
