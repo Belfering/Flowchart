@@ -3,16 +3,17 @@
 # Multi-stage build for production deployment
 # ============================================
 # Note: Build context is repo root, so paths use System.app/
+# Using Debian-based image for glibc compatibility (DuckDB requires glibc, Alpine uses musl)
 
 # ============================================
 # Stage 1: Build
 # ============================================
-FROM node:20-alpine AS builder
+FROM node:20-slim AS builder
 
 WORKDIR /app
 
 # Install build dependencies for native modules
-RUN apk add --no-cache python3 py3-pip g++ make
+RUN apt-get update && apt-get install -y python3 python3-pip g++ make && rm -rf /var/lib/apt/lists/*
 
 # Copy package files from System.app
 COPY System.app/package*.json ./
@@ -29,12 +30,12 @@ RUN npm run build
 # ============================================
 # Stage 2: Production
 # ============================================
-FROM node:20-alpine AS production
+FROM node:20-slim AS production
 
 WORKDIR /app
 
-# Install Python and glibc compatibility (DuckDB requires glibc, not musl)
-RUN apk add --no-cache python3 py3-pip libc6-compat
+# Install Python for ticker data scripts
+RUN apt-get update && apt-get install -y python3 python3-pip wget && rm -rf /var/lib/apt/lists/*
 
 # Copy built frontend
 COPY --from=builder /app/dist ./dist
