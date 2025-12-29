@@ -15,29 +15,13 @@ export async function seedAdminUser() {
   }
 
   try {
-    // Check if any admin users exist
-    const existingAdmin = sqlite.prepare(`
-      SELECT id FROM users WHERE role = 'admin' LIMIT 1
-    `).get()
-
-    if (existingAdmin) {
-      // Update existing admin password and email to match env vars
-      const passwordHash = await bcrypt.hash(adminPassword, 12)
-      sqlite.prepare(`
-        UPDATE users SET password_hash = ?, email = ?, updated_at = datetime('now')
-        WHERE id = ?
-      `).run(passwordHash, adminEmail.toLowerCase(), existingAdmin.id)
-      console.log(`[seed] Admin user password updated for: ${adminEmail}`)
-      return true
-    }
-
-    // Check if email is already registered (as non-admin)
-    const existingEmail = sqlite.prepare(`
+    // First, check if ADMIN_EMAIL already exists (as admin or regular user)
+    const existingUser = sqlite.prepare(`
       SELECT id, role FROM users WHERE email = ?
     `).get(adminEmail.toLowerCase())
 
-    if (existingEmail) {
-      // Upgrade existing user to admin
+    if (existingUser) {
+      // User with this email exists - ensure they are admin with correct password
       const passwordHash = await bcrypt.hash(adminPassword, 12)
       sqlite.prepare(`
         UPDATE users SET
@@ -48,8 +32,13 @@ export async function seedAdminUser() {
           tier = 'premium',
           updated_at = datetime('now')
         WHERE id = ?
-      `).run(passwordHash, existingEmail.id)
-      console.log(`[seed] Upgraded existing user to admin: ${adminEmail}`)
+      `).run(passwordHash, existingUser.id)
+
+      if (existingUser.role === 'admin') {
+        console.log(`[seed] Admin user password updated for: ${adminEmail}`)
+      } else {
+        console.log(`[seed] Upgraded existing user to admin: ${adminEmail}`)
+      }
       return true
     }
 
