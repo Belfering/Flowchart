@@ -52,11 +52,13 @@ COPY --from=builder /app/ticker-data/*.py ./ticker-data/
 COPY --from=builder /app/package*.json ./
 RUN npm ci --only=production
 
-# Create data directory for SQLite database
-RUN mkdir -p ./server/data && chown -R nodejs:nodejs ./server/data
+# Copy entrypoint script
+COPY --from=builder /app/docker-entrypoint.sh ./
+RUN chmod +x ./docker-entrypoint.sh
 
-# Create ticker-data directory
-RUN mkdir -p ./ticker-data/data/ticker_data_parquet && chown -R nodejs:nodejs ./ticker-data
+# Create data directories and set ownership
+RUN mkdir -p ./server/data ./ticker-data/data/ticker_data_parquet && \
+    chown -R nodejs:nodejs /app
 
 # Switch to non-root user
 USER nodejs
@@ -72,5 +74,5 @@ EXPOSE 8787
 ENV NODE_ENV=production
 ENV PORT=8787
 
-# Start the server (v2 - force rebuild)
-CMD ["node", "server/index.mjs"]
+# Start via entrypoint script (creates dirs after volume mount)
+ENTRYPOINT ["./docker-entrypoint.sh"]
