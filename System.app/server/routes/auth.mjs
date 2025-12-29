@@ -7,6 +7,7 @@ import jwt from 'jsonwebtoken'
 import crypto from 'crypto'
 import { db, sqlite } from '../db/index.mjs'
 import { JWT_SECRET } from '../middleware/auth.mjs'
+import { sendVerificationEmail } from '../services/email.mjs'
 
 const router = express.Router()
 
@@ -111,9 +112,11 @@ router.post('/register', async (req, res) => {
       VALUES (?, ?, datetime('now', '+24 hours'), datetime('now'))
     `).run(userId, verifyToken)
 
-    // TODO: Send verification email via Resend when configured
-    // For now, auto-verify in development
-    if (process.env.NODE_ENV !== 'production') {
+    // Send verification email
+    const emailSent = await sendVerificationEmail(email.toLowerCase(), verifyToken)
+
+    // Auto-verify in development if email not configured
+    if (!emailSent && process.env.NODE_ENV !== 'production') {
       sqlite.prepare(`
         UPDATE users SET email_verified = 1, status = 'active' WHERE id = ?
       `).run(userId)
@@ -121,8 +124,8 @@ router.post('/register', async (req, res) => {
 
     res.json({
       success: true,
-      message: process.env.NODE_ENV === 'production'
-        ? 'Account created. Please check your email to verify.'
+      message: emailSent
+        ? 'Account created! Please check your email to verify.'
         : 'Account created and verified (dev mode).',
       userId
     })

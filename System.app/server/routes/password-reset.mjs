@@ -5,6 +5,7 @@ import express from 'express'
 import bcrypt from 'bcrypt'
 import crypto from 'crypto'
 import { sqlite } from '../db/index.mjs'
+import { sendPasswordResetEmail } from '../services/email.mjs'
 
 const router = express.Router()
 
@@ -39,11 +40,8 @@ router.post('/forgot-password', async (req, res) => {
       VALUES (?, ?, datetime('now', '+1 hour'), datetime('now'))
     `).run(user.id, resetTokenHash)
 
-    // TODO: Send email via Resend with reset link
-    // For now, log the token in development
-    if (process.env.NODE_ENV !== 'production') {
-      console.log(`[auth] Password reset token for ${email}: ${resetToken}`)
-    }
+    // Send password reset email
+    await sendPasswordResetEmail(email.toLowerCase(), resetToken)
 
     res.json({ success: true, message: 'If an account exists, a reset link will be sent.' })
   } catch (err) {
