@@ -421,6 +421,23 @@ export function initializeDatabase() {
     console.log(`[DB] Cleaned up ${stuckUsers.changes} unverified users`)
   }
 
+  // Force upgrade ADMIN_EMAIL to admin role (synchronous fallback for seed-admin)
+  const adminEmail = process.env.ADMIN_EMAIL
+  if (adminEmail) {
+    const upgraded = sqlite.prepare(`
+      UPDATE users SET
+        role = 'admin',
+        email_verified = 1,
+        status = 'active',
+        tier = 'premium',
+        updated_at = datetime('now')
+      WHERE email = ? AND role != 'admin'
+    `).run(adminEmail.toLowerCase())
+    if (upgraded.changes > 0) {
+      console.log(`[DB] Force-upgraded ${adminEmail} to admin role`)
+    }
+  }
+
   console.log('[DB] Database initialized')
 }
 
