@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Card, CardHeader, CardContent } from './ui/card'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
+import loginBg from '../assets/login-bg.png'
 
 type AuthMode = 'login' | 'register' | 'forgot'
 
@@ -108,8 +109,16 @@ export function LoginScreen({ onLogin }: { onLogin: (userId: string) => void }) 
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-6 bg-background">
-      <Card className="w-full max-w-sm">
+    <div
+      className="min-h-screen flex items-center justify-center p-6"
+      style={{
+        backgroundImage: `url(${loginBg})`,
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+        backgroundRepeat: 'no-repeat'
+      }}
+    >
+      <Card className="w-full max-w-sm backdrop-blur-sm bg-card/95 shadow-xl">
         <CardHeader className="text-center">
           <h1 className="m-0 my-1.5 text-2xl font-extrabold tracking-tight">Atlas Engine</h1>
           <p className="text-sm text-muted">
