@@ -31,14 +31,26 @@ export async function seedAdminUser() {
       return true
     }
 
-    // Check if email is already registered
+    // Check if email is already registered (as non-admin)
     const existingEmail = sqlite.prepare(`
-      SELECT id FROM users WHERE email = ?
+      SELECT id, role FROM users WHERE email = ?
     `).get(adminEmail.toLowerCase())
 
     if (existingEmail) {
-      console.log('[seed] Email already registered, skipping seed')
-      return false
+      // Upgrade existing user to admin
+      const passwordHash = await bcrypt.hash(adminPassword, 12)
+      sqlite.prepare(`
+        UPDATE users SET
+          role = 'admin',
+          password_hash = ?,
+          email_verified = 1,
+          status = 'active',
+          tier = 'premium',
+          updated_at = datetime('now')
+        WHERE id = ?
+      `).run(passwordHash, existingEmail.id)
+      console.log(`[seed] Upgraded existing user to admin: ${adminEmail}`)
+      return true
     }
 
     // Validate password
