@@ -7,10 +7,17 @@ import { relations } from 'drizzle-orm'
 export const users = sqliteTable('users', {
   id: text('id').primaryKey(),
   username: text('username').notNull().unique(),
+  email: text('email').unique(),
   passwordHash: text('password_hash').notNull(),
   displayName: text('display_name'),
   role: text('role', { enum: ['user', 'admin', 'partner'] }).default('user'),
   isPartnerEligible: integer('is_partner_eligible', { mode: 'boolean' }).default(false),
+  emailVerified: integer('email_verified', { mode: 'boolean' }).default(false),
+  status: text('status').default('pending_verification'), // pending_verification, active, suspended
+  tier: text('tier').default('free'), // free, pro, premium
+  inviteCodeUsed: text('invite_code_used'),
+  termsAcceptedAt: integer('terms_accepted_at', { mode: 'timestamp' }),
+  privacyAcceptedAt: integer('privacy_accepted_at', { mode: 'timestamp' }),
   createdAt: integer('created_at', { mode: 'timestamp' }).$defaultFn(() => new Date()),
   updatedAt: integer('updated_at', { mode: 'timestamp' }).$defaultFn(() => new Date()),
   lastLoginAt: integer('last_login_at', { mode: 'timestamp' }),
@@ -157,6 +164,79 @@ export const adminConfig = sqliteTable('admin_config', {
   value: text('value').notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp' }).$defaultFn(() => new Date()),
   updatedBy: text('updated_by').references(() => users.id),
+})
+
+// ============================================
+// WAITLIST ENTRIES
+// ============================================
+export const waitlistEntries = sqliteTable('waitlist_entries', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  email: text('email').notNull().unique(),
+  position: integer('position').notNull(),
+  referralCode: text('referral_code'),
+  referredBy: integer('referred_by'),
+  status: text('status').default('pending'), // pending, invited, registered, unsubscribed
+  source: text('source'), // How they found us
+  createdAt: integer('created_at', { mode: 'timestamp' }).$defaultFn(() => new Date()),
+  invitedAt: integer('invited_at', { mode: 'timestamp' }),
+  registeredAt: integer('registered_at', { mode: 'timestamp' }),
+})
+
+// ============================================
+// INVITE CODES
+// ============================================
+export const inviteCodes = sqliteTable('invite_codes', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  code: text('code').notNull().unique(),
+  waitlistId: integer('waitlist_id'),
+  createdBy: text('created_by'),
+  maxUses: integer('max_uses').default(1),
+  useCount: integer('use_count').default(0),
+  expiresAt: integer('expires_at', { mode: 'timestamp' }),
+  createdAt: integer('created_at', { mode: 'timestamp' }).$defaultFn(() => new Date()),
+})
+
+// ============================================
+// EMAIL VERIFICATION TOKENS
+// ============================================
+export const emailVerificationTokens = sqliteTable('email_verification_tokens', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  token: text('token').notNull().unique(),
+  expiresAt: integer('expires_at', { mode: 'timestamp' }).notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp' }).$defaultFn(() => new Date()),
+})
+
+// ============================================
+// USER SESSIONS (for JWT refresh tokens)
+// ============================================
+export const userSessions = sqliteTable('user_sessions', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  refreshTokenHash: text('refresh_token_hash').notNull(),
+  deviceInfo: text('device_info'),
+  ipAddress: text('ip_address'),
+  expiresAt: integer('expires_at', { mode: 'timestamp' }).notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp' }).$defaultFn(() => new Date()),
+  lastUsedAt: integer('last_used_at', { mode: 'timestamp' }).$defaultFn(() => new Date()),
+})
+
+// ============================================
+// TICKER REGISTRY (Tiingo Master List)
+// ============================================
+export const tickerRegistry = sqliteTable('ticker_registry', {
+  ticker: text('ticker').primaryKey(),
+  name: text('name'),                      // Company name (e.g., "Apple Inc.")
+  description: text('description'),        // Company description
+  exchange: text('exchange'),              // NYSE, NASDAQ, AMEX, ARCA, BATS
+  assetType: text('asset_type'),           // Stock, ETF (Mutual Funds excluded)
+  currency: text('currency'),              // USD, CNY, etc.
+  startDate: text('start_date'),           // First available date in Tiingo
+  endDate: text('end_date'),               // Last available date in Tiingo
+  isActive: integer('is_active', { mode: 'boolean' }).default(true),
+  lastSynced: text('last_synced'),         // When we last downloaded OHLCV data
+  createdAt: integer('created_at', { mode: 'timestamp' }).$defaultFn(() => new Date()),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).$defaultFn(() => new Date()),
 })
 
 // ============================================

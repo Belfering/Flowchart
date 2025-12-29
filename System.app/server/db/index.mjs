@@ -83,10 +83,17 @@ export function initializeDatabase() {
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
       username TEXT NOT NULL UNIQUE,
+      email TEXT UNIQUE,
       password_hash TEXT NOT NULL,
       display_name TEXT,
       role TEXT DEFAULT 'user',
       is_partner_eligible INTEGER DEFAULT 0,
+      email_verified INTEGER DEFAULT 0,
+      status TEXT DEFAULT 'active',
+      tier TEXT DEFAULT 'free',
+      invite_code_used TEXT,
+      terms_accepted_at INTEGER,
+      privacy_accepted_at INTEGER,
       created_at INTEGER,
       updated_at INTEGER,
       last_login_at INTEGER
@@ -209,6 +216,49 @@ export function initializeDatabase() {
       updated_by TEXT REFERENCES users(id)
     );
 
+    CREATE TABLE IF NOT EXISTS waitlist_entries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      email TEXT NOT NULL UNIQUE,
+      position INTEGER NOT NULL,
+      referral_code TEXT,
+      referred_by INTEGER,
+      status TEXT DEFAULT 'pending',
+      source TEXT,
+      created_at INTEGER,
+      invited_at INTEGER,
+      registered_at INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS invite_codes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      code TEXT NOT NULL UNIQUE,
+      waitlist_id INTEGER,
+      created_by TEXT,
+      max_uses INTEGER DEFAULT 1,
+      use_count INTEGER DEFAULT 0,
+      expires_at INTEGER,
+      created_at INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS email_verification_tokens (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      token TEXT NOT NULL UNIQUE,
+      expires_at INTEGER NOT NULL,
+      created_at INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS user_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      refresh_token_hash TEXT NOT NULL,
+      device_info TEXT,
+      ip_address TEXT,
+      expires_at INTEGER NOT NULL,
+      created_at INTEGER,
+      last_used_at INTEGER
+    );
+
     -- Indexes for performance
     CREATE INDEX IF NOT EXISTS idx_bots_owner ON bots(owner_id);
     CREATE INDEX IF NOT EXISTS idx_bots_visibility ON bots(visibility);
@@ -220,6 +270,11 @@ export function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_positions_portfolio ON portfolio_positions(portfolio_id);
     CREATE INDEX IF NOT EXISTS idx_equity_bot ON bot_equity_curves(bot_id, date);
     CREATE INDEX IF NOT EXISTS idx_call_chains_owner ON call_chains(owner_id);
+    CREATE INDEX IF NOT EXISTS idx_waitlist_status ON waitlist_entries(status);
+    CREATE INDEX IF NOT EXISTS idx_waitlist_position ON waitlist_entries(position);
+    CREATE INDEX IF NOT EXISTS idx_invite_code ON invite_codes(code);
+    CREATE INDEX IF NOT EXISTS idx_session_user ON user_sessions(user_id);
+    CREATE INDEX IF NOT EXISTS idx_session_token ON user_sessions(refresh_token_hash);
   `)
 
   // Migration: Add backtest_mode and backtest_cost_bps columns to bots table
@@ -231,6 +286,25 @@ export function initializeDatabase() {
       sqlite.exec("ALTER TABLE bots ADD COLUMN backtest_mode TEXT DEFAULT 'CC'")
       sqlite.exec("ALTER TABLE bots ADD COLUMN backtest_cost_bps INTEGER DEFAULT 5")
       console.log('[DB] Migration complete: backtest settings columns added')
+    }
+  } catch (e) {
+    // Columns might already exist
+  }
+
+  // Migration: Add auth columns to users table
+  try {
+    const userCols = sqlite.prepare("PRAGMA table_info(users)").all()
+    const hasEmail = userCols.some(c => c.name === 'email')
+    if (!hasEmail) {
+      console.log('[DB] Migrating users table: adding auth columns...')
+      sqlite.exec("ALTER TABLE users ADD COLUMN email TEXT UNIQUE")
+      sqlite.exec("ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 0")
+      sqlite.exec("ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'active'")
+      sqlite.exec("ALTER TABLE users ADD COLUMN tier TEXT DEFAULT 'free'")
+      sqlite.exec("ALTER TABLE users ADD COLUMN invite_code_used TEXT")
+      sqlite.exec("ALTER TABLE users ADD COLUMN terms_accepted_at INTEGER")
+      sqlite.exec("ALTER TABLE users ADD COLUMN privacy_accepted_at INTEGER")
+      console.log('[DB] Migration complete: auth columns added to users table')
     }
   } catch (e) {
     // Columns might already exist
@@ -308,17 +382,17 @@ export function initializeDatabase() {
   // Seed default users (1, 3, 5, 7, 9, admin)
   // Plain passwords - will be hashed below
   const defaultUsers = [
-    { id: '1', username: '1', plainPassword: '1', displayName: 'User 1', role: 'partner' },
-    { id: '3', username: '3', plainPassword: '3', displayName: 'User 3', role: 'partner' },
-    { id: '5', username: '5', plainPassword: '5', displayName: 'User 5', role: 'partner' },
-    { id: '7', username: '7', plainPassword: '7', displayName: 'User 7', role: 'partner' },
-    { id: '9', username: '9', plainPassword: '9', displayName: 'User 9', role: 'partner' },
-    { id: 'admin', username: 'admin', plainPassword: 'admin', displayName: 'Administrator', role: 'admin' },
+    { id: '1', username: '1', email: 'user1@quantnexus.io', plainPassword: '1', displayName: 'User 1', role: 'partner' },
+    { id: '3', username: '3', email: 'user3@quantnexus.io', plainPassword: '3', displayName: 'User 3', role: 'partner' },
+    { id: '5', username: '5', email: 'user5@quantnexus.io', plainPassword: '5', displayName: 'User 5', role: 'partner' },
+    { id: '7', username: '7', email: 'user7@quantnexus.io', plainPassword: '7', displayName: 'User 7', role: 'partner' },
+    { id: '9', username: '9', email: 'user9@quantnexus.io', plainPassword: '9', displayName: 'User 9', role: 'partner' },
+    { id: 'admin', username: 'admin', email: 'quantnexus.io@gmail.com', plainPassword: '7]NKw}QM77b9', displayName: 'Administrator', role: 'admin' },
   ]
 
   const insertUser = sqlite.prepare(`
-    INSERT OR IGNORE INTO users (id, username, password_hash, display_name, role, is_partner_eligible, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR IGNORE INTO users (id, username, email, password_hash, display_name, role, is_partner_eligible, email_verified, status, tier, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
 
   const insertPortfolio = sqlite.prepare(`
@@ -340,7 +414,8 @@ export function initializeDatabase() {
   for (const user of defaultUsers) {
     // Hash passwords using bcrypt (sync for initialization)
     const passwordHash = bcrypt.hashSync(user.plainPassword, SALT_ROUNDS)
-    insertUser.run(user.id, user.username, passwordHash, user.displayName, user.role, user.role === 'partner' ? 1 : 0, now, now)
+    // (id, username, email, password_hash, display_name, role, is_partner_eligible, email_verified, status, tier, created_at, updated_at)
+    insertUser.run(user.id, user.username, user.email, passwordHash, user.displayName, user.role, user.role === 'partner' ? 1 : 0, 1, 'active', 'free', now, now)
     insertPortfolio.run(`portfolio-${user.id}`, user.id, 100000, now, now)
     insertWatchlist.run(`watchlist-${user.id}-default`, user.id, 'My Watchlist', 1, now, now)
     insertPreferences.run(user.id, 'dark', 'sapphire', '{}', now)
@@ -494,7 +569,18 @@ export async function getNexusBots() {
     return {
       ...bot,
       payload: undefined, // IP protection
-      metrics: metricsRow || null,
+      // Transform snake_case DB columns to match frontend expectations (fetchNexusBotsFromApi expects *Ratio names)
+      metrics: metricsRow ? {
+        cagr: metricsRow.cagr,
+        maxDrawdown: metricsRow.max_drawdown,
+        calmarRatio: metricsRow.calmar_ratio,
+        sharpeRatio: metricsRow.sharpe_ratio,
+        sortinoRatio: metricsRow.sortino_ratio,
+        treynorRatio: metricsRow.treynor_ratio,
+        volatility: metricsRow.volatility,
+        winRate: metricsRow.win_rate,
+        tradingDays: metricsRow.trading_days,
+      } : null,
       owner: ownerRow ? { id: ownerRow.id, displayName: ownerRow.display_name } : null,
     }
   }))
@@ -1016,3 +1102,6 @@ export async function deleteCallChain(id, ownerId) {
 
 // Export the raw sqlite connection for advanced queries
 export { sqlite }
+
+// Auto-initialize database on module load
+initializeDatabase()
