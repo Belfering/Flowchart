@@ -1326,7 +1326,7 @@ type AdminStatus = {
   parquetDir: string
   tickersExists: boolean
   parquetDirExists: boolean
-  loadedTickersCount: number
+  parquetFileCount: number
 }
 
 type AdminCandlesResponse = {
@@ -4103,7 +4103,7 @@ function AdminPanel({
   onRefreshNexusBots?: () => Promise<void>
   onPrewarmComplete?: () => void
 }) {
-  const [status, setStatus] = useState<AdminStatus | null>(null)
+  const [, setStatus] = useState<AdminStatus | null>(null)
   const [, setTickers] = useState<string[]>([])
   const [parquetTickers, setParquetTickers] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -4989,7 +4989,7 @@ function AdminPanel({
               <div className="text-xs text-muted-foreground uppercase tracking-wide mb-1">Parquet Files</div>
               <div className="text-3xl font-black">{parquetTickers.length.toLocaleString()}</div>
               <div className="text-xs text-muted-foreground mt-1">
-                {status?.loadedTickersCount ?? 0} loaded in memory
+                Available for queries
               </div>
             </div>
 

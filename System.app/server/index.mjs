@@ -296,13 +296,15 @@ app.get('/api/status', async (_req, res) => {
       return false
     }
   }
+  // Get count of parquet files directly
+  const parquetFiles = await listParquetTickers()
   res.json({
     root: TICKER_DATA_ROOT,
     tickersPath: TICKERS_PATH,
     parquetDir: PARQUET_DIR,
     tickersExists: await exists(TICKERS_PATH),
     parquetDirExists: await exists(PARQUET_DIR),
-    loadedTickersCount: loadedTickers.size,
+    parquetFileCount: parquetFiles.length,
   })
 })
 
@@ -720,12 +722,13 @@ app.post('/api/tickers/registry/download', async (req, res) => {
   }
 })
 
-// Reload tickers from disk into memory
+// Reload tickers endpoint (no-op now that we query from disk directly)
 app.post('/api/tickers/reload', async (req, res) => {
   try {
-    console.log('[api] Reloading ticker data from disk...')
-    await preloadParquetData()
-    res.json({ success: true, loadedTickers: loadedTickers.size })
+    // No longer needed - we query parquet files directly from disk
+    // Just return the count of available parquet files
+    const tickers = await listParquetTickers()
+    res.json({ success: true, availableTickers: tickers.length })
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) })
   }
@@ -789,81 +792,61 @@ app.get('/api/candles/:ticker', async (req, res) => {
     return
   }
 
-  // TEMPORARY: Query from pre-loaded in-memory table for fast development
-  // TODO: In production, query directly from parquet files on disk
-  const tableName = `ticker_${ticker.replace(/[^A-Z0-9]/g, '_')}`
+  // Query directly from parquet file on disk (production-ready, no memory preload needed)
+  const parquetPath = path.join(PARQUET_DIR, `${ticker}.parquet`)
+  const fileForDuckdb = parquetPath.replace(/\\/g, '/').replace(/'/g, "''")
 
-  // Check if ticker is loaded in memory
-  if (!loadedTickers.has(ticker)) {
-    res.status(404).json({ error: `Ticker ${ticker} not loaded in memory` })
+  // Check if parquet file exists
+  try {
+    await fs.access(parquetPath)
+  } catch {
+    res.status(404).json({ error: `Ticker ${ticker} not found. No parquet file exists.` })
     return
   }
 
-  // First, get a sample row to debug column structure
-  const sampleSql = `SELECT * FROM ${tableName} WHERE "Open" IS NOT NULL LIMIT 1`
-  conn.all(sampleSql, (sampleErr, sampleRows) => {
-    if (sampleErr) {
-      res.status(500).json({ error: `Sample query failed: ${String(sampleErr?.message || sampleErr)}` })
+  // Query parquet file directly
+  const sql = `
+    SELECT
+      epoch_ms("Date") AS ts_ms,
+      "Open"  AS open,
+      "High"  AS high,
+      "Low"   AS low,
+      "Close" AS close,
+      "Adj Close" AS adjClose
+    FROM read_parquet('${fileForDuckdb}')
+    WHERE "Open" IS NOT NULL AND "High" IS NOT NULL AND "Low" IS NOT NULL AND "Close" IS NOT NULL
+    ORDER BY "Date" DESC
+    LIMIT ${limit};
+  `
+
+  conn.all(sql, (err, rows) => {
+    if (err) {
+      res.status(500).json({ error: String(err?.message || err) })
       return
     }
 
-    // If no rows, data might be empty
-    if (!sampleRows || sampleRows.length === 0) {
-      res.status(404).json({ error: `No data in table ${tableName}. The parquet file may be empty or corrupted. Try re-downloading ticker data from the Admin tab.` })
+    if (!rows || rows.length === 0) {
+      res.status(404).json({ error: `No data for ticker ${ticker}. The parquet file may be empty.` })
       return
     }
 
-    // Check if data is all nulls
-    const firstRow = sampleRows[0]
-    if (firstRow.Open === null && firstRow.High === null && firstRow.Low === null && firstRow.Close === null) {
-      res.status(404).json({ error: `Ticker ${ticker} has no price data (all null values). Please re-download ticker data from the Admin tab.` })
-      return
-    }
-
-    // Check what columns exist
-    const availableColumns = Object.keys(sampleRows[0])
-
-    const sql = `
-      SELECT
-        epoch_ms("Date") AS ts_ms,
-        "Open"  AS open,
-        "High"  AS high,
-        "Low"   AS low,
-        "Close" AS close,
-        "Adj Close" AS adjClose
-      FROM ${tableName}
-      WHERE "Open" IS NOT NULL AND "High" IS NOT NULL AND "Low" IS NOT NULL AND "Close" IS NOT NULL
-      ORDER BY "Date" DESC
-      LIMIT ${limit};
-    `
-
-    conn.all(sql, (err, rows) => {
-      if (err) {
-        res.status(500).json({
-          error: String(err?.message || err),
-          availableColumns,
-          sampleRow: sampleRows[0]
-        })
-        return
-      }
-      const ordered = (rows || []).slice().reverse()
-      const candles = ordered.map((r) => ({
-        time: Math.floor(Number(r.ts_ms) / 1000),
-        open: Number(r.open),
-        high: Number(r.high),
-        low: Number(r.low),
-        close: Number(r.close),
-        adjClose: Number(r.adjClose),
-      }))
-      const preview = ordered.slice(-50).map((r) => ({
-        Date: new Date(Number(r.ts_ms)).toISOString(),
-        Open: Number(r.open),
-        High: Number(r.high),
-        Low: Number(r.low),
-        Close: Number(r.close),
-      }))
-      res.json({ ticker, candles, preview })
-    })
+    const ordered = (rows || []).slice().reverse()
+    const candles = ordered.map((r) => ({
+      time: Math.floor(Number(r.ts_ms) / 1000),
+      open: Number(r.open),
+      high: Number(r.high),
+      low: Number(r.low),
+      close: Number(r.close),
+      adjClose: Number(r.adjClose),
+    }))
+    const preview = ordered.slice(-50).map((r) => ({
+      Date: new Date(Number(r.ts_ms)).toISOString(),
+      Open: Number(r.open),
+      High: Number(r.high),
+      Low: Number(r.low),
+      Close: Number(r.close),
+    }))
+    res.json({ ticker, candles, preview })
   })
 })
 
@@ -2740,8 +2723,9 @@ app.listen(PORT, async () => {
   // Seed admin user if ADMIN_EMAIL and ADMIN_PASSWORD are set
   await seedAdminUser()
 
-  // TEMPORARY: Pre-load all parquet data for fast development
-  await preloadParquetData()
+  // NOTE: Memory preload disabled - we now query parquet files directly from disk
+  // This avoids Railway memory limits and is more production-appropriate
+  // await preloadParquetData()
 
   // Start the ticker sync scheduler (default: 6pm EST daily)
   await ensureDbInitialized()
