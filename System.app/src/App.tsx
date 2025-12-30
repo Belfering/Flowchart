@@ -2481,6 +2481,7 @@ function CandlesChart({ candles }: { candles: CandlestickData[] }) {
       rightPriceScale: { borderColor: '#cbd5e1' },
       timeScale: { borderColor: '#cbd5e1' },
       handleScroll: { mouseWheel: false }, // Disable scroll-to-zoom so page scrolling works
+      watermark: { visible: false },
     })
     const series = chart.addSeries(CandlestickSeries)
     chartRef.current = chart
@@ -2591,6 +2592,7 @@ const DashboardEquityChart = ({
       timeScale: { borderColor, visible: false }, // Hide time scale on returns chart
       handleScroll: false,
       handleScale: false,
+      watermark: { visible: false },
     })
 
     // Portfolio returns series (main area)
@@ -2623,6 +2625,7 @@ const DashboardEquityChart = ({
       timeScale: { borderColor },
       handleScroll: false,
       handleScale: false,
+      watermark: { visible: false },
     })
 
     const drawdownSeries = drawdownChart.addSeries(AreaSeries, {
@@ -2730,6 +2733,7 @@ const PartnerTBillChart = ({
       timeScale: { borderColor, rightOffset: 0, fixLeftEdge: true, fixRightEdge: true },
       handleScroll: false,
       handleScale: false,
+      watermark: { visible: false },
     })
 
     const series = chart.addSeries(AreaSeries, {
@@ -3048,6 +3052,7 @@ function EquityChart({
       timeScale: { borderColor: '#cbd5e1', rightOffset: 0, fixLeftEdge: true, fixRightEdge: true },
       handleScroll: false,
       handleScale: false,
+      watermark: { visible: false },
     })
     const series = chart.addSeries(LineSeries, {
       color: '#0ea5e9',
@@ -3481,6 +3486,7 @@ function DrawdownChart({
       timeScale: { borderColor: '#cbd5e1', rightOffset: 0, fixLeftEdge: true, fixRightEdge: true },
       handleScroll: false,
       handleScale: false,
+      watermark: { visible: false },
     })
     const series = chart.addSeries(AreaSeries, {
       lineColor: '#ef4444',
@@ -3675,6 +3681,7 @@ function RangeNavigator({
       timeScale: { visible: false, borderColor: '#cbd5e1', fixLeftEdge: true, fixRightEdge: true },
       handleScroll: false,
       handleScale: false,
+      watermark: { visible: false },
     })
     const series = chart.addSeries(LineSeries, { color: '#94a3b8', lineWidth: 1 })
     chartRef.current = chart
@@ -3874,6 +3881,7 @@ function AllocationChart({
       grid: { vertLines: { color: '#eef2f7' }, horzLines: { color: '#eef2f7' } },
       rightPriceScale: { borderColor: '#cbd5e1' },
       timeScale: { borderColor: '#cbd5e1', rightOffset: 0, fixLeftEdge: true, fixRightEdge: true },
+      watermark: { visible: false },
     })
     chartRef.current = chart
 
@@ -3940,7 +3948,29 @@ function AllocationChart({
       })
     }
 
-    // Add series from top to bottom (highest cumulative first)
+    // Add Cash (fallback) series at the top to fill remaining allocation to 100%
+    // Cash = 1.0 at every time point, shown as slate gray
+    const cashColor = '#64748b' // slate-500
+    const cashPoints: EquityPoint[] = []
+    for (const time of timeMap.keys()) {
+      cashPoints.push({ time: time as UTCTimestamp, value: 1.0 })
+    }
+    cashPoints.sort((a, b) => (a.time as number) - (b.time as number))
+
+    // Add Cash series first (it will be at the back, filling to 100%)
+    if (cashPoints.length > 0) {
+      const cashArea = chart.addSeries(AreaSeries, {
+        lineColor: cashColor,
+        topColor: cashColor + '60', // 38% opacity
+        bottomColor: cashColor + '20', // 12% opacity
+        lineWidth: 1,
+        priceFormat: { type: 'percent', precision: 2, minMove: 0.01 },
+      })
+      cashArea.setData(cashPoints)
+      seriesRefs.current.push(cashArea as unknown as ISeriesApi<'Line'>)
+    }
+
+    // Add other series from top to bottom (highest cumulative first)
     for (let i = stackedData.length - 1; i >= 0; i--) {
       const s = stackedData[i]
       const area = chart.addSeries(AreaSeries, {
@@ -12868,6 +12898,15 @@ function App() {
     }, 0)
     return () => window.clearTimeout(t)
   }, [loadAvailableTickers])
+
+  // Retry loading tickers if there was an error (e.g., rate limiting)
+  useEffect(() => {
+    if (!tickerApiError) return
+    const retryInterval = window.setInterval(() => {
+      void loadAvailableTickers()
+    }, 5000) // Retry every 5 seconds
+    return () => window.clearInterval(retryInterval)
+  }, [tickerApiError, loadAvailableTickers])
 
   // Load ticker metadata for ETFs Only filtering
   useEffect(() => {
