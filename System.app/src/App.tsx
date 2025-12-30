@@ -13600,7 +13600,7 @@ function App() {
       const warnings: BacktestWarning[] = []
       const trace = createBacktestTraceCollector()
 
-      let benchBars: Array<{ time: UTCTimestamp; open: number; close: number }> | null = null
+      let benchBars: Array<{ time: UTCTimestamp; open: number; close: number; adjClose: number }> | null = null
       if (benchTicker && benchTicker !== 'Empty') {
         const already = loaded.find((x) => getSeriesKey(x.ticker) === benchTicker)
         if (already) {
@@ -13617,13 +13617,13 @@ function App() {
         }
       }
 
-      const benchMap = new Map<number, { open: number; close: number }>()
+      const benchMap = new Map<number, { open: number; close: number; adjClose: number }>()
       if (benchBars) {
-        for (const b of benchBars) benchMap.set(Number(b.time), { open: b.open, close: b.close })
+        for (const b of benchBars) benchMap.set(Number(b.time), { open: b.open, close: b.close, adjClose: b.adjClose })
       }
 
       // SPY data for Treynor Ratio (always uses SPY as systematic risk benchmark)
-      let spyBars: Array<{ time: UTCTimestamp; open: number; close: number }> | null = null
+      let spyBars: Array<{ time: UTCTimestamp; open: number; close: number; adjClose: number }> | null = null
       if (benchTicker === 'SPY' && benchBars) {
         spyBars = benchBars
       } else {
@@ -13635,9 +13635,9 @@ function App() {
         }
       }
 
-      const spyMap = new Map<number, { open: number; close: number }>()
+      const spyMap = new Map<number, { open: number; close: number; adjClose: number }>()
       if (spyBars) {
-        for (const b of spyBars) spyMap.set(Number(b.time), { open: b.open, close: b.close })
+        for (const b of spyBars) spyMap.set(Number(b.time), { open: b.open, close: b.close, adjClose: b.adjClose })
       }
 
       // Find first index where all position tickers have valid close prices
@@ -13739,11 +13739,12 @@ function App() {
           const t = getSeriesKey(ticker)
           const openArr = db.open[t]
           const closeArr = db.close[t]
+          const adjCloseArr = db.adjClose[t]
           const entry =
             backtestMode === 'OO'
               ? openArr?.[start]
               : backtestMode === 'CC'
-                ? closeArr?.[start]
+                ? adjCloseArr?.[start]  // Use adjClose for dividend-adjusted returns
                 : backtestMode === 'CO'
                   ? closeArr?.[start]
                   : openArr?.[start]
@@ -13751,7 +13752,7 @@ function App() {
             backtestMode === 'OO'
               ? openArr?.[end]
               : backtestMode === 'CC'
-                ? closeArr?.[end]
+                ? adjCloseArr?.[end]  // Use adjClose for dividend-adjusted returns
                 : backtestMode === 'CO'
                   ? openArr?.[end]
                   : closeArr?.[start]
@@ -13802,7 +13803,7 @@ function App() {
             backtestMode === 'OO'
               ? startBar?.open
               : backtestMode === 'CC'
-                ? startBar?.close
+                ? startBar?.adjClose  // Use adjClose for dividend-adjusted benchmark
                 : backtestMode === 'CO'
                   ? startBar?.close
                   : startBar?.open
@@ -13810,7 +13811,7 @@ function App() {
             backtestMode === 'OO'
               ? endBar?.open
               : backtestMode === 'CC'
-                ? endBar?.close
+                ? endBar?.adjClose  // Use adjClose for dividend-adjusted benchmark
                 : backtestMode === 'CO'
                   ? endBar?.open
                   : startBar?.close
@@ -13832,7 +13833,7 @@ function App() {
             backtestMode === 'OO'
               ? startBar?.open
               : backtestMode === 'CC'
-                ? startBar?.close
+                ? startBar?.adjClose  // Use adjClose for dividend-adjusted benchmark
                 : backtestMode === 'CO'
                   ? startBar?.close
                   : startBar?.open
@@ -13840,7 +13841,7 @@ function App() {
             backtestMode === 'OO'
               ? endBar?.open
               : backtestMode === 'CC'
-                ? endBar?.close
+                ? endBar?.adjClose  // Use adjClose for dividend-adjusted benchmark
                 : backtestMode === 'CO'
                   ? endBar?.open
                   : startBar?.close
