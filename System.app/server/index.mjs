@@ -101,7 +101,7 @@ const DEFAULT_ROOT = path.resolve(__dirname, '..', 'ticker-data')
 const TICKER_DATA_ROOT = process.env.SYSTEM_TICKER_DATA_ROOT || process.env.TICKER_DATA_MINI_ROOT || DEFAULT_ROOT
 const TICKERS_PATH = process.env.TICKERS_PATH || path.join(TICKER_DATA_ROOT, 'tickers.txt')
 const PARQUET_DIR = process.env.PARQUET_DIR || path.join(TICKER_DATA_ROOT, 'data', 'ticker_data_parquet')
-const PYTHON = process.env.PYTHON || 'python'
+const PYTHON = process.env.PYTHON || 'python3'
 
 const db = new duckdb.Database(':memory:')
 const conn = db.connect()
