@@ -2601,6 +2601,20 @@ app.post('/api/admin/sync-schedule/run-now', async (req, res) => {
   }
 })
 
+// POST /api/admin/sync-schedule/kill - Kill currently running sync job
+app.post('/api/admin/sync-schedule/kill', (req, res) => {
+  try {
+    const result = scheduler.killCurrentJob()
+    if (result.success) {
+      res.json(result)
+    } else {
+      res.status(400).json(result)
+    }
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
 // ============================================
 // DATABASE VIEWER ENDPOINTS
 // ============================================

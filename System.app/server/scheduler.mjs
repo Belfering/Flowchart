@@ -22,6 +22,7 @@ let schedulerInterval = null
 let lastRunDate = null
 let isRunning = false
 let currentJob = null
+let currentChildProcess = null
 
 /**
  * Get current schedule config from database or use defaults
@@ -259,6 +260,7 @@ async function runTickerSync(config, tickerDataRoot, parquetDir, pythonCmd, data
 
     // Spawn the download process
     const child = spawn(pythonCmd, args, { windowsHide: true })
+    currentChildProcess = child
     currentJob = {
       pid: child.pid,
       startedAt,
@@ -341,6 +343,7 @@ async function runTickerSync(config, tickerDataRoot, parquetDir, pythonCmd, data
 
       isRunning = false
       currentJob = null
+      currentChildProcess = null
     })
 
     child.on('error', async (err) => {
@@ -353,6 +356,7 @@ async function runTickerSync(config, tickerDataRoot, parquetDir, pythonCmd, data
       })
       isRunning = false
       currentJob = null
+      currentChildProcess = null
     })
 
   } catch (e) {
@@ -365,6 +369,7 @@ async function runTickerSync(config, tickerDataRoot, parquetDir, pythonCmd, data
     })
     isRunning = false
     currentJob = null
+    currentChildProcess = null
   }
 }
 
@@ -474,4 +479,31 @@ export async function triggerManualSync(options) {
   await runTickerSync(config, tickerDataRoot, parquetDir, pythonCmd, database, tickerRegistry)
 
   return { success: true, message: 'Sync started' }
+}
+
+/**
+ * Kill the currently running sync job
+ */
+export function killCurrentJob() {
+  if (!isRunning || !currentChildProcess) {
+    return { success: false, error: 'No job currently running' }
+  }
+
+  try {
+    const pid = currentChildProcess.pid
+    console.log(`[scheduler] Killing job with PID ${pid}`)
+
+    // Kill the process tree (works on Windows too)
+    currentChildProcess.kill('SIGTERM')
+
+    // Force cleanup
+    isRunning = false
+    currentJob = null
+    currentChildProcess = null
+
+    return { success: true, message: `Job killed (PID: ${pid})` }
+  } catch (e) {
+    console.error('[scheduler] Error killing job:', e)
+    return { success: false, error: String(e?.message || e) }
+  }
 }

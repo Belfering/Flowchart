@@ -1335,17 +1335,6 @@ type AdminCandlesResponse = {
   preview: Array<{ Date: string; Open: number; High: number; Low: number; Close: number }>
 }
 
-type AdminDownloadJob = {
-  id: string
-  status: 'running' | 'done' | 'error'
-  startedAt: number
-  finishedAt: number | null
-  error: string | null
-  config?: { batchSize: number; sleepSeconds: number; maxRetries: number; threads: boolean; limit: number }
-  events?: Array<Record<string, unknown>>
-  logs?: string[]
-}
-
 type SystemVisibility = 'private' | 'community'
 type BotVisibility = SystemVisibility // Backwards compat alias
 
@@ -4101,8 +4090,6 @@ function AdminPanel({
   adminTab,
   setAdminTab,
   onTickersUpdated,
-  userId,
-  onClearData,
   savedBots,
   setSavedBots,
   onRefreshNexusBots,
@@ -4111,31 +4098,15 @@ function AdminPanel({
   adminTab: AdminSubtab
   setAdminTab: (t: AdminSubtab) => void
   onTickersUpdated?: (tickers: string[]) => void
-  userId: string
-  onClearData: () => void
   savedBots: SavedBot[]
   setSavedBots: React.Dispatch<React.SetStateAction<SavedBot[]>>
   onRefreshNexusBots?: () => Promise<void>
   onPrewarmComplete?: () => void
 }) {
   const [status, setStatus] = useState<AdminStatus | null>(null)
-  const [tickers, setTickers] = useState<string[]>([])
-  const [tickersText, setTickersText] = useState<string>('')
-  const [tickersDirty, setTickersDirty] = useState(false)
-  const [tickersSaving, setTickersSaving] = useState(false)
-  const [tickersSaveMsg, setTickersSaveMsg] = useState<string | null>(null)
-  const [downloadConfig, setDownloadConfig] = useState<{ batchSize: number; sleepSeconds: number; maxRetries: number; threads: boolean; limit: number }>(() => ({
-    batchSize: 50,
-    sleepSeconds: 0.2,
-    maxRetries: 3,
-    threads: true,
-    limit: 0,
-  }))
+  const [, setTickers] = useState<string[]>([])
   const [parquetTickers, setParquetTickers] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
-  const [downloadJob, setDownloadJob] = useState<AdminDownloadJob | null>(null)
-  const [downloadMsg, setDownloadMsg] = useState<string | null>(null)
-  const [editMode, setEditMode] = useState(false)
 
   // Atlas Overview state
   const [adminStats, setAdminStats] = useState<AdminAggregatedStats | null>(null)
@@ -4158,18 +4129,24 @@ function AdminPanel({
   const [cacheStats, setCacheStats] = useState<{ entryCount: number; totalSizeBytes: number; lastRefreshDate: string | null; currentDataDate: string } | null>(null)
   const [cacheRefreshing, setCacheRefreshing] = useState(false)
   const [prewarmRunning, setPrewarmRunning] = useState(false)
-  const [prewarmProgress, setPrewarmProgress] = useState<{ processed: number; cached: number; sanityCached?: number; errors: number; total: number } | null>(null)
 
   // Ticker Registry state
   const [registryStats, setRegistryStats] = useState<{ total: number; active: number; syncedToday: number; pending: number; lastSync: string | null } | null>(null)
   const [registrySyncing, setRegistrySyncing] = useState(false)
-  const [registryDownloading, setRegistryDownloading] = useState(false)
   const [registryMsg, setRegistryMsg] = useState<string | null>(null)
 
   // Tiingo API Key state
   const [tiingoKeyStatus, setTiingoKeyStatus] = useState<{ hasKey: boolean; loading: boolean }>({ hasKey: false, loading: true })
   const [tiingoKeyInput, setTiingoKeyInput] = useState('')
   const [tiingoKeySaving, setTiingoKeySaving] = useState(false)
+
+  // Sync Schedule state (for simplified admin panel)
+  const [syncSchedule, setSyncSchedule] = useState<{
+    config: { enabled: boolean; updateTime: string; timezone: string }
+    lastSync: { date: string; status: string; syncedCount?: number; tickerCount?: number; timestamp?: string } | null
+    status: { isRunning: boolean; schedulerActive: boolean; currentJob?: { pid: number; syncedCount: number; tickerCount: number; startedAt: number } }
+  } | null>(null)
+  const [syncKilling, setSyncKilling] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -4186,21 +4163,6 @@ function AdminPanel({
         setStatus(sPayload as AdminStatus)
         setTickers(tickersList)
         onTickersUpdated?.(tickersList)
-        if (!tickersDirty) {
-          try {
-            const rawRes = await fetch('/api/tickers/raw')
-            const rawPayload = (await rawRes.json()) as { text: string } | { error: string }
-            if (rawRes.ok && 'text' in rawPayload) {
-              setTickersText(String(rawPayload.text ?? ''))
-            } else {
-              setTickersText(tickersList.join('\n'))
-            }
-            setTickersDirty(false)
-          } catch {
-            setTickersText(tickersList.join('\n'))
-            setTickersDirty(false)
-          }
-        }
       } catch (e) {
         if (cancelled) return
         setError(String((e as Error)?.message || e))
@@ -4210,55 +4172,8 @@ function AdminPanel({
     return () => {
       cancelled = true
     }
-  }, [tickersDirty])
+  }, [])
 
-  const startDownload = useCallback(async () => {
-    setDownloadMsg(null)
-    try {
-      const res = await fetch('/api/download', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(downloadConfig),
-      })
-      const payload = (await res.json()) as { jobId: string } | { error: string }
-      if (!res.ok) throw new Error('error' in payload ? payload.error : `Download failed (${res.status})`)
-      if (!('jobId' in payload)) throw new Error(payload.error || 'Download failed.')
-      setDownloadJob({ id: payload.jobId, status: 'running', startedAt: Date.now(), finishedAt: null, error: null })
-      setDownloadMsg('Starting download…')
-    } catch (e) {
-      setDownloadMsg(String((e as Error)?.message || e))
-    }
-  }, [downloadConfig])
-
-  const saveTickers = useCallback(async () => {
-    setTickersSaveMsg(null)
-    setTickersSaving(true)
-    try {
-      const res = await fetch('/api/tickers', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: tickersText }),
-      })
-      const payload = (await res.json()) as { tickers: string[] } | { error: string }
-      if (!res.ok) throw new Error('error' in payload ? payload.error : `Save failed (${res.status})`)
-      if (!('tickers' in payload)) throw new Error('Save failed.')
-      setTickers(payload.tickers || [])
-      onTickersUpdated?.(payload.tickers || [])
-      setTickersDirty(false)
-      setTickersSaveMsg('Saved.')
-      try {
-        const s = await fetch('/api/status')
-        const sPayload = (await s.json()) as AdminStatus
-        if (s.ok) setStatus(sPayload)
-      } catch {
-        // ignore refresh failures
-      }
-    } catch (e) {
-      setTickersSaveMsg(String((e as Error)?.message || e))
-    } finally {
-      setTickersSaving(false)
-    }
-  }, [tickersText, onTickersUpdated])
 
   useEffect(() => {
     if (adminTab !== 'Ticker Data') return
@@ -4307,10 +4222,42 @@ function AdminPanel({
       } catch {
         setTiingoKeyStatus({ hasKey: false, loading: false })
       }
+
+      // Fetch sync schedule status
+      try {
+        const schedRes = await fetch('/api/admin/sync-schedule')
+        if (schedRes.ok && !cancelled) {
+          setSyncSchedule(await schedRes.json())
+        }
+      } catch {
+        // Ignore schedule errors
+      }
     }
     void run()
+
+    // Poll sync status every 5 seconds when running
+    const pollInterval = setInterval(async () => {
+      try {
+        const schedRes = await fetch('/api/admin/sync-schedule')
+        if (schedRes.ok) {
+          const data = await schedRes.json()
+          setSyncSchedule(data)
+          // Also refresh registry stats if job is running
+          if (data.status?.isRunning) {
+            const regRes = await fetch('/api/tickers/registry/stats')
+            if (regRes.ok) {
+              setRegistryStats(await regRes.json())
+            }
+          }
+        }
+      } catch {
+        // Ignore errors
+      }
+    }, 5000)
+
     return () => {
       cancelled = true
+      clearInterval(pollInterval)
     }
   }, [adminTab])
 
@@ -4539,66 +4486,6 @@ function AdminPanel({
     saveEligibilityRequirements(newReqs)
   }, [eligibilityRequirements, saveEligibilityRequirements])
 
-  useEffect(() => {
-    if (!downloadJob?.id) return
-    if (downloadJob.status !== 'running') return
-    let cancelled = false
-    const timer = setInterval(async () => {
-      try {
-        const res = await fetch(`/api/download/${encodeURIComponent(downloadJob.id)}`)
-        const payload = (await res.json()) as AdminDownloadJob | { error: string }
-        if (!res.ok) {
-          const errMsg = (payload as { error?: unknown })?.error
-          throw new Error(typeof errMsg === 'string' ? errMsg : `Job poll failed (${res.status})`)
-        }
-        if (cancelled) return
-        const job = payload as AdminDownloadJob
-        setDownloadJob(job)
-        const last = (job.events || []).slice(-1)[0] as Record<string, unknown> | undefined
-        if (job.status === 'running') {
-          const type = String(last?.type || 'running')
-          if (type === 'ticker_saved') {
-            setDownloadMsg(`Downloading… saved ${String(last?.saved ?? '')}`)
-          } else if (type === 'batch_start') {
-            setDownloadMsg(`Downloading… batch ${String(last?.batch_index ?? '')}/${String(last?.batches_total ?? '')}`)
-          } else {
-            setDownloadMsg('Downloading…')
-          }
-        } else if (job.status === 'done') {
-          setDownloadMsg('Download complete.')
-          // refresh tickers list + status (and Data view options)
-          try {
-            const [s, t] = await Promise.all([fetch('/api/status'), fetch('/api/tickers')])
-            const sPayload = (await s.json()) as AdminStatus
-            const tPayload = (await t.json()) as { tickers: string[] }
-            if (s.ok) setStatus(sPayload)
-            if (t.ok) {
-              setTickers(tPayload.tickers || [])
-              onTickersUpdated?.(tPayload.tickers || [])
-            }
-            try {
-              const p = await fetch('/api/parquet-tickers')
-              const pPayload = (await p.json()) as { tickers: string[] }
-              if (p.ok) setParquetTickers(pPayload.tickers || [])
-            } catch {
-              // ignore parquet refresh failures
-            }
-          } catch {
-            // ignore refresh failures
-          }
-        } else if (job.status === 'error') {
-          setDownloadMsg(job.error ?? 'Download failed.')
-        }
-      } catch (e) {
-        if (cancelled) return
-        setDownloadMsg(String((e as Error)?.message || e))
-      }
-    }, 1000)
-    return () => {
-      cancelled = true
-      clearInterval(timer)
-    }
-  }, [downloadJob?.id, downloadJob?.status, onTickersUpdated])
 
   return (
     <>
@@ -5094,354 +4981,144 @@ function AdminPanel({
       )}
 
       {adminTab === 'Ticker Data' && (
-        <>
-        {/* Section 0: Tiingo API Key */}
-        <div className="mb-6">
-          <div className="font-black text-lg mb-4">Tiingo API Key</div>
-          <div className="p-3 bg-muted rounded-lg text-sm space-y-3">
-            <div className="flex items-center gap-2">
-              <strong>Status:</strong>
-              {tiingoKeyStatus.loading ? (
-                <span className="text-muted">Checking...</span>
-              ) : tiingoKeyStatus.hasKey ? (
-                <span className="text-success">✓ Saved (encrypted)</span>
-              ) : (
-                <span className="text-destructive">Not configured</span>
-              )}
+        <div className="space-y-6">
+          {/* ========== STATUS OVERVIEW ========== */}
+          <div className="grid grid-cols-3 gap-4">
+            {/* Files Card */}
+            <div className="p-4 rounded-lg bg-muted">
+              <div className="text-xs text-muted-foreground uppercase tracking-wide mb-1">Parquet Files</div>
+              <div className="text-3xl font-black">{parquetTickers.length.toLocaleString()}</div>
+              <div className="text-xs text-muted-foreground mt-1">
+                {status?.loadedTickersCount ?? 0} loaded in memory
+              </div>
             </div>
-            {!tiingoKeyStatus.hasKey && (
-              <div className="flex gap-2 items-end">
-                <div className="flex-1">
-                  <label className="text-xs font-semibold text-muted mb-1 block">Enter API Key</label>
-                  <input
-                    type="password"
-                    value={tiingoKeyInput}
-                    onChange={(e) => setTiingoKeyInput(e.target.value)}
-                    className="w-full px-3 py-2 rounded-lg border border-border bg-background text-sm"
-                    placeholder="Your Tiingo API key"
-                  />
+
+            {/* Last Updated Card */}
+            <div className="p-4 rounded-lg bg-muted">
+              <div className="text-xs text-muted-foreground uppercase tracking-wide mb-1">Last Sync</div>
+              <div className="text-lg font-bold">
+                {syncSchedule?.lastSync?.date ?? registryStats?.lastSync ?? 'Never'}
+              </div>
+              <div className="text-xs text-muted-foreground mt-1">
+                {syncSchedule?.lastSync?.status === 'success' && syncSchedule?.lastSync?.syncedCount != null
+                  ? `${syncSchedule.lastSync.syncedCount.toLocaleString()} tickers updated`
+                  : syncSchedule?.lastSync?.status === 'error'
+                  ? 'Last sync failed'
+                  : 'No recent sync'}
+              </div>
+            </div>
+
+            {/* Pending Card */}
+            <div className="p-4 rounded-lg bg-muted">
+              <div className="text-xs text-muted-foreground uppercase tracking-wide mb-1">Pending Download</div>
+              <div className={`text-3xl font-black ${(registryStats?.pending ?? 0) > 0 ? 'text-warning' : 'text-success'}`}>
+                {registryStats?.pending?.toLocaleString() ?? '...'}
+              </div>
+              <div className="text-xs text-muted-foreground mt-1">
+                of {registryStats?.active?.toLocaleString() ?? '...'} active tickers
+              </div>
+            </div>
+          </div>
+
+          {/* ========== CURRENT JOB STATUS ========== */}
+          {syncSchedule?.status?.isRunning && syncSchedule?.status?.currentJob && (
+            <div className="p-4 rounded-lg bg-primary/10 border border-primary">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-primary animate-pulse"></div>
+                  <span className="font-bold">Download In Progress</span>
                 </div>
                 <Button
-                  variant="default"
+                  variant="destructive"
                   size="sm"
-                  disabled={!tiingoKeyInput.trim() || tiingoKeySaving}
+                  disabled={syncKilling}
                   onClick={async () => {
-                    setTiingoKeySaving(true)
+                    if (!confirm('Are you sure you want to stop the current download?')) return
+                    setSyncKilling(true)
                     try {
-                      const res = await fetch('/api/admin/tiingo-key', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ key: tiingoKeyInput.trim() })
-                      })
+                      const res = await fetch('/api/admin/sync-schedule/kill', { method: 'POST' })
+                      const data = await res.json()
                       if (res.ok) {
-                        setTiingoKeyStatus({ hasKey: true, loading: false })
-                        setTiingoKeyInput('')
+                        setRegistryMsg(`Job stopped: ${data.message}`)
+                        // Refresh status
+                        const schedRes = await fetch('/api/admin/sync-schedule')
+                        if (schedRes.ok) setSyncSchedule(await schedRes.json())
+                      } else {
+                        setRegistryMsg(`Error: ${data.error}`)
                       }
-                    } catch {
-                      // Ignore errors
+                    } catch (e) {
+                      setRegistryMsg(`Error: ${e}`)
                     } finally {
-                      setTiingoKeySaving(false)
+                      setSyncKilling(false)
                     }
                   }}
                 >
-                  {tiingoKeySaving ? 'Saving...' : 'Save Key'}
+                  {syncKilling ? 'Stopping...' : 'Stop Download'}
                 </Button>
               </div>
-            )}
-            {tiingoKeyStatus.hasKey && (
-              <div className="flex gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={tiingoKeySaving}
-                  onClick={async () => {
-                    if (!confirm('Are you sure you want to remove the saved Tiingo API key?')) return
-                    setTiingoKeySaving(true)
-                    try {
-                      const res = await fetch('/api/admin/tiingo-key', { method: 'DELETE' })
-                      if (res.ok) {
-                        setTiingoKeyStatus({ hasKey: false, loading: false })
-                      }
-                    } catch {
-                      // Ignore errors
-                    } finally {
-                      setTiingoKeySaving(false)
-                    }
-                  }}
-                >
-                  {tiingoKeySaving ? 'Removing...' : 'Remove Key'}
-                </Button>
-              </div>
-            )}
-            <div className="text-xs text-muted">
-              Your Tiingo API key is stored encrypted and used automatically for all data downloads.
-              Get your API key at <a href="https://www.tiingo.com" target="_blank" rel="noopener noreferrer" className="text-primary underline">tiingo.com</a>
-            </div>
-          </div>
-        </div>
-
-        {/* Divider */}
-        <div className="border-t border-border mb-6"></div>
-
-        {/* Section 1: Ticker Management */}
-        <div className="mb-6">
-          <div className="flex items-center justify-between mb-4">
-            <div className="font-black text-lg">Ticker Management</div>
-            <Button
-              variant="default"
-              size="sm"
-              onClick={() => {
-                if (!confirm(`Clear saved data for user ${userId}? This will remove saved systems, watchlists, and UI state.`)) return
-                onClearData()
-              }}
-              title="Clear all locally saved data for this user"
-            >
-              Clear Data
-            </Button>
-          </div>
-
-          {/* Status info */}
-          <div className="mb-4 p-3 bg-muted rounded-lg text-sm space-y-1">
-            <div>
-              <strong>Ticker data root:</strong> {status?.root || '...'}
-            </div>
-            <div>
-              <strong>tickers.txt:</strong> {status?.tickersPath || '...'} {status ? (status.tickersExists ? '✓' : '✗') : ''}
-            </div>
-            <div>
-              <strong>Parquet dir:</strong> {status?.parquetDir || '...'} {status ? (status.parquetDirExists ? '✓' : '✗') : ''}
-            </div>
-          </div>
-
-          {error && <div className="mb-4 p-3 bg-destructive/10 border border-destructive rounded-lg text-sm text-destructive">{error}</div>}
-
-          {/* Ticker list display */}
-          <div className="mb-4">
-            <div className="text-sm font-semibold mb-2">
-              {tickers.length} tickers loaded from tickers.txt
-            </div>
-            <div className="max-h-[200px] overflow-auto border rounded-lg p-2 bg-background text-xs font-mono">
-              {tickers.join(', ') || 'No tickers found.'}
-            </div>
-          </div>
-
-          {/* Edit mode toggle */}
-          <Button onClick={() => setEditMode(!editMode)} variant={editMode ? 'outline' : 'default'}>
-            {editMode ? 'Cancel Edit' : 'Edit Tickers'}
-          </Button>
-
-          {editMode && (
-            <div className="mt-4">
-              <div className="text-sm font-semibold mb-2">Edit tickers.txt (one per line)</div>
-              <textarea
-                value={tickersText}
-                onChange={(e) => {
-                  setTickersText(e.target.value)
-                  setTickersDirty(true)
-                  setTickersSaveMsg(null)
-                }}
-                rows={15}
-                spellCheck={false}
-                className="w-full font-mono text-sm p-3 rounded-lg border border-border bg-background"
-                placeholder="Enter tickers (one per line)"
-              />
-              <div className="mt-2 flex gap-2 items-center">
-                <Button
-                  onClick={() => void saveTickers()}
-                  disabled={tickersSaving || !tickersDirty}
-                >
-                  {tickersSaving ? 'Saving...' : 'Save Tickers'}
-                </Button>
-                {tickersSaveMsg && (
-                  <div className={`text-sm ${tickersSaveMsg.includes('Saved') ? 'text-success' : 'text-destructive'}`}>
-                    {tickersSaveMsg}
+              <div className="grid grid-cols-3 gap-4 text-sm">
+                <div>
+                  <div className="text-muted-foreground text-xs">Progress</div>
+                  <div className="font-bold">
+                    {syncSchedule.status.currentJob.syncedCount.toLocaleString()} / {syncSchedule.status.currentJob.tickerCount.toLocaleString()}
                   </div>
-                )}
+                </div>
+                <div>
+                  <div className="text-muted-foreground text-xs">Elapsed</div>
+                  <div className="font-bold">
+                    {Math.round((Date.now() - syncSchedule.status.currentJob.startedAt) / 1000 / 60)} min
+                  </div>
+                </div>
+                <div>
+                  <div className="text-muted-foreground text-xs">Rate</div>
+                  <div className="font-bold">
+                    {(() => {
+                      const elapsed = (Date.now() - syncSchedule.status.currentJob.startedAt) / 1000
+                      const rate = elapsed > 0 ? syncSchedule.status.currentJob.syncedCount / elapsed : 0
+                      return `${rate.toFixed(1)}/sec`
+                    })()}
+                  </div>
+                </div>
+              </div>
+              {/* Progress bar */}
+              <div className="mt-3 h-2 bg-muted rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-primary transition-all duration-500"
+                  style={{ width: `${Math.min(100, (syncSchedule.status.currentJob.syncedCount / syncSchedule.status.currentJob.tickerCount) * 100)}%` }}
+                />
               </div>
             </div>
           )}
-        </div>
 
-        {/* Divider */}
-        <div className="border-t border-border mb-6"></div>
-
-        {/* Section 2: Data Status */}
-        <div className="mb-6">
-          <div className="font-black text-lg mb-4">Data Status</div>
-
-          {/* Pre-loaded data info */}
-          <div className="mb-4 p-3 bg-success/10 border border-success rounded-lg">
-            <div className="text-sm font-semibold mb-2 text-success">Pre-loaded Data</div>
-            <div className="text-xs space-y-1">
-              <div>✓ {status?.loadedTickersCount ?? 0} parquet files loaded in memory</div>
-              <div className="text-muted">
-                Data is pre-loaded on server startup for fast backtesting (temporary for development)
-              </div>
-            </div>
-          </div>
-
-          {/* Available parquet files */}
-          {parquetTickers.length > 0 && (
-            <div className="mb-4">
-              <div className="text-sm font-semibold mb-2">
-                Available Parquet Files ({parquetTickers.length})
-              </div>
-              <div className="max-h-[200px] overflow-auto border rounded-lg p-2 bg-background text-xs font-mono">
-                {parquetTickers.join(', ')}
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Divider */}
-        <div className="border-t border-border mb-6"></div>
-
-        {/* Section 3: Backtest Cache Management */}
-        <div className="mb-6">
-          <div className="font-black text-lg mb-4">Backtest Cache Management</div>
-
-          {/* Cache stats */}
-          <div className="mb-4 p-3 bg-muted rounded-lg text-sm space-y-1">
-            <div>
-              <strong>Cached entries:</strong> {cacheStats?.entryCount ?? '...'} systems
-            </div>
-            <div>
-              <strong>Cache size:</strong> {cacheStats?.totalSizeBytes ? `${(cacheStats.totalSizeBytes / 1024).toFixed(1)} KB` : '...'}
-            </div>
-            <div>
-              <strong>Last refresh:</strong> {cacheStats?.lastRefreshDate ?? 'Never'}
-            </div>
-            <div>
-              <strong>Current data date:</strong> {cacheStats?.currentDataDate ?? '...'}
-            </div>
-          </div>
-
-          {/* Cache actions */}
-          <div className="flex gap-2 flex-wrap">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={async () => {
-                try {
-                  const res = await fetch(`${API_BASE}/admin/cache/stats`)
-                  if (res.ok) {
-                    const stats = await res.json()
-                    setCacheStats(stats)
-                  }
-                } catch (e) {
-                  console.error('Failed to fetch cache stats:', e)
-                }
-              }}
-            >
-              Refresh Stats
-            </Button>
-            <Button
-              variant="destructive"
-              size="sm"
-              disabled={cacheRefreshing}
-              onClick={async () => {
-                if (!confirm('This will clear all cached backtest and sanity report results. They will be recalculated on next access. Continue?')) return
-                setCacheRefreshing(true)
-                try {
-                  const res = await fetch(`${API_BASE}/admin/cache/invalidate`, { method: 'POST' })
-                  if (res.ok) {
-                    const result = await res.json()
-                    alert(`Cache cleared! ${result.invalidatedCount} entries removed.`)
-                    // Refresh stats
-                    const statsRes = await fetch(`${API_BASE}/admin/cache/stats`)
-                    if (statsRes.ok) {
-                      setCacheStats(await statsRes.json())
-                    }
-                  } else {
-                    alert('Failed to clear cache')
-                  }
-                } catch (e) {
-                  alert(`Error: ${e}`)
-                } finally {
-                  setCacheRefreshing(false)
-                }
-              }}
-            >
-              {cacheRefreshing ? 'Clearing...' : 'Clear Data'}
-            </Button>
+          {/* ========== ACTIONS ========== */}
+          <div className="flex gap-3 flex-wrap">
             <Button
               variant="default"
-              size="sm"
-              disabled={prewarmRunning}
+              disabled={syncSchedule?.status?.isRunning || !registryStats?.pending}
               onClick={async () => {
-                if (!confirm('This will run backtests AND Monte Carlo/K-Fold analysis for ALL systems in the database. This may take several minutes. Continue?')) return
-                setPrewarmRunning(true)
-                setPrewarmProgress(null)
+                if (!confirm(`Download data for ${registryStats?.pending?.toLocaleString() ?? 0} pending tickers?`)) return
+                setRegistryMsg('Starting download...')
                 try {
-                  const res = await fetch(`${API_BASE}/admin/cache/prewarm`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ includeSanity: true })
-                  })
+                  const res = await fetch('/api/admin/sync-schedule/run-now', { method: 'POST' })
+                  const data = await res.json()
                   if (res.ok) {
-                    const result = await res.json()
-                    setPrewarmProgress(result)
-                    alert(`Run Data complete!\n\nProcessed: ${result.processed} systems\nBacktests cached: ${result.cached}\nSanity reports cached: ${result.sanityCached || 0}\nErrors: ${result.errors}`)
-                    // Refresh stats
-                    const statsRes = await fetch(`${API_BASE}/admin/cache/stats`)
-                    if (statsRes.ok) {
-                      setCacheStats(await statsRes.json())
-                    }
-                    // Clear frontend cache so Nexus/Analyze tabs refetch fresh data
-                    onPrewarmComplete?.()
+                    setRegistryMsg(data.message || 'Download started')
+                    // Refresh status
+                    const schedRes = await fetch('/api/admin/sync-schedule')
+                    if (schedRes.ok) setSyncSchedule(await schedRes.json())
                   } else {
-                    const err = await res.json()
-                    alert(`Failed to run data: ${err.error || 'Unknown error'}`)
+                    setRegistryMsg(`Error: ${data.error}`)
                   }
                 } catch (e) {
-                  alert(`Error: ${e}`)
-                } finally {
-                  setPrewarmRunning(false)
+                  setRegistryMsg(`Error: ${e}`)
                 }
               }}
             >
-              {prewarmRunning ? 'Running...' : 'Run Data'}
+              {syncSchedule?.status?.isRunning ? 'Download Running...' : `Download All (${registryStats?.pending?.toLocaleString() ?? 0})`}
             </Button>
-          </div>
 
-          {prewarmProgress && (
-            <div className="mt-3 p-2 bg-muted rounded text-sm">
-              <strong>Last run results:</strong> {prewarmProgress.processed} processed, {prewarmProgress.cached} backtests cached, {prewarmProgress.sanityCached || 0} sanity reports cached, {prewarmProgress.errors} errors
-            </div>
-          )}
-
-          <div className="mt-3 text-xs text-muted">
-            Cache is automatically cleared on first login each day. Use "Clear Data" to manually clear all cached results. Use "Run Data" to pre-compute backtests and Monte Carlo/K-Fold analysis for all systems.</div>
-        </div>
-
-        {/* Divider */}
-        <div className="border-t border-border mb-6"></div>
-
-        {/* Section: Ticker Registry (Full US Stock Database) */}
-        <div className="mb-6">
-          <div className="font-black text-lg mb-4">Ticker Registry (Full US Market)</div>
-
-          {/* Registry stats */}
-          <div className="mb-4 p-3 bg-muted rounded-lg text-sm space-y-1">
-            <div>
-              <strong>Total tickers:</strong> {registryStats?.total?.toLocaleString() ?? '...'} (active: {registryStats?.active?.toLocaleString() ?? '...'})
-            </div>
-            <div>
-              <strong>Synced today:</strong> {registryStats?.syncedToday?.toLocaleString() ?? '0'} / {registryStats?.active?.toLocaleString() ?? '0'}
-            </div>
-            <div>
-              <strong>Pending download:</strong> {registryStats?.pending?.toLocaleString() ?? '...'}
-            </div>
-            <div>
-              <strong>Last sync:</strong> {registryStats?.lastSync ?? 'Never'}
-            </div>
-          </div>
-
-          {/* Registry actions */}
-          <div className="flex gap-2 flex-wrap mb-3">
             <Button
               variant="outline"
-              size="sm"
               disabled={registrySyncing}
               onClick={async () => {
                 setRegistrySyncing(true)
@@ -5450,14 +5127,11 @@ function AdminPanel({
                   const res = await fetch('/api/tickers/registry/sync', { method: 'POST' })
                   const data = await res.json()
                   if (res.ok) {
-                    setRegistryMsg(`Synced ${data.imported?.toLocaleString() ?? 0} tickers from Tiingo master list`)
-                    // Refresh stats
+                    setRegistryMsg(`Registry updated: ${data.imported?.toLocaleString() ?? 0} tickers`)
                     const statsRes = await fetch('/api/tickers/registry/stats')
-                    if (statsRes.ok) {
-                      setRegistryStats(await statsRes.json())
-                    }
+                    if (statsRes.ok) setRegistryStats(await statsRes.json())
                   } else {
-                    setRegistryMsg(`Error: ${data.error || 'Sync failed'}`)
+                    setRegistryMsg(`Error: ${data.error}`)
                   }
                 } catch (e) {
                   setRegistryMsg(`Error: ${e}`)
@@ -5466,236 +5140,238 @@ function AdminPanel({
                 }
               }}
             >
-              {registrySyncing ? 'Syncing...' : 'Sync Ticker List'}
+              {registrySyncing ? 'Syncing...' : 'Refresh Ticker List'}
             </Button>
-            <Button
-              variant="default"
-              size="sm"
-              disabled={registryDownloading || !registryStats?.pending}
-              onClick={async () => {
-                if (!confirm(`This will download OHLCV data for ${registryStats?.pending?.toLocaleString() ?? 0} pending tickers. This may take a while. Continue?`)) return
-                setRegistryDownloading(true)
-                setRegistryMsg('Starting download...')
-                try {
-                  const res = await fetch('/api/tickers/registry/download', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({})
-                  })
-                  const data = await res.json()
-                  if (res.ok) {
-                    setRegistryMsg(`Download complete! Success: ${data.success ?? 0}, Failed: ${data.failed ?? 0}`)
-                    // Refresh stats
-                    const statsRes = await fetch('/api/tickers/registry/stats')
-                    if (statsRes.ok) {
-                      setRegistryStats(await statsRes.json())
-                    }
-                  } else {
-                    setRegistryMsg(`Error: ${data.error || 'Download failed'}`)
-                  }
-                } catch (e) {
-                  setRegistryMsg(`Error: ${e}`)
-                } finally {
-                  setRegistryDownloading(false)
-                }
-              }}
-            >
-              {registryDownloading ? 'Downloading...' : `Download Pending (${registryStats?.pending?.toLocaleString() ?? 0})`}
-            </Button>
+
             <Button
               variant="ghost"
-              size="sm"
               onClick={async () => {
-                try {
-                  const res = await fetch('/api/tickers/registry/stats')
-                  if (res.ok) {
-                    setRegistryStats(await res.json())
-                  }
-                } catch {
-                  // Ignore
+                const [statsRes, schedRes, parquetRes] = await Promise.all([
+                  fetch('/api/tickers/registry/stats'),
+                  fetch('/api/admin/sync-schedule'),
+                  fetch('/api/parquet-tickers')
+                ])
+                if (statsRes.ok) setRegistryStats(await statsRes.json())
+                if (schedRes.ok) setSyncSchedule(await schedRes.json())
+                if (parquetRes.ok) {
+                  const data = await parquetRes.json()
+                  setParquetTickers(data.tickers || [])
                 }
+                setRegistryMsg('Stats refreshed')
               }}
             >
               Refresh Stats
             </Button>
           </div>
 
+          {/* ========== SCHEDULE SETTINGS ========== */}
+          <div className="p-4 rounded-lg bg-muted/50 border border-border">
+            <div className="flex items-center justify-between mb-3">
+              <div className="font-bold text-sm">Auto-Download Schedule</div>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={syncSchedule?.config?.enabled ?? true}
+                  onChange={async (e) => {
+                    try {
+                      const res = await fetch('/api/admin/sync-schedule', {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ enabled: e.target.checked })
+                      })
+                      if (res.ok) {
+                        const schedRes = await fetch('/api/admin/sync-schedule')
+                        if (schedRes.ok) setSyncSchedule(await schedRes.json())
+                        setRegistryMsg(e.target.checked ? 'Schedule enabled' : 'Schedule disabled')
+                      }
+                    } catch {
+                      setRegistryMsg('Error updating schedule')
+                    }
+                  }}
+                  className="w-4 h-4"
+                />
+                <span className="text-sm">{syncSchedule?.config?.enabled ? 'Enabled' : 'Disabled'}</span>
+              </label>
+            </div>
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                <label className="text-sm text-muted-foreground">Daily at:</label>
+                <input
+                  type="time"
+                  value={syncSchedule?.config?.updateTime ?? '18:00'}
+                  onChange={async (e) => {
+                    const newTime = e.target.value
+                    try {
+                      const res = await fetch('/api/admin/sync-schedule', {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ updateTime: newTime })
+                      })
+                      if (res.ok) {
+                        const schedRes = await fetch('/api/admin/sync-schedule')
+                        if (schedRes.ok) setSyncSchedule(await schedRes.json())
+                        setRegistryMsg(`Schedule updated to ${newTime}`)
+                      }
+                    } catch {
+                      setRegistryMsg('Error updating schedule time')
+                    }
+                  }}
+                  className="px-2 py-1 rounded border border-border bg-background text-sm"
+                />
+              </div>
+              <span className="text-xs text-muted-foreground">
+                {syncSchedule?.config?.timezone ?? 'America/New_York'} (weekdays only)
+              </span>
+            </div>
+          </div>
+
+          {/* Status message */}
           {registryMsg && (
             <div className={`text-sm ${registryMsg.includes('Error') ? 'text-destructive' : 'text-success'}`}>
               {registryMsg}
             </div>
           )}
 
-          <div className="mt-3 text-xs text-muted">
-            The ticker registry contains all US stocks and ETFs from Tiingo (~27,500 tickers). Use "Sync Ticker List" to update the registry from Tiingo's master list. Use "Download Pending" to download OHLCV data for all registered tickers that haven't been synced today.
-          </div>
-        </div>
-
-        {/* Divider */}
-        <div className="border-t border-border mb-6"></div>
-
-        {/* Section 4: Data Download */}
-        <div className="mb-6">
-          <div className="font-black text-lg mb-4">Download Ticker Data (Custom List)</div>
-
-          {/* Download configuration */}
-          <div className="mb-4">
-            <div className="text-sm font-semibold mb-3">Download Settings</div>
-
-            {/* API Key Status */}
-            <div className="mb-4 p-2 bg-muted/50 rounded-lg">
-              <div className="text-xs">
-                <strong>Tiingo API Key:</strong>{' '}
+          {/* ========== COLLAPSIBLE SECTIONS ========== */}
+          <details className="group">
+            <summary className="cursor-pointer font-bold text-sm py-2 hover:text-primary">
+              API Key Settings
+            </summary>
+            <div className="mt-2 p-3 bg-muted rounded-lg text-sm space-y-3">
+              <div className="flex items-center gap-2">
+                <strong>Tiingo API Key:</strong>
                 {tiingoKeyStatus.loading ? (
-                  <span className="text-muted">Checking...</span>
+                  <span className="text-muted-foreground">Checking...</span>
                 ) : tiingoKeyStatus.hasKey ? (
-                  <span className="text-success">✓ Saved (will be used automatically)</span>
+                  <span className="text-success">Configured</span>
                 ) : (
-                  <span className="text-destructive">Not configured - save your key above first</span>
+                  <span className="text-destructive">Not configured</span>
                 )}
               </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="text-xs font-semibold text-muted mb-1 block">Batch Size</label>
-                <Input
-                  type="number"
-                  value={downloadConfig.batchSize}
-                  onChange={(e) => setDownloadConfig((prev) => ({ ...prev, batchSize: Number(e.target.value) }))}
-                  min="1"
-                  max="500"
-                />
-                <div className="text-xs text-muted mt-1">
-                  Recommended: 50-100 (lower = more reliable)
-                </div>
-              </div>
-
-              <div>
-                <label className="text-xs font-semibold text-muted mb-1 block">Sleep (seconds)</label>
-                <Input
-                  type="number"
-                  value={downloadConfig.sleepSeconds}
-                  onChange={(e) => setDownloadConfig((prev) => ({ ...prev, sleepSeconds: Number(e.target.value) }))}
-                  min="0"
-                  max="60"
-                  step="0.5"
-                />
-                <div className="text-xs text-muted mt-1">
-                  Recommended: 2-3s (prevents rate limiting)
-                </div>
-              </div>
-
-              <div>
-                <label className="text-xs font-semibold text-muted mb-1 block">Max Retries</label>
-                <Input
-                  type="number"
-                  value={downloadConfig.maxRetries}
-                  onChange={(e) => setDownloadConfig((prev) => ({ ...prev, maxRetries: Number(e.target.value) }))}
-                  min="0"
-                  max="10"
-                />
-              </div>
-
-              <div>
-                <label className="text-xs font-semibold text-muted mb-1 block">Limit (0 = all)</label>
-                <Input
-                  type="number"
-                  value={downloadConfig.limit}
-                  onChange={(e) => setDownloadConfig((prev) => ({ ...prev, limit: Number(e.target.value) }))}
-                  min="0"
-                  max="100000"
-                />
-                <div className="text-xs text-muted mt-1">
-                  For testing, try limiting to 10-20 tickers
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-3">
-              <label className="flex gap-2 items-center">
-                <input
-                  type="checkbox"
-                  checked={downloadConfig.threads}
-                  onChange={(e) => setDownloadConfig((prev) => ({ ...prev, threads: e.target.checked }))}
-                />
-                <span className="text-sm font-semibold">Use threads inside batch</span>
-              </label>
-            </div>
-          </div>
-
-          {/* Download button */}
-          <Button
-            onClick={startDownload}
-            disabled={!status?.tickersExists || downloadJob?.status === 'running'}
-          >
-            {downloadJob?.status === 'running' ? 'Downloading...' : 'Start Download'}
-          </Button>
-
-          {downloadMsg && (
-            <div className="mt-2 text-sm text-muted">
-              {downloadMsg}
-            </div>
-          )}
-
-          {/* Download progress */}
-          {downloadJob && (
-            <div className="mt-4 p-3 bg-muted rounded-lg">
-              <div className="text-sm font-semibold mb-2">
-                Download Status: <span className={
-                  downloadJob.status === 'done' ? 'text-success' :
-                  downloadJob.status === 'error' ? 'text-destructive' :
-                  'text-warning'
-                }>{downloadJob.status}</span>
-              </div>
-
-              {/* Progress info from events */}
-              {downloadJob.events && downloadJob.events.length > 0 && (
-                <div className="text-xs mb-2">
-                  {(() => {
-                    const lastEvent = downloadJob.events[downloadJob.events.length - 1] as Record<string, unknown>
-                    return (
-                      <div>
-                        Success: {String(lastEvent.success || 0)} | Failed: {String(lastEvent.failed || 0)}
-                      </div>
-                    )
-                  })()}
+              {!tiingoKeyStatus.hasKey && (
+                <div className="flex gap-2">
+                  <input
+                    type="password"
+                    value={tiingoKeyInput}
+                    onChange={(e) => setTiingoKeyInput(e.target.value)}
+                    className="flex-1 px-3 py-2 rounded border border-border bg-background text-sm"
+                    placeholder="Enter Tiingo API key"
+                  />
+                  <Button
+                    size="sm"
+                    disabled={!tiingoKeyInput.trim() || tiingoKeySaving}
+                    onClick={async () => {
+                      setTiingoKeySaving(true)
+                      try {
+                        const res = await fetch('/api/admin/tiingo-key', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ key: tiingoKeyInput.trim() })
+                        })
+                        if (res.ok) {
+                          setTiingoKeyStatus({ hasKey: true, loading: false })
+                          setTiingoKeyInput('')
+                        }
+                      } finally {
+                        setTiingoKeySaving(false)
+                      }
+                    }}
+                  >
+                    Save
+                  </Button>
                 </div>
               )}
-
-              {/* Live logs */}
-              {downloadJob.logs && downloadJob.logs.length > 0 && (
-                <div className="mt-2">
-                  <div className="text-xs font-semibold mb-1">Live Log</div>
-                  <div className="max-h-[300px] overflow-auto border rounded p-2 bg-background text-xs font-mono">
-                    {downloadJob.logs.map((log, i) => (
-                      <div key={i}>{log}</div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Error display */}
-              {downloadJob.error && (
-                <div className="mt-2 p-2 bg-destructive/10 border border-destructive rounded text-sm text-destructive">
-                  Error: {downloadJob.error}
-                </div>
+              {tiingoKeyStatus.hasKey && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={async () => {
+                    if (!confirm('Remove API key?')) return
+                    const res = await fetch('/api/admin/tiingo-key', { method: 'DELETE' })
+                    if (res.ok) setTiingoKeyStatus({ hasKey: false, loading: false })
+                  }}
+                >
+                  Remove Key
+                </Button>
               )}
             </div>
-          )}
+          </details>
+
+          <details className="group">
+            <summary className="cursor-pointer font-bold text-sm py-2 hover:text-primary">
+              Cache Management
+            </summary>
+            <div className="mt-2 p-3 bg-muted rounded-lg text-sm space-y-3">
+              <div className="grid grid-cols-2 gap-4 text-xs">
+                <div><strong>Cached:</strong> {cacheStats?.entryCount ?? 0} systems</div>
+                <div><strong>Size:</strong> {cacheStats?.totalSizeBytes ? `${(cacheStats.totalSizeBytes / 1024).toFixed(1)} KB` : '0'}</div>
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  disabled={cacheRefreshing}
+                  onClick={async () => {
+                    if (!confirm('Clear all cached backtest results?')) return
+                    setCacheRefreshing(true)
+                    try {
+                      await fetch(`${API_BASE}/admin/cache/invalidate`, { method: 'POST' })
+                      const res = await fetch(`${API_BASE}/admin/cache/stats`)
+                      if (res.ok) setCacheStats(await res.json())
+                    } finally {
+                      setCacheRefreshing(false)
+                    }
+                  }}
+                >
+                  Clear Cache
+                </Button>
+                <Button
+                  variant="default"
+                  size="sm"
+                  disabled={prewarmRunning}
+                  onClick={async () => {
+                    if (!confirm('Run backtests for all systems?')) return
+                    setPrewarmRunning(true)
+                    try {
+                      await fetch(`${API_BASE}/admin/cache/prewarm`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ includeSanity: true })
+                      })
+                      onPrewarmComplete?.()
+                    } finally {
+                      setPrewarmRunning(false)
+                    }
+                  }}
+                >
+                  {prewarmRunning ? 'Running...' : 'Prewarm Cache'}
+                </Button>
+              </div>
+            </div>
+          </details>
+
+          <details className="group">
+            <summary className="cursor-pointer font-bold text-sm py-2 hover:text-primary">
+              Available Tickers ({parquetTickers.length.toLocaleString()})
+            </summary>
+            <div className="mt-2 max-h-[200px] overflow-auto border rounded-lg p-2 bg-background text-xs font-mono">
+              {parquetTickers.join(', ') || 'No tickers available'}
+            </div>
+          </details>
+
+          <details className="group">
+            <summary className="cursor-pointer font-bold text-sm py-2 hover:text-primary">
+              Data Viewer
+            </summary>
+            <div className="mt-2">
+              {parquetTickers.length > 0 ? (
+                <AdminDataPanel tickers={parquetTickers} error={error} />
+              ) : (
+                <div className="text-muted-foreground text-sm">No parquet files available</div>
+              )}
+            </div>
+          </details>
         </div>
-
-        {/* Divider */}
-        {parquetTickers.length > 0 && <div className="border-t border-border mb-6"></div>}
-
-        {/* Section 4: Data Viewer (optional) */}
-        {parquetTickers.length > 0 && (
-          <div>
-            <div className="font-black text-lg mb-4">Data Viewer</div>
-            <AdminDataPanel tickers={parquetTickers} error={error} />
-          </div>
-        )}
-        </>
       )}
     </>
   )
@@ -16081,20 +15757,6 @@ function App() {
                 setAdminTab={setAdminTab}
                 onTickersUpdated={(next) => {
                   setAvailableTickers(next)
-                }}
-                userId={userId}
-                onClearData={() => {
-                  try {
-                    localStorage.removeItem(userDataKey(userId))
-                  } catch {
-                    // ignore
-                  }
-                  const data = loadUserData(userId)
-                  setSavedBots(data.savedBots)
-                  setWatchlists(data.watchlists)
-                  setCallChains(data.callChains)
-                  setUiState(data.ui)
-                  setAnalyzeBacktests({})
                 }}
                 savedBots={savedBots}
                 setSavedBots={setSavedBots}
