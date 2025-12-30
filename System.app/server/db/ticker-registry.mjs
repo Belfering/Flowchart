@@ -285,6 +285,7 @@ export async function getTickerInfo(ticker) {
 /**
  * Get all ticker metadata (ticker, name, assetType) for UI filtering
  * Returns a lightweight list for the frontend to use for ETFs Only mode
+ * Only returns ACTIVE US Stocks and ETFs (excludes mutual funds and inactive tickers)
  */
 export async function getAllTickerMetadata() {
   const rows = await db.select({
@@ -293,7 +294,13 @@ export async function getAllTickerMetadata() {
     assetType: tickerRegistry.assetType
   })
     .from(tickerRegistry)
-    .where(eq(tickerRegistry.currency, 'USD'))
+    .where(
+      and(
+        eq(tickerRegistry.currency, 'USD'),
+        eq(tickerRegistry.isActive, true),
+        sql`${tickerRegistry.assetType} IN ('Stock', 'ETF')`
+      )
+    )
 
   return rows
 }
