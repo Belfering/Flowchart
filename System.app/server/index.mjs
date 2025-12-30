@@ -583,10 +583,16 @@ app.post('/api/tickers/registry/download', async (req, res) => {
     }
     jobs.set(jobId, job)
 
+    // Log the command for debugging
+    console.log(`[api] Download job ${jobId}: ${PYTHON} ${args.join(' ')}`)
+    console.log(`[api] PARQUET_DIR: ${PARQUET_DIR}`)
+
     const child = spawn(PYTHON, args, { windowsHide: true })
     job.pid = child.pid
 
     child.stdout.on('data', (buf) => {
+      // Log to console as well for debugging
+      console.log('[api] download stdout:', String(buf).trim())
       for (const line of String(buf).split(/\r?\n/)) {
         const s = line.trimEnd()
         if (!s) continue
