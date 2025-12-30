@@ -183,6 +183,52 @@ async function preloadParquetData() {
     console.error('[api] Pre-load failed:', err.message)
   }
 }
+
+/**
+ * Load a single ticker into memory (used after download)
+ */
+async function loadTickerIntoMemory(ticker) {
+  if (loadedTickers.has(ticker)) {
+    return true // Already loaded
+  }
+
+  try {
+    const parquetPath = path.join(PARQUET_DIR, `${ticker}.parquet`)
+    const fileForDuckdb = parquetPath.replace(/\\/g, '/').replace(/'/g, "''")
+    const tableName = `ticker_${ticker.replace(/[^A-Z0-9]/g, '_')}`
+
+    // Check if file exists
+    try {
+      await fs.access(parquetPath)
+    } catch {
+      return false // File doesn't exist
+    }
+
+    // Drop existing table if any (for refresh)
+    await new Promise((resolve) => {
+      conn.run(`DROP TABLE IF EXISTS ${tableName}`, () => resolve())
+    })
+
+    // Create table from parquet
+    const createSql = `
+      CREATE TABLE ${tableName} AS
+      SELECT * FROM read_parquet('${fileForDuckdb}')
+    `
+
+    await new Promise((resolve, reject) => {
+      conn.run(createSql, (err) => {
+        if (err) reject(err)
+        else resolve()
+      })
+    })
+
+    loadedTickers.add(ticker)
+    return true
+  } catch (err) {
+    console.warn(`[api] Failed to load ticker ${ticker} into memory:`, err.message)
+    return false
+  }
+}
 // ============================================================================
 
 function normalizeTicker(ticker) {
@@ -622,6 +668,8 @@ app.post('/api/tickers/registry/download', async (req, res) => {
                   description: ev.description
                 }).catch(() => {})
               }
+              // Load newly downloaded ticker into memory for immediate use
+              loadTickerIntoMemory(ev.ticker).catch(() => {})
             }
           }
         } catch {
@@ -654,6 +702,17 @@ app.post('/api/tickers/registry/download', async (req, res) => {
     })
 
     res.json({ jobId, tickerCount: tickers.length })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// Reload tickers from disk into memory
+app.post('/api/tickers/reload', async (req, res) => {
+  try {
+    console.log('[api] Reloading ticker data from disk...')
+    await preloadParquetData()
+    res.json({ success: true, loadedTickers: loadedTickers.size })
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) })
   }
