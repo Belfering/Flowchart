@@ -254,6 +254,9 @@ async function runTickerSync(config, tickerDataRoot, parquetDir, pythonCmd, data
       args.push('--api-key', tiingoApiKey)
     }
 
+    // Log the command being run for debugging
+    console.log(`[scheduler] Running: ${pythonCmd} ${args.join(' ')}`)
+
     // Spawn the download process
     const child = spawn(pythonCmd, args, { windowsHide: true })
     currentJob = {
@@ -261,12 +264,15 @@ async function runTickerSync(config, tickerDataRoot, parquetDir, pythonCmd, data
       startedAt,
       tickerCount: tickers.length,
       syncedCount: 0,
+      stderrBuffer: '',
     }
 
     child.stdout.on('data', (buf) => {
-      for (const line of String(buf).split(/\r?\n/)) {
+      const output = String(buf)
+      for (const line of output.split(/\r?\n/)) {
         const s = line.trimEnd()
         if (!s) continue
+        console.log('[scheduler] stdout:', s)
         try {
           const ev = JSON.parse(s)
           if (ev?.type === 'ticker_saved' && ev.ticker) {
@@ -285,13 +291,15 @@ async function runTickerSync(config, tickerDataRoot, parquetDir, pythonCmd, data
             console.log(`[scheduler] Sync completed: ${ev.saved || 0} tickers saved`)
           }
         } catch {
-          // Non-JSON output
+          // Non-JSON output - already logged above
         }
       }
     })
 
     child.stderr.on('data', (buf) => {
-      console.log('[scheduler] stderr:', String(buf).trim())
+      const output = String(buf).trim()
+      console.log('[scheduler] stderr:', output)
+      currentJob.stderrBuffer += output + '\n'
     })
 
     child.on('close', async (code) => {
@@ -309,11 +317,13 @@ async function runTickerSync(config, tickerDataRoot, parquetDir, pythonCmd, data
           timestamp: new Date().toISOString(),
         })
       } else {
+        const stderrOutput = currentJob?.stderrBuffer || ''
         console.error(`[scheduler] Sync failed with code ${code}`)
+        console.error(`[scheduler] stderr output:\n${stderrOutput}`)
         await saveLastSyncInfo(database, {
           date: today,
           status: 'error',
-          error: `Process exited with code ${code}`,
+          error: `Process exited with code ${code}. stderr: ${stderrOutput.slice(0, 500)}`,
           tickerCount: tickers.length,
           syncedCount: currentJob?.syncedCount || 0,
           durationSeconds: duration,

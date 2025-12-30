@@ -3,20 +3,40 @@ from __future__ import annotations
 import json
 import os
 import random
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
-import pandas as pd
-import requests
+# Import tracking for diagnostics
+_import_errors = []
+
+try:
+    import pandas as pd
+except ImportError as e:
+    _import_errors.append(f"pandas: {e}")
+    pd = None
+
+try:
+    import requests
+except ImportError as e:
+    _import_errors.append(f"requests: {e}")
+    requests = None
 
 # yfinance for batch downloads
 try:
     import yfinance as yf
     YFINANCE_AVAILABLE = True
-except ImportError:
+except ImportError as e:
     YFINANCE_AVAILABLE = False
+    _import_errors.append(f"yfinance: {e}")
+
+# Print import status on startup
+if _import_errors:
+    print(json.dumps({"type": "import_errors", "errors": _import_errors}), flush=True)
+else:
+    print(json.dumps({"type": "imports_ok", "yfinance": YFINANCE_AVAILABLE, "python": sys.version}), flush=True)
 
 
 def read_tickers_from_txt(path: str | Path) -> list[str]:
@@ -67,6 +87,18 @@ def ensure_dir(path: str | Path) -> Path:
     p = Path(path)
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+def _sanitize_ticker_for_filename(ticker: str) -> str:
+    """Sanitize ticker symbol for use as filename.
+    Replaces / with _, removes other problematic chars.
+    """
+    # Replace / with _ (e.g., BC/PC -> BC_PC)
+    safe = ticker.replace("/", "_")
+    # Remove other problematic characters for Windows filenames
+    for c in '<>:"|?*\\':
+        safe = safe.replace(c, "_")
+    return safe
 
 
 def _chunked(seq: list[str], size: int) -> list[list[str]]:
@@ -306,7 +338,8 @@ def download_to_parquet(
                 failed_tickers.append(t)
                 continue
 
-            out_path = out_root / f"{t}.parquet"
+            safe_ticker = _sanitize_ticker_for_filename(t)
+            out_path = out_root / f"{safe_ticker}.parquet"
             base.to_parquet(out_path, index=False)
             out_paths.append(out_path)
 
@@ -340,7 +373,8 @@ def download_to_parquet(
                     if df is not None and not df.empty:
                         base = _normalize_tiingo_df(df, t)
                         if not base.empty:
-                            out_path = out_root / f"{t}.parquet"
+                            safe_ticker = _sanitize_ticker_for_filename(t)
+                            out_path = out_root / f"{safe_ticker}.parquet"
                             base.to_parquet(out_path, index=False)
                             out_paths.append(out_path)
 
@@ -434,10 +468,20 @@ def _cli() -> int:
     def cb(ev: dict) -> None:
         print(json.dumps(ev), flush=True)
 
-    out = download_to_parquet(tickers, out_dir=args.out_dir, cfg=cfg, api_key=args.api_key, progress_cb=cb, skip_metadata=skip_metadata_set)
-    print(json.dumps({"type": "complete", "saved": len(out)}), flush=True)
-    return 0
+    try:
+        out = download_to_parquet(tickers, out_dir=args.out_dir, cfg=cfg, api_key=args.api_key, progress_cb=cb, skip_metadata=skip_metadata_set)
+        print(json.dumps({"type": "complete", "saved": len(out)}), flush=True)
+        return 0
+    except Exception as e:
+        import traceback
+        print(json.dumps({"type": "fatal_error", "error": str(e), "traceback": traceback.format_exc()}), flush=True)
+        return 1
 
 
 if __name__ == "__main__":
-    raise SystemExit(_cli())
+    try:
+        raise SystemExit(_cli())
+    except Exception as e:
+        import traceback
+        print(json.dumps({"type": "startup_error", "error": str(e), "traceback": traceback.format_exc()}), flush=True)
+        raise SystemExit(1)
