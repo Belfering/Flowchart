@@ -14114,7 +14114,7 @@ function App() {
   )
 
   const runAnalyzeBacktest = useCallback(
-    async (bot: SavedBot) => {
+    async (bot: SavedBot, forceRefresh = false) => {
       setAnalyzeBacktests((prev) => {
         if (prev[bot.id]?.status === 'loading') return prev
         return { ...prev, [bot.id]: { status: 'loading' } }
@@ -14122,11 +14122,12 @@ function App() {
 
       // FRD-014: Always try server-side cached backtest first
       // This uses the backtest cache for instant results on repeated requests
+      // Pass forceRefresh=true to bypass cache and recalculate
       try {
         const res = await fetch(`${API_BASE}/bots/${bot.id}/run-backtest`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mode: bot.backtestMode || 'CC', costBps: bot.backtestCostBps ?? 5 }),
+          body: JSON.stringify({ mode: bot.backtestMode || 'CC', costBps: bot.backtestCostBps ?? 5, forceRefresh }),
         })
 
         if (res.ok) {
@@ -16202,7 +16203,18 @@ function App() {
 
                                       <div className="base-stats-card w-full min-w-0 text-center self-stretch">
                                         <div className="w-full">
-                                          <div className="font-black mb-2">Historical Stats</div>
+                                          <div className="flex items-center justify-center gap-2 mb-2">
+                                            <div className="font-black">Historical Stats</div>
+                                            <Button
+                                              variant="ghost"
+                                              size="sm"
+                                              className="h-6 px-2 text-xs"
+                                              onClick={() => runAnalyzeBacktest(b, true)}
+                                              title="Refresh backtest (bypass cache)"
+                                            >
+                                              ↻
+                                            </Button>
+                                          </div>
                                           <div className="grid grid-cols-[repeat(4,minmax(140px,1fr))] gap-2.5 justify-items-center overflow-x-auto max-w-full w-full">
                                             <div>
                                               <div className="stat-label">CAGR</div>
