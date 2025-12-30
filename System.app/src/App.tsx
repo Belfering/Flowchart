@@ -4148,6 +4148,16 @@ function AdminPanel({
   } | null>(null)
   const [syncKilling, setSyncKilling] = useState(false)
 
+  // Registry tickers (all tickers from Tiingo master list)
+  const [registryTickers, setRegistryTickers] = useState<string[]>([])
+
+  // Compute missing tickers (in registry but not in parquet files)
+  const missingTickers = useMemo(() => {
+    if (registryTickers.length === 0) return []
+    const parquetSet = new Set(parquetTickers.map(t => t.toUpperCase()))
+    return registryTickers.filter(t => !parquetSet.has(t.toUpperCase())).sort()
+  }, [registryTickers, parquetTickers])
+
   useEffect(() => {
     let cancelled = false
     const run = async () => {
@@ -4231,6 +4241,19 @@ function AdminPanel({
         }
       } catch {
         // Ignore schedule errors
+      }
+
+      // Fetch all registry tickers (for missing tickers calculation)
+      try {
+        const regMetaRes = await fetch('/api/tickers/registry/metadata')
+        if (regMetaRes.ok && !cancelled) {
+          const data = await regMetaRes.json()
+          if (data.tickers) {
+            setRegistryTickers(data.tickers.map((t: { ticker: string }) => t.ticker))
+          }
+        }
+      } catch {
+        // Ignore errors
       }
     }
     void run()
@@ -5356,6 +5379,35 @@ function AdminPanel({
             </summary>
             <div className="mt-2 max-h-[200px] overflow-auto border rounded-lg p-2 bg-background text-xs font-mono">
               {parquetTickers.join(', ') || 'No tickers available'}
+            </div>
+          </details>
+
+          <details className="group">
+            <summary className="cursor-pointer font-bold text-sm py-2 hover:text-primary">
+              <span className={missingTickers.length > 0 ? 'text-warning' : ''}>
+                Missing Tickers ({missingTickers.length.toLocaleString()})
+              </span>
+              {missingTickers.length > 0 && (
+                <span className="ml-2 text-xs text-muted-foreground">
+                  (in registry but no parquet file)
+                </span>
+              )}
+            </summary>
+            <div className="mt-2 space-y-2">
+              <div className="text-xs text-muted-foreground">
+                Registry: {registryTickers.length.toLocaleString()} tickers |
+                Parquet: {parquetTickers.length.toLocaleString()} files |
+                Missing: {missingTickers.length.toLocaleString()}
+              </div>
+              {missingTickers.length > 0 ? (
+                <div className="max-h-[200px] overflow-auto border rounded-lg p-2 bg-background text-xs font-mono">
+                  {missingTickers.join(', ')}
+                </div>
+              ) : registryTickers.length === 0 ? (
+                <div className="text-muted-foreground text-sm">Loading registry...</div>
+              ) : (
+                <div className="text-success text-sm">All registry tickers have parquet files!</div>
+              )}
             </div>
           </details>
 
