@@ -4084,7 +4084,7 @@ function AdminDataPanel({
   )
 }
 
-type AdminSubtab = 'Atlas Overview' | 'Nexus Maintenance' | 'Ticker Data'
+type AdminSubtab = 'Atlas Overview' | 'Nexus Maintenance' | 'Ticker Data' | 'User Management'
 
 function AdminPanel({
   adminTab,
@@ -4094,6 +4094,7 @@ function AdminPanel({
   setSavedBots,
   onRefreshNexusBots,
   onPrewarmComplete,
+  userId,
 }: {
   adminTab: AdminSubtab
   setAdminTab: (t: AdminSubtab) => void
@@ -4102,6 +4103,7 @@ function AdminPanel({
   setSavedBots: React.Dispatch<React.SetStateAction<SavedBot[]>>
   onRefreshNexusBots?: () => Promise<void>
   onPrewarmComplete?: () => void
+  userId: string
 }) {
   const [, setStatus] = useState<AdminStatus | null>(null)
   const [, setTickers] = useState<string[]>([])
@@ -4153,6 +4155,13 @@ function AdminPanel({
 
   // Missing tickers download state
   const [missingDownloadJob, setMissingDownloadJob] = useState<{ jobId: string; status: string; saved: number; total: number } | null>(null)
+
+  // User Management state (super admin only)
+  type AdminUser = { id: string; username: string; email: string; displayName: string | null; role: string; status: string; createdAt: number; lastLoginAt: number | null; isSuperAdmin: boolean }
+  const [isSuperAdmin, setIsSuperAdmin] = useState(false)
+  const [adminUsers, setAdminUsers] = useState<AdminUser[]>([])
+  const [adminUsersLoading, setAdminUsersLoading] = useState(false)
+  const [adminUsersError, setAdminUsersError] = useState<string | null>(null)
 
   // Compute missing tickers (in registry but not in parquet files)
   const missingTickers = useMemo(() => {
@@ -4287,6 +4296,55 @@ function AdminPanel({
     }
   }, [adminTab])
 
+  // Check if current user is super admin and fetch users for User Management tab
+  useEffect(() => {
+    // Check super admin status on mount
+    const checkSuperAdmin = async () => {
+      try {
+        const res = await fetch('/api/admin/me', {
+          headers: { 'Authorization': `Bearer ${localStorage.getItem('accessToken')}` }
+        })
+        if (res.ok) {
+          const data = await res.json()
+          setIsSuperAdmin(data.isSuperAdmin === true)
+        }
+      } catch {
+        setIsSuperAdmin(false)
+      }
+    }
+    void checkSuperAdmin()
+  }, [])
+
+  useEffect(() => {
+    if (adminTab !== 'User Management' || !isSuperAdmin) return
+    let cancelled = false
+
+    const fetchAdminUsers = async () => {
+      setAdminUsersLoading(true)
+      setAdminUsersError(null)
+      try {
+        const res = await fetch('/api/admin/users', {
+          headers: { 'Authorization': `Bearer ${localStorage.getItem('accessToken')}` }
+        })
+        if (!res.ok) {
+          const err = await res.json()
+          throw new Error(err.error || 'Failed to fetch users')
+        }
+        if (cancelled) return
+        const data = await res.json()
+        setAdminUsers(data.users || [])
+      } catch (e) {
+        if (cancelled) return
+        setAdminUsersError(String((e as Error)?.message || e))
+      } finally {
+        if (!cancelled) setAdminUsersLoading(false)
+      }
+    }
+    void fetchAdminUsers()
+
+    return () => { cancelled = true }
+  }, [adminTab, isSuperAdmin])
+
   // Fetch admin data for Atlas Overview
   useEffect(() => {
     if (adminTab !== 'Atlas Overview') return
@@ -4366,7 +4424,7 @@ function AdminPanel({
 
     // Sync bot tags to API
     try {
-      await updateBotInApi('admin', updatedBot)
+      await updateBotInApi(userId, updatedBot)
     } catch (e) {
       console.error('Failed to sync Atlas bot tags:', e)
     }
@@ -4391,7 +4449,7 @@ function AdminPanel({
         console.error('Failed to refresh Nexus bots:', e)
       }
     }
-  }, [adminConfig, savedBots, onRefreshNexusBots])
+  }, [adminConfig, savedBots, onRefreshNexusBots, userId])
 
   const handleRemoveAtlasSlot = useCallback(async (botId: string) => {
     // Remove from Atlas Fund Slots
@@ -4410,7 +4468,7 @@ function AdminPanel({
 
     // Sync bot tags to API
     try {
-      await updateBotInApi('admin', updatedBot)
+      await updateBotInApi(userId, updatedBot)
     } catch (e) {
       console.error('Failed to sync Atlas bot tags:', e)
     }
@@ -4435,11 +4493,11 @@ function AdminPanel({
         console.error('Failed to refresh Nexus bots:', e)
       }
     }
-  }, [adminConfig, savedBots, onRefreshNexusBots])
+  }, [adminConfig, savedBots, onRefreshNexusBots, userId])
 
   // Get admin's bots that are available to add to Atlas Fund
   // Show ALL admin bots that aren't already tagged as Atlas
-  const adminBots = savedBots.filter(b => b.builderId === 'admin' && !b.tags?.includes('Atlas'))
+  const adminBots = savedBots.filter(b => b.builderId === userId && !b.tags?.includes('Atlas'))
   const availableForAtlas = adminBots.filter(b => !adminConfig.atlasFundSlots.includes(b.id))
   const atlasFundBots = adminConfig.atlasFundSlots
     .map(id => savedBots.find(b => b.id === id))
@@ -4512,6 +4570,41 @@ function AdminPanel({
     saveEligibilityRequirements(newReqs)
   }, [eligibilityRequirements, saveEligibilityRequirements])
 
+  // User Management: Grant/revoke admin role (super admin only)
+  const handleGrantAdmin = useCallback(async (targetUserId: string) => {
+    try {
+      const res = await fetch(`/api/admin/users/${targetUserId}/grant-admin`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('accessToken')}` }
+      })
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.error || 'Failed to grant admin')
+      }
+      // Update local state
+      setAdminUsers(prev => prev.map(u => u.id === targetUserId ? { ...u, role: 'admin' } : u))
+    } catch (e) {
+      setAdminUsersError(String((e as Error)?.message || e))
+    }
+  }, [])
+
+  const handleRevokeAdmin = useCallback(async (targetUserId: string) => {
+    try {
+      const res = await fetch(`/api/admin/users/${targetUserId}/revoke-admin`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('accessToken')}` }
+      })
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.error || 'Failed to revoke admin')
+      }
+      // Update local state
+      setAdminUsers(prev => prev.map(u => u.id === targetUserId ? { ...u, role: 'user' } : u))
+    } catch (e) {
+      setAdminUsersError(String((e as Error)?.message || e))
+    }
+  }, [])
+
 
   return (
     <>
@@ -4526,6 +4619,15 @@ function AdminPanel({
             {t}
           </button>
         ))}
+        {/* User Management tab - only visible to super admin */}
+        {isSuperAdmin && (
+          <button
+            className={`tab-btn ${adminTab === 'User Management' ? 'active' : ''}`}
+            onClick={() => setAdminTab('User Management')}
+          >
+            User Management
+          </button>
+        )}
       </div>
 
       {adminTab === 'Atlas Overview' && (
@@ -5487,6 +5589,89 @@ function AdminPanel({
               )}
             </div>
           </details>
+        </div>
+      )}
+
+      {/* User Management Tab - Super Admin Only */}
+      {adminTab === 'User Management' && isSuperAdmin && (
+        <div className="space-y-6">
+          <div className="font-black text-lg">User Management</div>
+          <p className="text-sm text-muted-foreground">
+            As super admin, you can grant or revoke admin privileges for other users.
+            Other admins cannot modify each other's roles.
+          </p>
+
+          {adminUsersError && (
+            <div className="text-destructive text-sm p-3 bg-destructive/10 rounded-lg">
+              {adminUsersError}
+            </div>
+          )}
+
+          {adminUsersLoading ? (
+            <div className="text-muted-foreground">Loading users...</div>
+          ) : (
+            <Card className="p-4">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Username</TableHead>
+                    <TableHead>Email</TableHead>
+                    <TableHead>Role</TableHead>
+                    <TableHead>Last Login</TableHead>
+                    <TableHead className="text-right">Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {adminUsers.map(user => (
+                    <TableRow key={user.id}>
+                      <TableCell className="font-medium">
+                        {user.displayName || user.username}
+                        {user.isSuperAdmin && (
+                          <span className="ml-2 text-xs bg-primary/20 text-primary px-1 py-0.5 rounded">
+                            Super Admin
+                          </span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground text-sm">{user.email}</TableCell>
+                      <TableCell>
+                        <span className={`px-2 py-0.5 rounded text-xs ${
+                          user.role === 'admin' ? 'bg-amber-500/20 text-amber-500' : 'bg-muted text-muted-foreground'
+                        }`}>
+                          {user.role}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-muted-foreground text-sm">
+                        {user.lastLoginAt
+                          ? new Date(user.lastLoginAt).toLocaleDateString()
+                          : 'Never'}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {user.isSuperAdmin ? (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        ) : user.role === 'admin' ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => void handleRevokeAdmin(user.id)}
+                          >
+                            Revoke Admin
+                          </Button>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="default"
+                            onClick={() => void handleGrantAdmin(user.id)}
+                          >
+                            Grant Admin
+                          </Button>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </Card>
+          )}
         </div>
       )}
     </>
@@ -12739,7 +12924,7 @@ function App() {
   const [tab, setTab] = useState<'Dashboard' | 'Nexus' | 'Analyze' | 'Model' | 'Help/Support' | 'Admin' | 'Databases'>('Model')
   const [dashboardSubtab, setDashboardSubtab] = useState<'Portfolio' | 'Partner Program'>('Portfolio')
   const [analyzeSubtab, setAnalyzeSubtab] = useState<'Systems' | 'Correlation Tool'>('Systems')
-  const [adminTab, setAdminTab] = useState<'Atlas Overview' | 'Nexus Maintenance' | 'Ticker Data'>('Atlas Overview')
+  const [adminTab, setAdminTab] = useState<AdminSubtab>('Atlas Overview')
   const [databasesTab, setDatabasesTab] = useState<'Users' | 'Systems' | 'Portfolios' | 'Cache' | 'Admin Config'>('Users')
 
   // Eligibility requirements (fetched for Admin tab and Partner Program page)
@@ -15886,6 +16071,7 @@ function App() {
                   // Refresh Nexus bots from API to get updated metrics
                   void refreshAllNexusBots()
                 }}
+                userId={userId || ''}
               />
             </CardContent>
           </Card>

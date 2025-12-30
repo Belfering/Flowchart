@@ -67,6 +67,30 @@ export function requireAdmin(req, res, next) {
 }
 
 /**
+ * Require super admin (the original admin from ADMIN_EMAIL env)
+ * Only super admin can manage other admins
+ * Must be used after authenticate middleware
+ */
+export function requireSuperAdmin(req, res, next) {
+  const superAdminEmail = process.env.ADMIN_EMAIL
+  if (!superAdminEmail) {
+    return res.status(500).json({ error: 'Super admin not configured' })
+  }
+  if (req.user?.email !== superAdminEmail) {
+    return res.status(403).json({ error: 'Super admin access required' })
+  }
+  next()
+}
+
+/**
+ * Check if the current user is the super admin
+ */
+export function isSuperAdmin(user) {
+  const superAdminEmail = process.env.ADMIN_EMAIL
+  return superAdminEmail && user?.email === superAdminEmail
+}
+
+/**
  * Optional authentication - attaches user if token present, but doesn't require it
  * Use for routes that work for both authenticated and anonymous users
  */

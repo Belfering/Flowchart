@@ -10,6 +10,7 @@ import duckdb from 'duckdb'
 import { encrypt, decrypt } from './utils/crypto.mjs'
 import { seedAdminUser } from './seed-admin.mjs'
 import * as scheduler from './scheduler.mjs'
+import { authenticate, requireSuperAdmin, isSuperAdmin } from './middleware/auth.mjs'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -1263,6 +1264,122 @@ app.put('/api/admin/eligibility', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) })
   }
+})
+
+// ============================================================================
+// Admin Management (Super Admin Only)
+// ============================================================================
+
+// GET /api/admin/users - List all users with admin capability info (super admin only)
+app.get('/api/admin/users', authenticate, requireSuperAdmin, async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const database = await import('./db/index.mjs')
+
+    const users = database.sqlite.prepare(`
+      SELECT id, username, email, display_name, role, status, created_at, last_login_at
+      FROM users
+      WHERE status = 'active'
+      ORDER BY created_at DESC
+    `).all()
+
+    res.json({
+      users: users.map(u => ({
+        id: u.id,
+        username: u.username,
+        email: u.email,
+        displayName: u.display_name,
+        role: u.role,
+        status: u.status,
+        createdAt: u.created_at,
+        lastLoginAt: u.last_login_at,
+        isSuperAdmin: u.email === process.env.ADMIN_EMAIL
+      }))
+    })
+  } catch (e) {
+    console.error('[api] Error fetching admin users:', e)
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// POST /api/admin/users/:userId/grant-admin - Grant admin role (super admin only)
+app.post('/api/admin/users/:userId/grant-admin', authenticate, requireSuperAdmin, async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const database = await import('./db/index.mjs')
+
+    const { userId } = req.params
+
+    // Get the target user
+    const targetUser = database.sqlite.prepare(`
+      SELECT id, email, role FROM users WHERE id = ?
+    `).get(userId)
+
+    if (!targetUser) {
+      return res.status(404).json({ error: 'User not found' })
+    }
+
+    // Prevent modifying super admin
+    if (targetUser.email === process.env.ADMIN_EMAIL) {
+      return res.status(400).json({ error: 'Cannot modify super admin role' })
+    }
+
+    // Update role to admin
+    database.sqlite.prepare(`
+      UPDATE users SET role = 'admin', updated_at = ? WHERE id = ?
+    `).run(Date.now(), userId)
+
+    console.log(`[api] Super admin granted admin role to user ${userId}`)
+    res.json({ success: true, message: 'Admin role granted' })
+  } catch (e) {
+    console.error('[api] Error granting admin role:', e)
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// POST /api/admin/users/:userId/revoke-admin - Revoke admin role (super admin only)
+app.post('/api/admin/users/:userId/revoke-admin', authenticate, requireSuperAdmin, async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const database = await import('./db/index.mjs')
+
+    const { userId } = req.params
+
+    // Get the target user
+    const targetUser = database.sqlite.prepare(`
+      SELECT id, email, role FROM users WHERE id = ?
+    `).get(userId)
+
+    if (!targetUser) {
+      return res.status(404).json({ error: 'User not found' })
+    }
+
+    // Prevent modifying super admin
+    if (targetUser.email === process.env.ADMIN_EMAIL) {
+      return res.status(400).json({ error: 'Cannot modify super admin role' })
+    }
+
+    // Update role to user
+    database.sqlite.prepare(`
+      UPDATE users SET role = 'user', updated_at = ? WHERE id = ?
+    `).run(Date.now(), userId)
+
+    console.log(`[api] Super admin revoked admin role from user ${userId}`)
+    res.json({ success: true, message: 'Admin role revoked' })
+  } catch (e) {
+    console.error('[api] Error revoking admin role:', e)
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// GET /api/admin/me - Check if current user is super admin
+app.get('/api/admin/me', authenticate, async (req, res) => {
+  res.json({
+    userId: req.user.id,
+    email: req.user.email,
+    role: req.user.role,
+    isSuperAdmin: isSuperAdmin(req.user)
+  })
 })
 
 // ============================================================================
