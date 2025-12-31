@@ -94,10 +94,26 @@ app.use('/api/', apiLimiter)
 
 app.use(express.json({ limit: '1mb' }))
 
-// Serve static frontend in production
+// Serve static frontend in production with proper cache headers
 if (isProduction) {
   const distPath = path.resolve(__dirname, '..', 'dist')
-  app.use(express.static(distPath))
+  // Serve hashed assets with long cache (1 year) - Vite adds hashes to filenames
+  app.use('/assets', express.static(path.join(distPath, 'assets'), {
+    maxAge: '1y',
+    immutable: true,
+  }))
+  // Serve other static files with short cache
+  app.use(express.static(distPath, {
+    maxAge: '1h',
+    setHeaders: (res, filePath) => {
+      // Never cache index.html - always get fresh version
+      if (filePath.endsWith('index.html')) {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate')
+        res.setHeader('Pragma', 'no-cache')
+        res.setHeader('Expires', '0')
+      }
+    }
+  }))
 }
 const DEFAULT_ROOT = path.resolve(__dirname, '..', 'ticker-data')
 const TICKER_DATA_ROOT = process.env.SYSTEM_TICKER_DATA_ROOT || process.env.TICKER_DATA_MINI_ROOT || DEFAULT_ROOT
@@ -3162,6 +3178,10 @@ app.get('/api/admin/db/:table', async (req, res) => {
 if (isProduction) {
   const indexPath = path.resolve(__dirname, '..', 'dist', 'index.html')
   app.get('*', (req, res) => {
+    // Never cache index.html - always serve fresh version
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate')
+    res.setHeader('Pragma', 'no-cache')
+    res.setHeader('Expires', '0')
     res.sendFile(indexPath)
   })
 }
