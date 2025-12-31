@@ -16142,9 +16142,66 @@ function App() {
         ) : tab === 'Help/Support' ? (
           <Card className="h-full flex flex-col overflow-hidden m-4">
             <CardContent className="p-6 flex flex-col h-full overflow-auto">
-              <div className="text-center py-12">
+              <div className="max-w-3xl mx-auto w-full">
                 <h2 className="text-xl font-bold mb-4">Help & Support</h2>
-                <p className="text-muted">Coming soon...</p>
+
+                <div className="mb-8 p-4 border border-border rounded-lg">
+                  <h3 className="font-bold mb-2">Contact</h3>
+                  <p className="text-muted text-sm">For support inquiries, please reach out to your account administrator.</p>
+                </div>
+
+                <div className="space-y-6">
+                  <h3 className="text-lg font-bold border-b border-border pb-2">Changelog</h3>
+
+                  <div className="space-y-4">
+                    <div>
+                      <h4 className="font-bold text-sm text-muted mb-2">[Unreleased]</h4>
+                      <div className="pl-4 space-y-3">
+                        <div>
+                          <div className="font-semibold text-sm text-green-600 dark:text-green-400">Added</div>
+                          <ul className="list-disc list-inside text-sm text-muted ml-2 space-y-0.5">
+                            <li>Dashboard as default landing page for logged-in users</li>
+                            <li>Changelog visible in Help/Support tab</li>
+                            <li>Contact information for support</li>
+                          </ul>
+                        </div>
+                        <div>
+                          <div className="font-semibold text-sm text-blue-600 dark:text-blue-400">Changed</div>
+                          <ul className="list-disc list-inside text-sm text-muted ml-2 space-y-0.5">
+                            <li>TradingView charts now match app theme (dark/light mode)</li>
+                            <li>Monthly Returns heatmap now respects dark/light theme</li>
+                            <li>Time period selector now respects dark/light theme</li>
+                            <li>Hidden TradingView watermark from all charts</li>
+                          </ul>
+                        </div>
+                        <div>
+                          <div className="font-semibold text-sm text-amber-600 dark:text-amber-400">Fixed</div>
+                          <ul className="list-disc list-inside text-sm text-muted ml-2 space-y-0.5">
+                            <li>Save to Watchlist button now shows visual feedback</li>
+                          </ul>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div>
+                      <h4 className="font-bold text-sm text-muted mb-2">[1.0.0] - 2025-12-30</h4>
+                      <div className="pl-4">
+                        <div className="font-semibold text-sm text-green-600 dark:text-green-400">Initial Release</div>
+                        <ul className="list-disc list-inside text-sm text-muted ml-2 space-y-0.5">
+                          <li>Visual flowchart-based trading algorithm builder</li>
+                          <li>Multiple node types: Basic, Function, Indicator, Position, Call</li>
+                          <li>Backtesting with equity curves and performance metrics</li>
+                          <li>Benchmark comparisons (SPY, QQQ, VTI, etc.)</li>
+                          <li>Robustness analysis with bootstrap simulations</li>
+                          <li>User authentication and preferences</li>
+                          <li>Watchlists for organizing trading systems</li>
+                          <li>Admin panel for ticker data management</li>
+                          <li>Dark/Light theme support with multiple color schemes</li>
+                        </ul>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
             </CardContent>
           </Card>
