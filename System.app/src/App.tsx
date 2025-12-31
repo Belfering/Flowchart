@@ -13011,6 +13011,7 @@ function App() {
   const [appEligibilityRequirements, setAppEligibilityRequirements] = useState<EligibilityRequirement[]>([])
   const [saveMenuOpen, setSaveMenuOpen] = useState(false)
   const [saveNewWatchlistName, setSaveNewWatchlistName] = useState('')
+  const [justSavedFeedback, setJustSavedFeedback] = useState(false)
   const [addToWatchlistBotId, setAddToWatchlistBotId] = useState<string | null>(null)
   const [addToWatchlistNewName, setAddToWatchlistNewName] = useState('')
   const [callbackNodesCollapsed, setCallbackNodesCollapsed] = useState(true)
@@ -14365,6 +14366,9 @@ function App() {
       if (savedBotId) {
         setAnalyzeBacktests((prev) => ({ ...prev, [savedBotId]: { status: 'idle' } }))
       }
+      // Show visual feedback
+      setJustSavedFeedback(true)
+      setTimeout(() => setJustSavedFeedback(false), 1500)
     },
     [current, activeBotId, activeSavedBotId, resolveWatchlistId, addBotToWatchlist, userId, savedBots, backtestMode, backtestCostBps, computeEtfsOnlyTag],
   )
@@ -15433,8 +15437,10 @@ function App() {
                 <Button
                   onClick={() => setSaveMenuOpen((v) => !v)}
                   title="Save this system to a watchlist"
+                  variant={justSavedFeedback ? 'accent' : 'default'}
+                  className={justSavedFeedback ? 'transition-colors duration-300' : ''}
                 >
-                  Save to Watchlist
+                  {justSavedFeedback ? '✓ Saved!' : 'Save to Watchlist'}
                 </Button>
                 {saveMenuOpen ? (
                   <Card
