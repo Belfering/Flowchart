@@ -219,17 +219,25 @@ export async function searchTickers(query, options = {}) {
     conditions.push(eq(tickerRegistry.assetType, assetType))
   }
 
-  // Search by ticker prefix OR name substring
+  // Search by ticker prefix OR name substring OR description substring
+  // This allows searches like "ETF gold" to find GLD
   conditions.push(
     sql`(
       ${tickerRegistry.ticker} LIKE ${upperQuery + '%'} OR
-      LOWER(${tickerRegistry.name}) LIKE ${'%' + lowerQuery + '%'}
+      LOWER(${tickerRegistry.name}) LIKE ${'%' + lowerQuery + '%'} OR
+      LOWER(${tickerRegistry.description}) LIKE ${'%' + lowerQuery + '%'} OR
+      (${tickerRegistry.assetType} = 'ETF' AND LOWER(${tickerRegistry.name}) LIKE ${'%' + lowerQuery + '%'})
     )`
   )
 
+  // Order by exact ticker match first, then by name
   const rows = await db.select()
     .from(tickerRegistry)
     .where(and(...conditions))
+    .orderBy(
+      sql`CASE WHEN ${tickerRegistry.ticker} = ${upperQuery} THEN 0 WHEN ${tickerRegistry.ticker} LIKE ${upperQuery + '%'} THEN 1 ELSE 2 END`,
+      tickerRegistry.ticker
+    )
     .limit(limit)
 
   return rows

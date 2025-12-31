@@ -56,38 +56,113 @@ export async function authenticate(req, res, next) {
 }
 
 /**
- * Require admin role
+ * Role hierarchy levels (higher = more permissions)
+ */
+const ROLE_LEVELS = {
+  user: 0,
+  partner: 1,
+  engineer: 2,
+  sub_admin: 3,
+  main_admin: 4,
+  // Legacy: treat 'admin' same as 'main_admin' for backwards compatibility
+  admin: 4,
+}
+
+/**
+ * Check if a role has admin-level access (sub_admin or higher)
+ */
+export function hasAdminAccess(role) {
+  return (ROLE_LEVELS[role] ?? 0) >= ROLE_LEVELS.sub_admin
+}
+
+/**
+ * Check if a role has engineer-level access (engineer or higher)
+ */
+export function hasEngineerAccess(role) {
+  return (ROLE_LEVELS[role] ?? 0) >= ROLE_LEVELS.engineer
+}
+
+/**
+ * Check if user is main admin (can manage other admins)
+ */
+export function isMainAdmin(user) {
+  const superAdminEmail = process.env.ADMIN_EMAIL
+  // Main admin is either the ADMIN_EMAIL user OR anyone with main_admin role
+  return (superAdminEmail && user?.email === superAdminEmail) || user?.role === 'main_admin' || user?.role === 'admin'
+}
+
+/**
+ * Check if user can change another user's role
+ * Rules:
+ * - main_admin can change anyone except other main_admins
+ * - sub_admin can change engineers and users only
+ * - No one can demote a main_admin
+ */
+export function canChangeUserRole(actor, targetUser, newRole) {
+  // No one can change main_admin's role (protected)
+  if (targetUser.role === 'main_admin' || targetUser.role === 'admin' || targetUser.email === process.env.ADMIN_EMAIL) {
+    return false
+  }
+
+  const actorLevel = ROLE_LEVELS[actor.role] ?? 0
+  const targetLevel = ROLE_LEVELS[targetUser.role] ?? 0
+  const newRoleLevel = ROLE_LEVELS[newRole] ?? 0
+
+  // Cannot promote someone to main_admin (only ADMIN_EMAIL gets that, or existing main_admin sets it)
+  if (newRole === 'main_admin' || newRole === 'admin') {
+    return false
+  }
+
+  // main_admin can change anyone to anything (except main_admin)
+  if (isMainAdmin(actor)) {
+    return true
+  }
+
+  // sub_admin can only change users with lower level and cannot promote to sub_admin or higher
+  if (actor.role === 'sub_admin') {
+    return targetLevel < ROLE_LEVELS.sub_admin && newRoleLevel < ROLE_LEVELS.sub_admin
+  }
+
+  return false
+}
+
+/**
+ * Require admin role (sub_admin or higher)
  * Must be used after authenticate middleware
  */
 export function requireAdmin(req, res, next) {
-  if (req.user?.role !== 'admin') {
+  if (!hasAdminAccess(req.user?.role)) {
     return res.status(403).json({ error: 'Admin access required' })
   }
   next()
 }
 
 /**
- * Require super admin (the original admin from ADMIN_EMAIL env)
- * Only super admin can manage other admins
+ * Require main admin (the original admin from ADMIN_EMAIL env or main_admin role)
+ * Only main admin can manage other admins
  * Must be used after authenticate middleware
  */
-export function requireSuperAdmin(req, res, next) {
-  const superAdminEmail = process.env.ADMIN_EMAIL
-  if (!superAdminEmail) {
-    return res.status(500).json({ error: 'Super admin not configured' })
-  }
-  if (req.user?.email !== superAdminEmail) {
-    return res.status(403).json({ error: 'Super admin access required' })
+export function requireMainAdmin(req, res, next) {
+  if (!isMainAdmin(req.user)) {
+    return res.status(403).json({ error: 'Main admin access required' })
   }
   next()
 }
 
 /**
- * Check if the current user is the super admin
+ * Require super admin (legacy alias for requireMainAdmin)
+ * Only super admin can manage other admins
+ * Must be used after authenticate middleware
+ */
+export function requireSuperAdmin(req, res, next) {
+  return requireMainAdmin(req, res, next)
+}
+
+/**
+ * Check if the current user is the super admin (legacy alias)
  */
 export function isSuperAdmin(user) {
-  const superAdminEmail = process.env.ADMIN_EMAIL
-  return superAdminEmail && user?.email === superAdminEmail
+  return isMainAdmin(user)
 }
 
 /**

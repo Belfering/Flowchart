@@ -179,8 +179,15 @@ function isTimeToRun(config) {
 
 /**
  * Run the ticker sync job
+ * @param {Object} config - Schedule config
+ * @param {string} tickerDataRoot - Path to ticker data root
+ * @param {string} parquetDir - Path to parquet directory
+ * @param {string} pythonCmd - Python command
+ * @param {Object} database - Database instance
+ * @param {Object} tickerRegistry - Ticker registry instance
+ * @param {string} source - 'tiingo' or 'yfinance' (default: 'tiingo')
  */
-async function runTickerSync(config, tickerDataRoot, parquetDir, pythonCmd, database, tickerRegistry) {
+async function runTickerSync(config, tickerDataRoot, parquetDir, pythonCmd, database, tickerRegistry, source = 'tiingo') {
   if (isRunning) {
     console.log('[scheduler] Sync already running, skipping')
     return
@@ -230,8 +237,9 @@ async function runTickerSync(config, tickerDataRoot, parquetDir, pythonCmd, data
     const skipMetadataPath = path.join(tickerDataRoot, '_skip_metadata.json')
     await fs.writeFile(skipMetadataPath, JSON.stringify(tickersWithMetadata), 'utf-8')
 
-    // Build script args
-    const scriptPath = path.join(tickerDataRoot, 'tiingo_download.py')
+    // Build script args based on source
+    const scriptName = source === 'tiingo' ? 'tiingo_download.py' : 'download.py'
+    const scriptPath = path.join(tickerDataRoot, scriptName)
     const args = [
       '-u',
       scriptPath,
@@ -249,10 +257,12 @@ async function runTickerSync(config, tickerDataRoot, parquetDir, pythonCmd, data
       skipMetadataPath,
     ]
 
-    // Add Tiingo API key from environment
-    const tiingoApiKey = process.env.TIINGO_API_KEY
-    if (tiingoApiKey) {
-      args.push('--api-key', tiingoApiKey)
+    // Add Tiingo API key from environment (only for tiingo source)
+    if (source === 'tiingo') {
+      const tiingoApiKey = process.env.TIINGO_API_KEY
+      if (tiingoApiKey) {
+        args.push('--api-key', tiingoApiKey)
+      }
     }
 
     // Log the command being run for debugging
@@ -463,9 +473,11 @@ export function getSchedulerStatus() {
 
 /**
  * Trigger a manual sync (bypasses schedule)
+ * @param {Object} options - Options including database, tickerRegistry, etc.
+ * @param {string} options.source - 'tiingo' or 'yfinance' (default: 'tiingo')
  */
 export async function triggerManualSync(options) {
-  const { database, tickerRegistry, tickerDataRoot, parquetDir, pythonCmd } = options
+  const { database, tickerRegistry, tickerDataRoot, parquetDir, pythonCmd, source = 'tiingo' } = options
   const config = await getScheduleConfig(database)
 
   if (isRunning) {
@@ -475,10 +487,10 @@ export async function triggerManualSync(options) {
   // Reset lastRunDate to allow running
   lastRunDate = null
 
-  // Run sync
-  await runTickerSync(config, tickerDataRoot, parquetDir, pythonCmd, database, tickerRegistry)
+  // Run sync with the specified source
+  await runTickerSync(config, tickerDataRoot, parquetDir, pythonCmd, database, tickerRegistry, source)
 
-  return { success: true, message: 'Sync started' }
+  return { success: true, message: `${source === 'tiingo' ? 'Tiingo' : 'yFinance'} sync started` }
 }
 
 /**

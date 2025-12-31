@@ -9,7 +9,7 @@ export const users = sqliteTable('users', {
   username: text('username').notNull().unique(),
   passwordHash: text('password_hash').notNull(),
   displayName: text('display_name'),
-  role: text('role', { enum: ['user', 'admin', 'partner'] }).default('user'),
+  role: text('role', { enum: ['user', 'engineer', 'sub_admin', 'main_admin', 'partner'] }).default('user'),
   isPartnerEligible: integer('is_partner_eligible', { mode: 'boolean' }).default(false),
   createdAt: integer('created_at', { mode: 'timestamp' }).$defaultFn(() => new Date()),
   updatedAt: integer('updated_at', { mode: 'timestamp' }).$defaultFn(() => new Date()),

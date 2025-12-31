@@ -10,7 +10,7 @@ export const users = sqliteTable('users', {
   email: text('email').unique(),
   passwordHash: text('password_hash').notNull(),
   displayName: text('display_name'),
-  role: text('role', { enum: ['user', 'admin', 'partner'] }).default('user'),
+  role: text('role', { enum: ['user', 'engineer', 'sub_admin', 'main_admin', 'partner'] }).default('user'),
   isPartnerEligible: integer('is_partner_eligible', { mode: 'boolean' }).default(false),
   emailVerified: integer('email_verified', { mode: 'boolean' }).default(false),
   status: text('status').default('pending_verification'), // pending_verification, active, suspended

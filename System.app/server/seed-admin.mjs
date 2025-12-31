@@ -21,11 +21,11 @@ export async function seedAdminUser() {
     `).get(adminEmail.toLowerCase())
 
     if (existingUser) {
-      // User with this email exists - ensure they are admin with correct password
+      // User with this email exists - ensure they are main_admin with correct password
       const passwordHash = await bcrypt.hash(adminPassword, 12)
       sqlite.prepare(`
         UPDATE users SET
-          role = 'admin',
+          role = 'main_admin',
           password_hash = ?,
           email_verified = 1,
           status = 'active',
@@ -34,10 +34,10 @@ export async function seedAdminUser() {
         WHERE id = ?
       `).run(passwordHash, existingUser.id)
 
-      if (existingUser.role === 'admin') {
-        console.log(`[seed] Admin user password updated for: ${adminEmail}`)
+      if (existingUser.role === 'main_admin' || existingUser.role === 'admin') {
+        console.log(`[seed] Main admin user password updated for: ${adminEmail}`)
       } else {
-        console.log(`[seed] Upgraded existing user to admin: ${adminEmail}`)
+        console.log(`[seed] Upgraded existing user to main_admin: ${adminEmail}`)
       }
       return true
     }
@@ -55,7 +55,7 @@ export async function seedAdminUser() {
 
     sqlite.prepare(`
       INSERT INTO users (id, username, password_hash, email, email_verified, status, tier, role, created_at, updated_at)
-      VALUES (?, ?, ?, ?, 1, 'active', 'premium', 'admin', datetime('now'), datetime('now'))
+      VALUES (?, ?, ?, ?, 1, 'active', 'premium', 'main_admin', datetime('now'), datetime('now'))
     `).run(userId, username, passwordHash, adminEmail.toLowerCase())
 
     console.log(`[seed] Admin user created: ${adminEmail}`)

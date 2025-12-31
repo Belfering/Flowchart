@@ -10,7 +10,7 @@ import duckdb from 'duckdb'
 import { encrypt, decrypt } from './utils/crypto.mjs'
 import { seedAdminUser } from './seed-admin.mjs'
 import * as scheduler from './scheduler.mjs'
-import { authenticate, requireSuperAdmin, isSuperAdmin } from './middleware/auth.mjs'
+import { authenticate, requireAdmin, requireSuperAdmin, requireMainAdmin, isSuperAdmin, isMainAdmin, hasAdminAccess, hasEngineerAccess, canChangeUserRole } from './middleware/auth.mjs'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -1008,6 +1008,22 @@ async function readAdminData() {
     if (!data.config.atlasFundSlots) {
       data.config.atlasFundSlots = []
     }
+
+    // Read fee config from database (source of truth) and merge into data.config
+    try {
+      await ensureDbInitialized()
+      const dbConfig = await database.getAdminConfig()
+      if (dbConfig.atlas_fee_percent !== undefined) {
+        data.config.atlasFeePercent = parseFloat(dbConfig.atlas_fee_percent) || 0
+      }
+      if (dbConfig.partner_share_percent !== undefined) {
+        data.config.partnerProgramSharePercent = parseFloat(dbConfig.partner_share_percent) || 0
+      }
+    } catch (dbErr) {
+      // If database is not available, fall back to JSON values
+      console.warn('Could not read admin config from database:', dbErr.message)
+    }
+
     return data
   } catch (e) {
     if (e.code === 'ENOENT') {
@@ -1040,13 +1056,21 @@ app.put('/api/admin/config', async (req, res) => {
   try {
     const data = await readAdminData()
     const { atlasFeePercent, partnerProgramSharePercent, atlasFundSlots } = req.body
+
+    // Update fee percentages in database (source of truth)
+    await ensureDbInitialized()
     if (typeof atlasFeePercent === 'number') {
-      data.config.atlasFeePercent = Math.max(0, Math.min(100, atlasFeePercent))
+      const value = Math.max(0, Math.min(100, atlasFeePercent))
+      await database.setAdminConfig('atlas_fee_percent', String(value))
+      data.config.atlasFeePercent = value
     }
     if (typeof partnerProgramSharePercent === 'number') {
-      data.config.partnerProgramSharePercent = Math.max(0, Math.min(100, partnerProgramSharePercent))
+      const value = Math.max(0, Math.min(100, partnerProgramSharePercent))
+      await database.setAdminConfig('partner_share_percent', String(value))
+      data.config.partnerProgramSharePercent = value
     }
-    // Update Atlas Fund Slots (array of bot IDs)
+
+    // Update Atlas Fund Slots (array of bot IDs) - still stored in JSON
     if (Array.isArray(atlasFundSlots)) {
       data.config.atlasFundSlots = atlasFundSlots.filter(id => typeof id === 'string' && id.length > 0)
     }
@@ -1302,13 +1326,22 @@ app.get('/api/admin/users', authenticate, requireSuperAdmin, async (req, res) =>
   }
 })
 
-// POST /api/admin/users/:userId/grant-admin - Grant admin role (super admin only)
-app.post('/api/admin/users/:userId/grant-admin', authenticate, requireSuperAdmin, async (req, res) => {
+// POST /api/admin/users/:userId/role - Change user role (admins only)
+// main_admin can change anyone to sub_admin, engineer, user, or partner
+// sub_admin can only change users to engineer or user
+app.post('/api/admin/users/:userId/role', authenticate, requireAdmin, async (req, res) => {
   try {
     await ensureDbInitialized()
     const database = await import('./db/index.mjs')
 
     const { userId } = req.params
+    const { role: newRole } = req.body
+
+    // Validate new role
+    const validRoles = ['user', 'engineer', 'sub_admin', 'partner']
+    if (!validRoles.includes(newRole)) {
+      return res.status(400).json({ error: 'Invalid role. Valid roles: user, engineer, sub_admin, partner' })
+    }
 
     // Get the target user
     const targetUser = database.sqlite.prepare(`
@@ -1319,26 +1352,27 @@ app.post('/api/admin/users/:userId/grant-admin', authenticate, requireSuperAdmin
       return res.status(404).json({ error: 'User not found' })
     }
 
-    // Prevent modifying super admin
-    if (targetUser.email === process.env.ADMIN_EMAIL) {
-      return res.status(400).json({ error: 'Cannot modify super admin role' })
+    // Check if actor can change this user's role
+    if (!canChangeUserRole(req.user, targetUser, newRole)) {
+      return res.status(403).json({ error: 'You do not have permission to change this user\'s role' })
     }
 
-    // Update role to admin
+    // Update role
     database.sqlite.prepare(`
-      UPDATE users SET role = 'admin', updated_at = ? WHERE id = ?
-    `).run(Date.now(), userId)
+      UPDATE users SET role = ?, updated_at = ? WHERE id = ?
+    `).run(newRole, Date.now(), userId)
 
-    console.log(`[api] Super admin granted admin role to user ${userId}`)
-    res.json({ success: true, message: 'Admin role granted' })
+    console.log(`[api] ${req.user.email} changed user ${userId} role to ${newRole}`)
+    res.json({ success: true, message: `Role changed to ${newRole}`, newRole })
   } catch (e) {
-    console.error('[api] Error granting admin role:', e)
+    console.error('[api] Error changing user role:', e)
     res.status(500).json({ error: String(e?.message || e) })
   }
 })
 
-// POST /api/admin/users/:userId/revoke-admin - Revoke admin role (super admin only)
-app.post('/api/admin/users/:userId/revoke-admin', authenticate, requireSuperAdmin, async (req, res) => {
+// POST /api/admin/users/:userId/grant-admin - Grant sub_admin role (main admin only)
+// Legacy endpoint - now promotes to sub_admin instead of admin
+app.post('/api/admin/users/:userId/grant-admin', authenticate, requireMainAdmin, async (req, res) => {
   try {
     await ensureDbInitialized()
     const database = await import('./db/index.mjs')
@@ -1354,9 +1388,44 @@ app.post('/api/admin/users/:userId/revoke-admin', authenticate, requireSuperAdmi
       return res.status(404).json({ error: 'User not found' })
     }
 
-    // Prevent modifying super admin
-    if (targetUser.email === process.env.ADMIN_EMAIL) {
-      return res.status(400).json({ error: 'Cannot modify super admin role' })
+    // Prevent modifying main admin
+    if (isMainAdmin(targetUser)) {
+      return res.status(400).json({ error: 'Cannot modify main admin role' })
+    }
+
+    // Update role to sub_admin
+    database.sqlite.prepare(`
+      UPDATE users SET role = 'sub_admin', updated_at = ? WHERE id = ?
+    `).run(Date.now(), userId)
+
+    console.log(`[api] Main admin granted sub_admin role to user ${userId}`)
+    res.json({ success: true, message: 'Sub-admin role granted' })
+  } catch (e) {
+    console.error('[api] Error granting sub_admin role:', e)
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// POST /api/admin/users/:userId/revoke-admin - Revoke admin role (main admin only)
+app.post('/api/admin/users/:userId/revoke-admin', authenticate, requireMainAdmin, async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const database = await import('./db/index.mjs')
+
+    const { userId } = req.params
+
+    // Get the target user
+    const targetUser = database.sqlite.prepare(`
+      SELECT id, email, role FROM users WHERE id = ?
+    `).get(userId)
+
+    if (!targetUser) {
+      return res.status(404).json({ error: 'User not found' })
+    }
+
+    // Prevent modifying main admin
+    if (isMainAdmin(targetUser)) {
+      return res.status(400).json({ error: 'Cannot modify main admin role' })
     }
 
     // Update role to user
@@ -1364,7 +1433,7 @@ app.post('/api/admin/users/:userId/revoke-admin', authenticate, requireSuperAdmi
       UPDATE users SET role = 'user', updated_at = ? WHERE id = ?
     `).run(Date.now(), userId)
 
-    console.log(`[api] Super admin revoked admin role from user ${userId}`)
+    console.log(`[api] Main admin revoked admin role from user ${userId}`)
     res.json({ success: true, message: 'Admin role revoked' })
   } catch (e) {
     console.error('[api] Error revoking admin role:', e)
@@ -1372,13 +1441,17 @@ app.post('/api/admin/users/:userId/revoke-admin', authenticate, requireSuperAdmi
   }
 })
 
-// GET /api/admin/me - Check if current user is super admin
+// GET /api/admin/me - Check current user's admin status
 app.get('/api/admin/me', authenticate, async (req, res) => {
   res.json({
     userId: req.user.id,
     email: req.user.email,
     role: req.user.role,
-    isSuperAdmin: isSuperAdmin(req.user)
+    isMainAdmin: isMainAdmin(req.user),
+    isAdmin: hasAdminAccess(req.user.role),
+    isEngineer: hasEngineerAccess(req.user.role),
+    // Legacy field
+    isSuperAdmin: isMainAdmin(req.user)
   })
 })
 
@@ -2247,8 +2320,12 @@ async function getTickerReturns(ticker) {
 async function getTickerReturnsWithDates(ticker) {
   const tableName = `ticker_${ticker.replace(/[^A-Z0-9]/g, '_')}`
 
+  // Load ticker on-demand if not in memory
   if (!loadedTickers.has(ticker)) {
-    return null // Ticker not loaded
+    const loaded = await loadTickerIntoMemory(ticker)
+    if (!loaded) {
+      return null // Ticker couldn't be loaded
+    }
   }
 
   return new Promise((resolve, reject) => {
@@ -2427,6 +2504,103 @@ app.post('/api/bots/:id/sanity-report', async (req, res) => {
   }
 })
 
+// POST /api/sanity-report - Generate sanity report from payload directly (for unsaved strategies)
+app.post('/api/sanity-report', async (req, res) => {
+  try {
+    const { payload, mode = 'CC', costBps = 5 } = req.body
+
+    if (!payload) {
+      return res.status(400).json({ error: 'payload is required' })
+    }
+
+    const payloadStr = typeof payload === 'string' ? payload : JSON.stringify(payload)
+
+    // Run backtest to get daily returns
+    console.log(`[SanityReport] Running backtest for unsaved strategy with mode=${mode}, costBps=${costBps}...`)
+    const startTime = Date.now()
+
+    const backtestResult = await runBacktest(payloadStr, {
+      mode,
+      costBps,
+    })
+
+    if (!backtestResult.dailyReturns || backtestResult.dailyReturns.length < 50) {
+      return res.status(400).json({
+        error: `Insufficient data: need at least 50 trading days, got ${backtestResult.dailyReturns?.length || 0}`
+      })
+    }
+
+    // Get SPY returns for beta/treynor calculation
+    let spyReturns = null
+    if (loadedTickers.has('SPY')) {
+      try {
+        spyReturns = await getTickerReturns('SPY')
+      } catch (e) {
+        console.warn('[SanityReport] Failed to get SPY returns:', e.message)
+      }
+    }
+
+    // Generate sanity report
+    const report = generateSanityReport(backtestResult.dailyReturns, {
+      years: req.body.years || 5,
+      blockSize: req.body.blockSize || 7,
+      shards: req.body.shards || 10,
+      seed: req.body.seed || 42,
+    }, spyReturns)
+
+    // Compute strategy beta vs each benchmark ticker
+    const benchmarkTickers = ['VTI', 'SPY', 'QQQ', 'DIA', 'DBC', 'DBO', 'GLD', 'BND', 'TLT', 'GBTC']
+    const strategyBetas = {}
+
+    // Build strategy returns map keyed by date
+    if (backtestResult.equityCurve && backtestResult.dailyReturns) {
+      const strategyReturnsMap = new Map()
+      for (let i = 0; i < backtestResult.equityCurve.length && i < backtestResult.dailyReturns.length; i++) {
+        const pt = backtestResult.equityCurve[i]
+        if (pt.date) {
+          strategyReturnsMap.set(pt.date, backtestResult.dailyReturns[i])
+        }
+      }
+
+      for (const ticker of benchmarkTickers) {
+        if (!loadedTickers.has(ticker)) continue
+        try {
+          const benchWithDates = await getTickerReturnsWithDates(ticker)
+          if (benchWithDates && benchWithDates.length > 0) {
+            const benchMap = new Map(benchWithDates.map(r => [r.date, r.return]))
+            const alignedStrategy = []
+            const alignedBench = []
+            for (const [date, stratReturn] of strategyReturnsMap) {
+              if (benchMap.has(date)) {
+                alignedStrategy.push(stratReturn)
+                alignedBench.push(benchMap.get(date))
+              }
+            }
+            if (alignedStrategy.length >= 50) {
+              strategyBetas[ticker] = computeBeta(alignedStrategy, alignedBench)
+            }
+          }
+        } catch (e) {
+          // Skip this ticker
+        }
+      }
+    }
+    report.strategyBetas = strategyBetas
+
+    const elapsed = Date.now() - startTime
+    console.log(`[SanityReport] Completed for unsaved strategy in ${elapsed}ms`)
+
+    res.json({
+      success: true,
+      report,
+      cached: false,
+    })
+  } catch (e) {
+    console.error('[SanityReport] Error:', e)
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
 // ============================================================================
 // Benchmark Metrics Endpoint
 // ============================================================================
@@ -2446,13 +2620,11 @@ app.get('/api/benchmarks/metrics', async (req, res) => {
     const dataDate = await getLatestTickerDataDate()
 
     // First, get SPY returns WITH DATES (needed for beta/treynor calculation with proper alignment)
-    let spyReturnsWithDates = null
+    // This will auto-load SPY into memory if not already loaded
+    let spyReturnsWithDates = await getTickerReturnsWithDates('SPY')
     let spyReturnsMap = null
-    if (loadedTickers.has('SPY')) {
-      spyReturnsWithDates = await getTickerReturnsWithDates('SPY')
-      if (spyReturnsWithDates) {
-        spyReturnsMap = new Map(spyReturnsWithDates.map(r => [r.date, r.return]))
-      }
+    if (spyReturnsWithDates) {
+      spyReturnsMap = new Map(spyReturnsWithDates.map(r => [r.date, r.return]))
     }
 
     const results = {}
@@ -2835,9 +3007,15 @@ app.put('/api/admin/sync-schedule', async (req, res) => {
 })
 
 // POST /api/admin/sync-schedule/run-now - Trigger immediate sync
+// Body: { source: 'tiingo' | 'yfinance' } (optional, defaults to 'tiingo')
 app.post('/api/admin/sync-schedule/run-now', async (req, res) => {
   try {
     await ensureDbInitialized()
+
+    const source = String(req.body?.source || 'tiingo')
+    if (source !== 'tiingo' && source !== 'yfinance') {
+      return res.status(400).json({ error: 'Invalid source. Must be "tiingo" or "yfinance"' })
+    }
 
     const result = await scheduler.triggerManualSync({
       database,
@@ -2845,6 +3023,7 @@ app.post('/api/admin/sync-schedule/run-now', async (req, res) => {
       tickerDataRoot: TICKER_DATA_ROOT,
       parquetDir: PARQUET_DIR,
       pythonCmd: PYTHON,
+      source,
     })
 
     res.json(result)
@@ -2931,6 +3110,10 @@ app.get('/api/admin/db/:table', async (req, res) => {
       'user_preferences': {
         query: `SELECT user_id, theme, color_scheme, updated_at FROM user_preferences ORDER BY updated_at DESC`,
         columns: ['user_id', 'theme', 'color_scheme', 'updated_at']
+      },
+      'ticker_registry': {
+        query: `SELECT ticker, name, asset_type, exchange, is_active, last_synced, start_date, end_date FROM ticker_registry ORDER BY ticker LIMIT 1000`,
+        columns: ['ticker', 'name', 'asset_type', 'exchange', 'is_active', 'last_synced', 'start_date', 'end_date']
       }
     }
 

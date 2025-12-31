@@ -438,6 +438,16 @@ export function initializeDatabase() {
     }
   }
 
+  // Clean up orphaned bots (not in any watchlist)
+  // These are systems that were created but never saved to a watchlist
+  const orphanedBots = sqlite.prepare(`
+    DELETE FROM bots
+    WHERE id NOT IN (SELECT DISTINCT bot_id FROM watchlist_bots)
+  `).run()
+  if (orphanedBots.changes > 0) {
+    console.log(`[DB] Cleaned up ${orphanedBots.changes} orphaned bots (not in any watchlist)`)
+  }
+
   console.log('[DB] Database initialized')
 }
 

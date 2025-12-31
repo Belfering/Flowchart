@@ -21,7 +21,6 @@ import { LoginScreen } from '@/components/LoginScreen'
 import { cn } from '@/lib/utils'
 import {
   AreaSeries,
-  CandlestickSeries,
   ColorType,
   LineSeries,
   LineStyle,
@@ -30,7 +29,6 @@ import {
   createSeriesMarkers,
   type AutoscaleInfo,
   type BusinessDay,
-  type CandlestickData,
   type IChartApi,
   type IPriceLine,
   type IRange,
@@ -2453,67 +2451,6 @@ const cloneAndNormalize = (node: FlowNode): FlowNode => {
   return walk(node)
 }
 
-function CandlesChart({ candles }: { candles: CandlestickData[] }) {
-  const containerRef = useRef<HTMLDivElement | null>(null)
-  const chartRef = useRef<IChartApi | null>(null)
-  const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
-
-  useEffect(() => {
-    const el = containerRef.current
-    if (!el) return
-
-    const innerWidth = () => {
-      const { width } = el.getBoundingClientRect()
-      const cs = getComputedStyle(el)
-      const border =
-        parseFloat(cs.borderLeftWidth || '0') +
-        parseFloat(cs.borderRightWidth || '0') +
-        parseFloat(cs.paddingLeft || '0') +
-        parseFloat(cs.paddingRight || '0')
-      return Math.max(0, width - border)
-    }
-
-    const chart = createChart(el, {
-      width: Math.floor(innerWidth()),
-      height: 420,
-      layout: { background: { type: ColorType.Solid, color: '#ffffff' }, textColor: '#0f172a' },
-      grid: { vertLines: { color: '#eef2f7' }, horzLines: { color: '#eef2f7' } },
-      rightPriceScale: { borderColor: '#cbd5e1' },
-      timeScale: { borderColor: '#cbd5e1' },
-      handleScroll: { mouseWheel: false }, // Disable scroll-to-zoom so page scrolling works
-    })
-    const series = chart.addSeries(CandlestickSeries)
-    chartRef.current = chart
-    seriesRef.current = series
-
-    const ro = new ResizeObserver(() => {
-      if (!chartRef.current) return // Guard against disposed chart
-      chart.applyOptions({ width: Math.floor(innerWidth()) })
-    })
-    ro.observe(el)
-
-    return () => {
-      ro.disconnect()
-      chartRef.current = null // Set to null BEFORE removing to prevent race
-      seriesRef.current = null
-      chart.remove()
-    }
-  }, [])
-
-  useEffect(() => {
-    if (!seriesRef.current) return
-    seriesRef.current.setData(candles)
-    chartRef.current?.timeScale().fitContent()
-  }, [candles])
-
-  return (
-    <div
-      ref={containerRef}
-      className="w-full h-[420px] rounded-xl border border-border overflow-hidden"
-    />
-  )
-}
-
 type EquityPoint = LineData<UTCTimestamp>
 type EquityMarker = { time: UTCTimestamp; text: string }
 
@@ -3877,6 +3814,7 @@ function AllocationChart({
   const containerRef = useRef<HTMLDivElement | null>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const seriesRefs = useRef<Array<ISeriesApi<'Line'>>>([])
+  const [legendData, setLegendData] = useState<{ time: string; allocations: Array<{ name: string; color: string; pct: number }> } | null>(null)
 
   useEffect(() => {
     const el = containerRef.current
@@ -3890,7 +3828,7 @@ function AllocationChart({
         parseFloat(cs.borderRightWidth || '0') +
         parseFloat(cs.paddingLeft || '0') +
         parseFloat(cs.paddingRight || '0')
-      return Math.max(0, width - border)
+      return Math.max(100, width - border) // Minimum 100px to avoid zero-width chart
     }
 
     const isDark = theme === 'dark'
@@ -3904,8 +3842,18 @@ function AllocationChart({
       height: 240,
       layout: { background: { type: ColorType.Solid, color: bgColor }, textColor },
       grid: { vertLines: { color: gridColor }, horzLines: { color: gridColor } },
-      rightPriceScale: { borderColor },
-      timeScale: { borderColor, rightOffset: 0, fixLeftEdge: true, fixRightEdge: true }
+      rightPriceScale: {
+        borderColor,
+        scaleMargins: { top: 0, bottom: 0 },
+      },
+      timeScale: { borderColor, rightOffset: 0, fixLeftEdge: true, fixRightEdge: true },
+      localization: {
+        priceFormatter: (price: number) => `${(price * 100).toFixed(0)}%`,
+      },
+      crosshair: {
+        horzLine: { visible: false, labelVisible: false },
+        vertLine: { visible: true, labelVisible: true },
+      },
     })
     chartRef.current = chart
 
@@ -3920,7 +3868,7 @@ function AllocationChart({
       chartRef.current = null
       seriesRefs.current = []
     }
-  }, [])
+  }, [theme])
 
   useEffect(() => {
     const chart = chartRef.current
@@ -3972,29 +3920,8 @@ function AllocationChart({
       })
     }
 
-    // Add Cash (fallback) series at the top to fill remaining allocation to 100%
-    // Cash = 1.0 at every time point, shown as slate gray
-    const cashColor = '#64748b' // slate-500
-    const cashPoints: EquityPoint[] = []
-    for (const time of timeMap.keys()) {
-      cashPoints.push({ time: time as UTCTimestamp, value: 1.0 })
-    }
-    cashPoints.sort((a, b) => (a.time as number) - (b.time as number))
-
-    // Add Cash series first (it will be at the back, filling to 100%)
-    if (cashPoints.length > 0) {
-      const cashArea = chart.addSeries(AreaSeries, {
-        lineColor: cashColor,
-        topColor: cashColor + '60', // 38% opacity
-        bottomColor: cashColor + '20', // 12% opacity
-        lineWidth: 1,
-        priceFormat: { type: 'percent', precision: 2, minMove: 0.01 },
-      })
-      cashArea.setData(cashPoints)
-      seriesRefs.current.push(cashArea as unknown as ISeriesApi<'Line'>)
-    }
-
-    // Add other series from top to bottom (highest cumulative first)
+    // Add series from top to bottom (highest cumulative first)
+    // The stacking works by drawing from back (100%) to front (smallest allocation)
     for (let i = stackedData.length - 1; i >= 0; i--) {
       const s = stackedData[i]
       const area = chart.addSeries(AreaSeries, {
@@ -4002,7 +3929,8 @@ function AllocationChart({
         topColor: s.topColor,
         bottomColor: s.bottomColor,
         lineWidth: 1,
-        priceFormat: { type: 'percent', precision: 2, minMove: 0.01 },
+        lastValueVisible: false,
+        priceLineVisible: false,
       })
       area.setData(sanitizeSeriesPoints(s.points, { clampMin: 0, clampMax: 1 }))
       seriesRefs.current.push(area as unknown as ISeriesApi<'Line'>)
@@ -4013,14 +3941,104 @@ function AllocationChart({
     } else {
       chart.timeScale().fitContent()
     }
-  }, [series, visibleRange])
+
+    // Add crosshair move handler for dynamic legend
+    chart.subscribeCrosshairMove((param: MouseEventParams) => {
+      if (!param.time || param.point === undefined) {
+        setLegendData(null)
+        return
+      }
+
+      const time = param.time as number
+      const dateStr = new Date(time * 1000).toISOString().slice(0, 10)
+
+      // Get allocations for this time point from original series (not stacked)
+      const allocations: Array<{ name: string; color: string; pct: number }> = []
+      for (const s of series) {
+        const pt = s.points.find(p => (p.time as number) === time)
+        if (pt && pt.value > 0.001) {
+          allocations.push({ name: s.name, color: s.color, pct: pt.value * 100 })
+        }
+      }
+
+      // Sort by percentage descending
+      allocations.sort((a, b) => b.pct - a.pct)
+
+      // Calculate cash (remaining to 100%)
+      const totalPct = allocations.reduce((sum, a) => sum + a.pct, 0)
+      const cashPct = Math.max(0, 100 - totalPct)
+      if (cashPct > 0.1) {
+        allocations.push({ name: 'Cash', color: '#64748b', pct: cashPct })
+      }
+
+      if (allocations.length > 0) {
+        setLegendData({ time: dateStr, allocations })
+      } else {
+        setLegendData(null)
+      }
+    })
+  }, [series, visibleRange, theme])
+
+  const isDark = theme === 'dark'
+
+  // Build default legend from series (when not hovering)
+  const defaultLegend = series.map(s => ({ name: s.name, color: s.color }))
 
   return (
-    <div
-      ref={containerRef}
-      className="w-full h-[240px] rounded-xl border border-border overflow-hidden"
-    />
+    <div className="flex gap-4" style={{ width: '100%' }}>
+      <div
+        ref={containerRef}
+        className="h-[240px] rounded-xl border border-border overflow-hidden"
+        style={{ flex: '1 1 0', minWidth: 0 }}
+      />
+      <div
+        className="rounded-xl border border-border p-3 overflow-auto h-[240px]"
+        style={{
+          width: '200px',
+          flexShrink: 0,
+          background: isDark ? '#1e293b' : '#ffffff',
+        }}
+      >
+          {legendData ? (
+            <>
+              <div className="font-bold text-sm mb-2 pb-2 border-b border-border">{legendData.time}</div>
+              <div className="grid gap-1">
+                {legendData.allocations.map((a) => (
+                  <div key={a.name} className="flex items-center gap-2 text-sm">
+                    <span className="w-3 h-3 rounded flex-shrink-0" style={{ background: a.color }} />
+                    <span className="font-medium flex-1">{a.name}</span>
+                    <span className="font-mono tabular-nums">{a.pct.toFixed(1)}%</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="font-bold text-sm mb-2 pb-2 border-b border-border text-muted">Hover for details</div>
+              <div className="grid gap-1">
+                {defaultLegend.map((s) => (
+                  <div key={s.name} className="flex items-center gap-2 text-sm">
+                    <span className="w-3 h-3 rounded flex-shrink-0" style={{ background: s.color }} />
+                    <span className="font-medium">{s.name}</span>
+                  </div>
+                ))}
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="w-3 h-3 rounded flex-shrink-0" style={{ background: '#64748b' }} />
+                  <span className="font-medium">Cash</span>
+                </div>
+              </div>
+            </>
+          )}
+      </div>
+    </div>
   )
+}
+
+type TickerSearchResult = {
+  ticker: string
+  name: string | null
+  description: string | null
+  assetType: string | null
 }
 
 function AdminDataPanel({
@@ -4031,10 +4049,40 @@ function AdminDataPanel({
   error: string | null
 }) {
   const [selected, setSelected] = useState<string>(() => tickers[0] || '')
+  const [searchQuery, setSearchQuery] = useState<string>('')
+  const [searchResults, setSearchResults] = useState<TickerSearchResult[]>([])
+  const [searchOpen, setSearchOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const [dataError, setDataError] = useState<string | null>(null)
-  const [candles, setCandles] = useState<CandlestickData[]>([])
   const [preview, setPreview] = useState<AdminCandlesResponse['preview']>([])
+
+  // Search tickers by metadata
+  useEffect(() => {
+    if (!searchQuery.trim() || searchQuery.length < 2) {
+      setSearchResults([])
+      return
+    }
+
+    const controller = new AbortController()
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/tickers/registry/search?q=${encodeURIComponent(searchQuery)}&limit=10`, {
+          signal: controller.signal
+        })
+        if (res.ok) {
+          const data = await res.json() as TickerSearchResult[]
+          setSearchResults(data)
+        }
+      } catch {
+        // Ignore abort errors
+      }
+    }, 200) // Debounce
+
+    return () => {
+      clearTimeout(timer)
+      controller.abort()
+    }
+  }, [searchQuery])
 
   const load = useCallback(
     async (ticker: string) => {
@@ -4042,29 +4090,19 @@ function AdminDataPanel({
       setLoading(true)
       setDataError(null)
       try {
-        const res = await fetch(`/api/candles/${encodeURIComponent(ticker)}?limit=1500`)
+        const res = await fetch(`/api/candles/${encodeURIComponent(ticker)}?limit=50`)
         const payload = (await res.json()) as AdminCandlesResponse | { error: string }
         if (!res.ok) throw new Error('error' in payload ? payload.error : `Request failed (${res.status})`)
         const p = payload as AdminCandlesResponse
         setPreview(p.preview || [])
-        setCandles(
-          (p.candles || []).map((c) => ({
-            time: c.time as UTCTimestamp,
-            open: c.open,
-            high: c.high,
-            low: c.low,
-            close: c.close,
-          })),
-        )
       } catch (e) {
-        setCandles([])
         setPreview([])
         setDataError(String((e as Error)?.message || e))
       } finally {
         setLoading(false)
       }
     },
-    [setCandles],
+    [],
   )
 
   useEffect(() => {
@@ -4076,29 +4114,60 @@ function AdminDataPanel({
     void load(selected)
   }, [selected, load])
 
+  const selectTicker = (ticker: string) => {
+    setSelected(ticker)
+    setSearchQuery('')
+    setSearchResults([])
+    setSearchOpen(false)
+  }
+
   const combinedError = error || dataError
 
   return (
     <div>
       <div className="flex gap-2.5 items-center flex-wrap">
-        <div className="font-extrabold">Ticker</div>
-        <Select value={selected} onChange={(e) => setSelected(e.target.value)}>
-          {tickers.map((t) => (
-            <option key={t} value={t}>
-              {t}
-            </option>
-          ))}
-        </Select>
+        <div className="font-extrabold">Search</div>
+        <div className="relative">
+          <Input
+            value={searchQuery}
+            onChange={(e) => {
+              setSearchQuery(e.target.value)
+              setSearchOpen(true)
+            }}
+            onFocus={() => setSearchOpen(true)}
+            placeholder="Search by ticker, name, or description..."
+            className="w-72"
+          />
+          {searchOpen && searchResults.length > 0 && (
+            <div className="absolute top-full left-0 right-0 mt-1 bg-surface border border-border rounded-lg shadow-lg z-50 max-h-60 overflow-auto">
+              {searchResults.map((r) => (
+                <button
+                  key={r.ticker}
+                  className="w-full px-3 py-2 text-left hover:bg-muted border-b border-border last:border-b-0"
+                  onClick={() => selectTicker(r.ticker)}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold">{r.ticker}</span>
+                    {r.assetType && (
+                      <span className="text-xs px-1 py-0.5 bg-primary/10 text-primary rounded">
+                        {r.assetType}
+                      </span>
+                    )}
+                  </div>
+                  {r.name && <div className="text-sm text-muted-foreground truncate">{r.name}</div>}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="font-extrabold">Selected:</div>
+        <div className="font-mono bg-muted px-2 py-1 rounded">{selected || 'None'}</div>
         <Button onClick={() => void load(selected)} disabled={!selected || loading}>
           {loading ? 'Loading…' : 'Refresh'}
         </Button>
       </div>
 
       {combinedError && <div className="mt-2.5 text-danger font-bold">{combinedError}</div>}
-
-      <div className="mt-3">
-        <CandlesChart candles={candles} />
-      </div>
 
       <div className="mt-3">
         <div className="font-extrabold mb-1.5">Ticker data preview (last 50 rows)</div>
@@ -4198,7 +4267,7 @@ function AdminPanel({
 
   // Sync Schedule state (for simplified admin panel)
   const [syncSchedule, setSyncSchedule] = useState<{
-    config: { enabled: boolean; updateTime: string; timezone: string }
+    config: { enabled: boolean; updateTime: string; timezone: string; batchSize?: number; sleepSeconds?: number }
     lastSync: { date: string; status: string; syncedCount?: number; tickerCount?: number; timestamp?: string } | null
     status: { isRunning: boolean; schedulerActive: boolean; currentJob?: { pid: number; syncedCount: number; tickerCount: number; startedAt: number } }
   } | null>(null)
@@ -4624,40 +4693,36 @@ function AdminPanel({
     saveEligibilityRequirements(newReqs)
   }, [eligibilityRequirements, saveEligibilityRequirements])
 
-  // User Management: Grant/revoke admin role (super admin only)
-  const handleGrantAdmin = useCallback(async (targetUserId: string) => {
+  // User Management: Change user role (main_admin or sub_admin)
+  const handleChangeRole = useCallback(async (targetUserId: string, newRole: string) => {
     try {
-      const res = await fetch(`/api/admin/users/${targetUserId}/grant-admin`, {
+      const res = await fetch(`/api/admin/users/${targetUserId}/role`, {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${localStorage.getItem('accessToken')}` }
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('accessToken')}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ role: newRole })
       })
       if (!res.ok) {
         const err = await res.json()
-        throw new Error(err.error || 'Failed to grant admin')
+        throw new Error(err.error || 'Failed to change role')
       }
       // Update local state
-      setAdminUsers(prev => prev.map(u => u.id === targetUserId ? { ...u, role: 'admin' } : u))
+      setAdminUsers(prev => prev.map(u => u.id === targetUserId ? { ...u, role: newRole } : u))
     } catch (e) {
       setAdminUsersError(String((e as Error)?.message || e))
     }
   }, [])
 
+  // Legacy handlers that use the new role change API
+  const handleGrantAdmin = useCallback(async (targetUserId: string) => {
+    await handleChangeRole(targetUserId, 'sub_admin')
+  }, [handleChangeRole])
+
   const handleRevokeAdmin = useCallback(async (targetUserId: string) => {
-    try {
-      const res = await fetch(`/api/admin/users/${targetUserId}/revoke-admin`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${localStorage.getItem('accessToken')}` }
-      })
-      if (!res.ok) {
-        const err = await res.json()
-        throw new Error(err.error || 'Failed to revoke admin')
-      }
-      // Update local state
-      setAdminUsers(prev => prev.map(u => u.id === targetUserId ? { ...u, role: 'user' } : u))
-    } catch (e) {
-      setAdminUsersError(String((e as Error)?.message || e))
-    }
-  }, [])
+    await handleChangeRole(targetUserId, 'user')
+  }, [handleChangeRole])
 
 
   return (
@@ -5274,34 +5339,10 @@ function AdminPanel({
 
           {/* ========== ACTIONS ========== */}
           <div className="flex gap-3 flex-wrap">
-            <Button
-              variant="default"
-              disabled={syncSchedule?.status?.isRunning || !registryStats?.pending}
-              onClick={async () => {
-                if (!confirm(`Download data for ${registryStats?.pending?.toLocaleString() ?? 0} pending tickers?`)) return
-                setRegistryMsg('Starting download...')
-                try {
-                  const res = await fetch('/api/admin/sync-schedule/run-now', { method: 'POST' })
-                  const data = await res.json()
-                  if (res.ok) {
-                    setRegistryMsg(data.message || 'Download started')
-                    // Refresh status
-                    const schedRes = await fetch('/api/admin/sync-schedule')
-                    if (schedRes.ok) setSyncSchedule(await schedRes.json())
-                  } else {
-                    setRegistryMsg(`Error: ${data.error}`)
-                  }
-                } catch (e) {
-                  setRegistryMsg(`Error: ${e}`)
-                }
-              }}
-            >
-              {syncSchedule?.status?.isRunning ? 'Download Running...' : `Download All (${registryStats?.pending?.toLocaleString() ?? 0})`}
-            </Button>
-
+            {/* Refresh Ticker List */}
             <Button
               variant="outline"
-              disabled={registrySyncing}
+              disabled={registrySyncing || syncSchedule?.status?.isRunning}
               onClick={async () => {
                 setRegistrySyncing(true)
                 setRegistryMsg(null)
@@ -5322,9 +5363,69 @@ function AdminPanel({
                 }
               }}
             >
-              {registrySyncing ? 'Syncing...' : 'Refresh Ticker List'}
+              {registrySyncing ? 'Syncing...' : 'Refresh Tickers'}
             </Button>
 
+            {/* yFinance Download - downloads all parquet tickers */}
+            <Button
+              variant="default"
+              disabled={syncSchedule?.status?.isRunning}
+              onClick={async () => {
+                if (!confirm(`Download/update ${parquetTickers.length.toLocaleString()} tickers from yFinance?`)) return
+                setRegistryMsg('Starting yFinance download...')
+                try {
+                  const res = await fetch('/api/admin/sync-schedule/run-now', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ source: 'yfinance', tickers: parquetTickers })
+                  })
+                  const data = await res.json()
+                  if (res.ok) {
+                    setRegistryMsg(data.message || 'yFinance download started')
+                    const schedRes = await fetch('/api/admin/sync-schedule')
+                    if (schedRes.ok) setSyncSchedule(await schedRes.json())
+                  } else {
+                    setRegistryMsg(`Error: ${data.error}`)
+                  }
+                } catch (e) {
+                  setRegistryMsg(`Error: ${e}`)
+                }
+              }}
+            >
+              {syncSchedule?.status?.isRunning ? 'Running...' : `yFinance (${parquetTickers.length.toLocaleString()})`}
+            </Button>
+
+            {/* Tiingo Download - fills gaps from yFinance */}
+            <Button
+              variant="default"
+              disabled={syncSchedule?.status?.isRunning || !tiingoKeyStatus.hasKey}
+              onClick={async () => {
+                if (!confirm(`Download missing data and metadata from Tiingo for ${parquetTickers.length.toLocaleString()} tickers?`)) return
+                setRegistryMsg('Starting Tiingo download (fills gaps + metadata)...')
+                try {
+                  const res = await fetch('/api/admin/sync-schedule/run-now', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ source: 'tiingo', tickers: parquetTickers, fillGaps: true })
+                  })
+                  const data = await res.json()
+                  if (res.ok) {
+                    setRegistryMsg(data.message || 'Tiingo download started')
+                    const schedRes = await fetch('/api/admin/sync-schedule')
+                    if (schedRes.ok) setSyncSchedule(await schedRes.json())
+                  } else {
+                    setRegistryMsg(`Error: ${data.error}`)
+                  }
+                } catch (e) {
+                  setRegistryMsg(`Error: ${e}`)
+                }
+              }}
+              title={!tiingoKeyStatus.hasKey ? 'Configure Tiingo API key first' : undefined}
+            >
+              {syncSchedule?.status?.isRunning ? 'Running...' : `Tiingo (${parquetTickers.length.toLocaleString()})`}
+            </Button>
+
+            {/* Refresh Stats */}
             <Button
               variant="ghost"
               onClick={async () => {
@@ -5344,6 +5445,66 @@ function AdminPanel({
             >
               Refresh Stats
             </Button>
+          </div>
+
+          {/* ========== BATCH & PAUSE SETTINGS ========== */}
+          <div className="flex items-center gap-6 px-1">
+            <div className="flex items-center gap-2">
+              <label className="text-sm text-muted-foreground whitespace-nowrap">Batch Size:</label>
+              <input
+                type="number"
+                min="1"
+                max="500"
+                value={syncSchedule?.config?.batchSize ?? 100}
+                onChange={async (e) => {
+                  const val = Math.max(1, Math.min(500, parseInt(e.target.value) || 100))
+                  try {
+                    const res = await fetch('/api/admin/sync-schedule', {
+                      method: 'PUT',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ batchSize: val })
+                    })
+                    if (res.ok) {
+                      const schedRes = await fetch('/api/admin/sync-schedule')
+                      if (schedRes.ok) setSyncSchedule(await schedRes.json())
+                    }
+                  } catch {
+                    setRegistryMsg('Error updating batch size')
+                  }
+                }}
+                className="w-20 px-2 py-1 rounded border border-border bg-background text-sm"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="text-sm text-muted-foreground whitespace-nowrap">Pause (sec):</label>
+              <input
+                type="number"
+                min="0"
+                max="60"
+                step="0.5"
+                value={syncSchedule?.config?.sleepSeconds ?? 2}
+                onChange={async (e) => {
+                  const val = Math.max(0, Math.min(60, parseFloat(e.target.value) || 2))
+                  try {
+                    const res = await fetch('/api/admin/sync-schedule', {
+                      method: 'PUT',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ sleepSeconds: val })
+                    })
+                    if (res.ok) {
+                      const schedRes = await fetch('/api/admin/sync-schedule')
+                      if (schedRes.ok) setSyncSchedule(await schedRes.json())
+                    }
+                  } catch {
+                    setRegistryMsg('Error updating pause time')
+                  }
+                }}
+                className="w-20 px-2 py-1 rounded border border-border bg-background text-sm"
+              />
+            </div>
+            <span className="text-xs text-muted-foreground">
+              Download {syncSchedule?.config?.batchSize ?? 100} tickers, then wait {syncSchedule?.config?.sleepSeconds ?? 2}s
+            </span>
           </div>
 
           {/* ========== SCHEDULE SETTINGS ========== */}
@@ -5681,17 +5842,21 @@ function AdminPanel({
                       <TableCell className="font-medium">
                         {user.displayName || user.username}
                         {user.isSuperAdmin && (
-                          <span className="ml-2 text-xs bg-primary/20 text-primary px-1 py-0.5 rounded">
-                            Super Admin
+                          <span className="ml-2 text-xs bg-purple-500/20 text-purple-500 px-1 py-0.5 rounded">
+                            Main Admin
                           </span>
                         )}
                       </TableCell>
                       <TableCell className="text-muted-foreground text-sm">{user.email}</TableCell>
                       <TableCell>
                         <span className={`px-2 py-0.5 rounded text-xs ${
-                          user.role === 'admin' ? 'bg-amber-500/20 text-amber-500' : 'bg-muted text-muted-foreground'
+                          user.role === 'main_admin' || user.role === 'admin' ? 'bg-purple-500/20 text-purple-500' :
+                          user.role === 'sub_admin' ? 'bg-amber-500/20 text-amber-500' :
+                          user.role === 'engineer' ? 'bg-blue-500/20 text-blue-500' :
+                          user.role === 'partner' ? 'bg-green-500/20 text-green-500' :
+                          'bg-muted text-muted-foreground'
                         }`}>
-                          {user.role}
+                          {user.role === 'main_admin' || user.role === 'admin' ? 'main_admin' : user.role}
                         </span>
                       </TableCell>
                       <TableCell className="text-muted-foreground text-sm">
@@ -5701,23 +5866,22 @@ function AdminPanel({
                       </TableCell>
                       <TableCell className="text-right">
                         {user.isSuperAdmin ? (
-                          <span className="text-xs text-muted-foreground">—</span>
-                        ) : user.role === 'admin' ? (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => void handleRevokeAdmin(user.id)}
-                          >
-                            Revoke Admin
-                          </Button>
+                          <span className="text-xs text-muted-foreground italic">Protected</span>
                         ) : (
-                          <Button
-                            size="sm"
-                            variant="default"
-                            onClick={() => void handleGrantAdmin(user.id)}
+                          <Select
+                            value={user.role === 'admin' ? 'main_admin' : user.role}
+                            onValueChange={(newRole) => void handleChangeRole(user.id, newRole)}
                           >
-                            Grant Admin
-                          </Button>
+                            <SelectTrigger className="w-32 h-7 text-xs">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="user">user</SelectItem>
+                              <SelectItem value="partner">partner</SelectItem>
+                              <SelectItem value="engineer">engineer</SelectItem>
+                              <SelectItem value="sub_admin">sub_admin</SelectItem>
+                            </SelectContent>
+                          </Select>
                         )}
                       </TableCell>
                     </TableRow>
@@ -5735,7 +5899,7 @@ function AdminPanel({
 // ============================================
 // DATABASES PANEL - View all database tables
 // ============================================
-type DatabasesSubtab = 'Users' | 'Systems' | 'Portfolios' | 'Cache' | 'Admin Config'
+type DatabasesSubtab = 'Users' | 'Systems' | 'Portfolios' | 'Cache' | 'Admin Config' | 'Tickers'
 type DbSortConfig = { col: string; dir: 'asc' | 'desc' }
 
 function DatabasesPanel({
@@ -5783,6 +5947,7 @@ function DatabasesPanel({
       'Portfolios': 'portfolios',
       'Cache': 'cache',
       'Admin Config': 'admin_config',
+      'Tickers': 'ticker_registry',
     }
     fetchTable(tableMap[databasesTab])
   }, [databasesTab, fetchTable])
@@ -5802,7 +5967,7 @@ function DatabasesPanel({
       <div className="flex items-center gap-3 mb-6">
         <div className="font-black text-lg">Databases</div>
         <div className="flex gap-2">
-          {(['Users', 'Systems', 'Portfolios', 'Cache', 'Admin Config'] as const).map((t) => (
+          {(['Users', 'Systems', 'Portfolios', 'Cache', 'Admin Config', 'Tickers'] as const).map((t) => (
             <Button
               key={t}
               variant={databasesTab === t ? 'accent' : 'secondary'}
@@ -5823,6 +5988,7 @@ function DatabasesPanel({
               'Portfolios': 'portfolios',
               'Cache': 'cache',
               'Admin Config': 'admin_config',
+              'Tickers': 'ticker_registry',
             }
             fetchTable(tableMap[databasesTab])
           }}
@@ -7026,7 +7192,9 @@ const InsertMenu = ({
   index,
   onAdd,
   onPaste,
+  onPasteCallRef,
   clipboard,
+  copiedCallChainId,
   onClose,
 }: {
   parentId: string
@@ -7034,7 +7202,9 @@ const InsertMenu = ({
   index: number
   onAdd: (parentId: string, slot: SlotId, index: number, kind: BlockKind) => void
   onPaste: (parentId: string, slot: SlotId, index: number, child: FlowNode) => void
+  onPasteCallRef: (parentId: string, slot: SlotId, index: number, callChainId: string) => void
   clipboard: FlowNode | null
+  copiedCallChainId: string | null
   onClose: () => void
 }) => (
   <div className="insert-menu" onClick={(e) => e.stopPropagation()}>
@@ -7053,9 +7223,11 @@ const InsertMenu = ({
     <button onClick={() => { onAdd(parentId, parentSlot, index, 'numbered'); onClose() }}>
       Numbered
     </button>
-    <button onClick={() => { onAdd(parentId, parentSlot, index, 'call'); onClose() }}>
-      Call Reference
-    </button>
+    {copiedCallChainId && (
+      <button onClick={() => { onPasteCallRef(parentId, parentSlot, index, copiedCallChainId); onClose() }}>
+        Paste Call Reference
+      </button>
+    )}
     <button onClick={() => { onAdd(parentId, parentSlot, index, 'altExit'); onClose() }}>
       Enter/Exit
     </button>
@@ -7089,6 +7261,7 @@ type CardProps = {
   onDelete: (id: string) => void
   onCopy: (id: string) => void
   onPaste: (parentId: string, slot: SlotId, index: number, child: FlowNode) => void
+  onPasteCallRef: (parentId: string, slot: SlotId, index: number, callChainId: string) => void
   onRename: (id: string, title: string) => void
   onWeightChange: (id: string, weight: WeightMode, branch?: 'then' | 'else') => void
   onUpdateCappedFallback: (id: string, choice: PositionChoice, branch?: 'then' | 'else') => void
@@ -7128,6 +7301,7 @@ type CardProps = {
   onChoosePosition: (id: string, index: number, choice: PositionChoice) => void
   clipboard: FlowNode | null
   copiedNodeId: string | null
+  copiedCallChainId: string | null
   callChains: CallChain[]
   onUpdateCallRef: (id: string, callId: string | null) => void
   // Alt Exit handlers
@@ -7218,6 +7392,7 @@ const NodeCard = ({
   onDelete,
   onCopy,
   onPaste,
+  onPasteCallRef,
   onRename,
   onWeightChange,
   onUpdateCappedFallback,
@@ -7241,6 +7416,7 @@ const NodeCard = ({
   onChoosePosition,
   clipboard,
   copiedNodeId,
+  copiedCallChainId,
   callChains,
   onUpdateCallRef,
   onAddEntryCondition,
@@ -7332,7 +7508,9 @@ const NodeCard = ({
                     index={0}
                     onAdd={onAdd}
                     onPaste={onPaste}
+                    onPasteCallRef={onPasteCallRef}
                     clipboard={clipboard}
+                    copiedCallChainId={copiedCallChainId}
                     onClose={() => setAddRowOpen(null)}
                   />
                 )}
@@ -7376,7 +7554,9 @@ const NodeCard = ({
                       index={originalIndex}
                       onAdd={onAdd}
                       onPaste={onPaste}
+                      onPasteCallRef={onPasteCallRef}
                       clipboard={clipboard}
+                      copiedCallChainId={copiedCallChainId}
                       onClose={() => setAddRowOpen(null)}
                     />
                   )}
@@ -7401,6 +7581,7 @@ const NodeCard = ({
                     onDelete={onDelete}
                     onCopy={onCopy}
                     onPaste={onPaste}
+                    onPasteCallRef={onPasteCallRef}
                     onRename={onRename}
                     onWeightChange={onWeightChange}
                     onUpdateCappedFallback={onUpdateCappedFallback}
@@ -7424,6 +7605,7 @@ const NodeCard = ({
                   onChoosePosition={onChoosePosition}
                   clipboard={clipboard}
                   copiedNodeId={copiedNodeId}
+                  copiedCallChainId={copiedCallChainId}
                   callChains={callChains}
                   onUpdateCallRef={onUpdateCallRef}
                   onAddEntryCondition={onAddEntryCondition}
@@ -7471,7 +7653,9 @@ const NodeCard = ({
                         index={originalIndex + 1}
                         onAdd={onAdd}
                         onPaste={onPaste}
+                        onPasteCallRef={onPasteCallRef}
                         clipboard={clipboard}
+                        copiedCallChainId={copiedCallChainId}
                         onClose={() => setAddRowOpen(null)}
                       />
                     )}
@@ -9616,7 +9800,7 @@ const renderMonthlyHeatmap = (
               {monthLabels.map((_, idx) => {
                 const month = idx + 1
                 const v = byKey.get(`${y}-${month}`)
-                const style = v == null ? { background: '#ffffff', color: '#94a3b8' } : bgFor(v)
+                const style = v == null ? { background: neutralBg, color: neutralText } : bgFor(v)
                 return (
                   <td key={`${y}-${month}`} className="month-cell" style={{ background: style.background, color: style.color }}>
                     {v == null ? '' : `${(v * 100).toFixed(1)}%`}
@@ -11828,6 +12012,12 @@ type BacktesterPanelProps = {
   onJumpToError: (err: BacktestError) => void
   indicatorOverlays?: IndicatorOverlayData[]
   theme?: 'dark' | 'light'
+  // Benchmarks tab
+  benchmarkMetrics?: { status: 'idle' | 'loading' | 'done' | 'error'; data?: Record<string, ComparisonMetrics>; error?: string }
+  onFetchBenchmarks?: () => void
+  // Robustness tab
+  modelSanityReport?: SanityReportState
+  onFetchRobustness?: () => void
 }
 
 function BacktesterPanel({
@@ -11847,8 +12037,12 @@ function BacktesterPanel({
   onJumpToError,
   indicatorOverlays,
   theme = 'light',
+  benchmarkMetrics,
+  onFetchBenchmarks,
+  modelSanityReport,
+  onFetchRobustness,
 }: BacktesterPanelProps) {
-  const [tab, setTab] = useState<'Overview' | 'In Depth'>('Overview')
+  const [tab, setTab] = useState<'Overview' | 'In Depth' | 'Benchmarks' | 'Robustness'>('Overview')
   const [selectedRange, setSelectedRange] = useState<VisibleRange | null>(null)
   const [logScale, setLogScale] = useState(true)
   const [activePreset, setActivePreset] = useState<'1m' | '3m' | '6m' | 'ytd' | '1y' | '5y' | 'max' | 'custom'>('max')
@@ -12177,7 +12371,7 @@ function BacktesterPanel({
       </CardHeader>
       <CardContent className="grid gap-3">
         <div className="flex gap-2">
-          {(['Overview', 'In Depth'] as const).map((t) => (
+          {(['Overview', 'In Depth', 'Benchmarks', 'Robustness'] as const).map((t) => (
             <Button key={t} variant={tab === t ? 'accent' : 'secondary'} size="sm" onClick={() => setTab(t)}>
               {t}
             </Button>
@@ -12358,8 +12552,13 @@ function BacktesterPanel({
           </>
         ) : result && tab === 'In Depth' ? (
           <>
-            <div className="saved-item grid grid-cols-2 gap-4 items-start">
-              <div className="monthly-heatmap overflow-auto">{renderMonthlyHeatmap(result.monthly, result.days, theme)}</div>
+            <div className="saved-item grid grid-cols-2 gap-4 items-stretch">
+              <div className="border border-border rounded-lg p-3 flex flex-col" style={{ height: '320px' }}>
+                <div className="font-black mb-1.5">Monthly Returns</div>
+                <div className="flex-1 overflow-auto min-h-0">
+                  {renderMonthlyHeatmap(result.monthly, result.days, theme)}
+                </div>
+              </div>
               <div className="border border-border rounded-lg p-3 flex flex-col" style={{ height: '320px' }}>
                 <div className="font-black mb-1.5">Allocations (recent)</div>
                 <div className="flex-1 overflow-auto font-mono text-xs min-h-0">
@@ -12379,16 +12578,7 @@ function BacktesterPanel({
               </div>
             </div>
             <div className="saved-item">
-              <div className="font-black mb-1.5">Allocation over time (top 10 + cash)</div>
               <AllocationChart series={allocationSeries} visibleRange={visibleRange} theme={theme} />
-              <div className="backtester-legend">
-                {allocationSeries.map((s) => (
-                  <div key={s.name} className="legend-item">
-                    <span className="legend-swatch" style={{ background: s.color }} />
-                    <span>{s.name}</span>
-                  </div>
-                ))}
-              </div>
             </div>
             <div className="saved-item grid grid-cols-2 gap-4 items-start">
               <div className="border border-border rounded-lg p-3 flex flex-col" style={{ height: '280px' }}>
@@ -12498,6 +12688,595 @@ function BacktesterPanel({
               </div>
             </Card>
           </>
+        ) : result && tab === 'Benchmarks' ? (
+          <div className="saved-item flex flex-col gap-2.5 h-full min-w-0">
+            <div className="flex items-center justify-between gap-2.5">
+              <div className="font-black">Benchmark Comparison</div>
+              <Button
+                size="sm"
+                onClick={() => onFetchBenchmarks?.()}
+                disabled={benchmarkMetrics?.status === 'loading'}
+              >
+                {benchmarkMetrics?.status === 'loading' ? 'Loading...' : benchmarkMetrics?.status === 'done' ? 'Refresh' : 'Load Benchmarks'}
+              </Button>
+            </div>
+            {benchmarkMetrics?.status === 'idle' && (
+              <div className="text-muted text-sm p-4 border border-border rounded-xl text-center">
+                Click "Load Benchmarks" to compare your strategy against major indices (VTI, SPY, QQQ, etc.).
+              </div>
+            )}
+            {benchmarkMetrics?.status === 'loading' && (
+              <div className="text-muted text-sm p-4 border border-border rounded-xl text-center">
+                <div className="animate-pulse">Loading benchmark data...</div>
+              </div>
+            )}
+            {benchmarkMetrics?.status === 'error' && (
+              <div className="text-danger text-sm p-4 border border-danger rounded-xl">
+                Error: {benchmarkMetrics.error}
+              </div>
+            )}
+            {benchmarkMetrics?.status === 'done' && benchmarkMetrics.data && (
+              <div className="flex-1 overflow-auto border border-border rounded-xl max-w-full">
+                {(() => {
+                  const benchmarks = benchmarkMetrics.data
+                  const strategyMetrics = result.metrics
+
+                  // Helper to format metrics for display
+                  const fmt = (v: number | undefined, isPct = false, isRatio = false) => {
+                    if (v === undefined || !Number.isFinite(v)) return '—'
+                    if (isPct) return `${(v * 100).toFixed(1)}%`
+                    if (isRatio) return v.toFixed(2)
+                    return v.toFixed(2)
+                  }
+
+                  // Helper to format alpha difference with color
+                  const fmtAlpha = (stratVal: number | undefined, rowVal: number | undefined, isPct = false, isHigherBetter = true) => {
+                    if (stratVal === undefined || rowVal === undefined || !Number.isFinite(stratVal) || !Number.isFinite(rowVal)) return null
+                    const diff = stratVal - rowVal
+                    const stratIsBetter = isHigherBetter ? diff > 0 : (stratVal < 0 ? diff > 0 : diff < 0)
+                    const color = stratIsBetter ? 'text-success' : diff === 0 ? 'text-muted' : 'text-danger'
+                    const sign = diff > 0 ? '+' : ''
+                    const formatted = isPct ? `${sign}${(diff * 100).toFixed(1)}%` : `${sign}${diff.toFixed(2)}`
+                    return <span className={`${color} text-xs ml-1`}>({formatted})</span>
+                  }
+
+                  // Get Monte Carlo and K-Fold metrics if available from modelSanityReport
+                  const mcMetrics = modelSanityReport?.report?.pathRisk?.comparisonMetrics?.monteCarlo
+                  const kfMetrics = modelSanityReport?.report?.pathRisk?.comparisonMetrics?.kfold
+                  const strategyBetas: Record<string, number> = (modelSanityReport?.report as { strategyBetas?: Record<string, number> })?.strategyBetas ?? {}
+
+                  // Build row data - MC is baseline if available, otherwise Your Strategy
+                  type RowData = { label: string; metrics: ComparisonMetrics | undefined; isBaseline?: boolean; ticker?: string }
+                  const rowData: RowData[] = [
+                    { label: mcMetrics ? 'Monte Carlo Comparison' : 'Your Strategy', metrics: mcMetrics ?? { cagr50: strategyMetrics.cagr, maxdd50: strategyMetrics.maxDrawdown, maxdd95: strategyMetrics.maxDrawdown, calmar50: strategyMetrics.calmar, calmar95: strategyMetrics.calmar, sharpe: strategyMetrics.sharpe, sortino: strategyMetrics.sortino, treynor: strategyMetrics.treynor ?? 0, beta: strategyMetrics.beta ?? 1, volatility: strategyMetrics.vol, winRate: strategyMetrics.winRate }, isBaseline: true },
+                    ...(kfMetrics ? [{ label: 'K-Fold Comparison', metrics: kfMetrics }] : []),
+                    { label: 'Benchmark VTI', metrics: benchmarks['VTI'], ticker: 'VTI' },
+                    { label: 'Benchmark SPY', metrics: benchmarks['SPY'], ticker: 'SPY' },
+                    { label: 'Benchmark QQQ', metrics: benchmarks['QQQ'], ticker: 'QQQ' },
+                    { label: 'Benchmark DIA', metrics: benchmarks['DIA'], ticker: 'DIA' },
+                    { label: 'Benchmark DBC', metrics: benchmarks['DBC'], ticker: 'DBC' },
+                    { label: 'Benchmark DBO', metrics: benchmarks['DBO'], ticker: 'DBO' },
+                    { label: 'Benchmark GLD', metrics: benchmarks['GLD'], ticker: 'GLD' },
+                    { label: 'Benchmark BND', metrics: benchmarks['BND'], ticker: 'BND' },
+                    { label: 'Benchmark TLT', metrics: benchmarks['TLT'], ticker: 'TLT' },
+                    { label: 'Benchmark GBTC', metrics: benchmarks['GBTC'], ticker: 'GBTC' },
+                  ]
+
+                  // Define columns with "higher is better" flag for alpha coloring
+                  const cols: { key: keyof ComparisonMetrics; label: string; isPct?: boolean; isRatio?: boolean; higherBetter?: boolean }[] = [
+                    { key: 'cagr50', label: 'CAGR-50', isPct: true, higherBetter: true },
+                    { key: 'maxdd50', label: 'MaxDD-50', isPct: true, higherBetter: false },
+                    { key: 'maxdd95', label: 'Tail Risk-DD95', isPct: true, higherBetter: false },
+                    { key: 'calmar50', label: 'Calmar-50', isRatio: true, higherBetter: true },
+                    { key: 'calmar95', label: 'Calmar-95', isRatio: true, higherBetter: true },
+                    { key: 'sharpe', label: 'Sharpe', isRatio: true, higherBetter: true },
+                    { key: 'sortino', label: 'Sortino', isRatio: true, higherBetter: true },
+                    { key: 'treynor', label: 'Treynor', isRatio: true, higherBetter: true },
+                    { key: 'beta', label: 'Beta', isRatio: true, higherBetter: false },
+                    { key: 'volatility', label: 'Volatility', isPct: true, higherBetter: false },
+                    { key: 'winRate', label: 'Win Rate', isPct: true, higherBetter: true },
+                  ]
+
+                  const stratMetrics = rowData[0].metrics
+
+                  return (
+                    <table className="analyze-compare-table">
+                      <thead>
+                        <tr>
+                          <th>Comparison</th>
+                          {cols.map((c) => (
+                            <th key={c.key}>{c.label}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rowData.map((row) => (
+                          <tr key={row.label}>
+                            <td className={row.isBaseline ? 'font-bold' : ''}>{row.label}</td>
+                            {cols.map((c) => {
+                              // For Beta column in benchmark rows, show strategy beta vs that ticker
+                              let val = row.metrics?.[c.key]
+                              if (c.key === 'beta' && row.ticker && strategyBetas[row.ticker] !== undefined) {
+                                val = strategyBetas[row.ticker]
+                              }
+                              // Show alpha vs MC/Strategy for all non-baseline rows
+                              const showAlpha = !row.isBaseline && stratMetrics
+                              const mcVal = stratMetrics?.[c.key]
+                              const alpha = showAlpha ? fmtAlpha(mcVal, val, c.isPct ?? false, c.higherBetter ?? true) : null
+                              return (
+                                <td key={c.key}>
+                                  {fmt(val, c.isPct ?? false, c.isRatio ?? false)}
+                                  {alpha}
+                                </td>
+                              )
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )
+                })()}
+              </div>
+            )}
+          </div>
+        ) : result && tab === 'Robustness' ? (
+          <div className="saved-item flex flex-col gap-2.5 h-full min-w-0">
+            {(() => {
+              const sanityState = modelSanityReport ?? { status: 'idle' as const }
+              const getLevelColor = (level: string) => {
+                if (level === 'Low') return 'text-success'
+                if (level === 'Medium') return 'text-warning'
+                if (level === 'High' || level === 'Fragile') return 'text-danger'
+                return 'text-muted'
+              }
+              const getLevelIcon = (level: string) => {
+                if (level === 'Low') return '🟢'
+                if (level === 'Medium') return '🟡'
+                if (level === 'High' || level === 'Fragile') return '🔴'
+                return '⚪'
+              }
+              const formatPctVal = (v: number) => Number.isFinite(v) ? `${(v * 100).toFixed(1)}%` : '--'
+
+              return (
+                <>
+                  <div className="flex items-center justify-between gap-2.5">
+                    <div className="font-black">Robustness Analysis</div>
+                    <Button
+                      size="sm"
+                      onClick={() => onFetchRobustness?.()}
+                      disabled={sanityState.status === 'loading'}
+                    >
+                      {sanityState.status === 'loading' ? 'Running...' : sanityState.status === 'done' ? 'Re-run' : 'Generate'}
+                    </Button>
+                  </div>
+
+                  {sanityState.status === 'idle' && (
+                    <div className="text-muted text-sm p-4 border border-border rounded-xl text-center">
+                      Click "Generate" to run bootstrap simulations and fragility analysis.
+                      <br />
+                      <span className="text-xs">Note: Save the bot first to run robustness analysis via the API.</span>
+                    </div>
+                  )}
+
+                  {sanityState.status === 'loading' && (
+                    <div className="text-muted text-sm p-4 border border-border rounded-xl text-center">
+                      <div className="animate-pulse">Running bootstrap simulations...</div>
+                      <div className="text-xs mt-1">Monte Carlo + K-Fold analysis in progress</div>
+                    </div>
+                  )}
+
+                  {sanityState.status === 'error' && (
+                    <div className="text-danger text-sm p-4 border border-danger rounded-xl">
+                      Error: {sanityState.error}
+                    </div>
+                  )}
+
+                  {sanityState.status === 'done' && sanityState.report && (
+                    <>
+                      {/* 4-Column Grid Layout */}
+                      <div className="grid grid-cols-4 gap-3 w-full h-full">
+                        {/* Left Card: Summary & Fragility */}
+                        <div className="border border-border rounded-xl p-3 flex flex-col gap-3 h-full">
+                          {/* Summary */}
+                          <div>
+                            <div className="text-xs font-bold mb-1.5 text-center">Summary</div>
+                            {sanityState.report.summary.length > 0 ? (
+                              <ul className="text-xs space-y-0.5">
+                                {sanityState.report.summary.map((s, i) => (
+                                  <li key={i} className="flex items-start gap-1.5">
+                                    <span className="text-warning">•</span>
+                                    <span>{s}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            ) : (
+                              <div className="text-xs text-muted">No major red flags detected.</div>
+                            )}
+                          </div>
+
+                          {/* Fragility Table (Condensed) */}
+                          <div>
+                            <div className="text-xs font-bold mb-1.5 text-center">Fragility Fingerprints</div>
+                            <div className="space-y-1">
+                              {[
+                                { name: 'Sub-Period', data: sanityState.report.fragility.subPeriodStability, tooltip: 'Consistency of returns across different time periods. Low = stable across all periods.' },
+                                { name: 'Profit Conc.', data: sanityState.report.fragility.profitConcentration, tooltip: 'How concentrated profits are in a few big days. Low = profits spread evenly.' },
+                                { name: 'Smoothness', data: sanityState.report.fragility.smoothnessScore, tooltip: 'How smooth the equity curve is. Normal = acceptable volatility in growth.' },
+                                { name: 'Thinning', data: sanityState.report.fragility.thinningFragility, tooltip: 'Sensitivity to removing random trades. Robust = performance holds when trades removed.' },
+                              ].map(({ name, data, tooltip }) => (
+                                <div key={name} className="flex items-center gap-2 text-xs" title={tooltip}>
+                                  <span className="w-20 truncate text-muted cursor-help">{name}</span>
+                                  <span className={cn("w-16", getLevelColor(data.level))}>
+                                    {getLevelIcon(data.level)} {data.level}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+
+                          {/* DD Probabilities */}
+                          <div>
+                            <div className="text-xs font-bold mb-1.5 text-center">DD Probability</div>
+                            <div className="space-y-0.5 text-xs">
+                              <div><span className="font-semibold">{formatPctVal(sanityState.report.pathRisk.drawdownProbabilities.gt20)}</span> chance of 20% DD</div>
+                              <div><span className="font-semibold">{formatPctVal(sanityState.report.pathRisk.drawdownProbabilities.gt30)}</span> chance of 30% DD</div>
+                              <div><span className="font-semibold">{formatPctVal(sanityState.report.pathRisk.drawdownProbabilities.gt40)}</span> chance of 40% DD</div>
+                              <div><span className="font-semibold">{formatPctVal(sanityState.report.pathRisk.drawdownProbabilities.gt50)}</span> chance of 50% DD</div>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Middle Card: Monte Carlo */}
+                        <div className="border border-border rounded-xl p-3 flex flex-col h-full">
+                          <div className="text-xs font-bold mb-2 text-center">Monte Carlo (2000 years)</div>
+
+                          {/* MC Drawdown Distribution */}
+                          <div className="mb-3">
+                            <div className="text-xs text-muted mb-1 cursor-help text-center" title="Distribution of maximum drawdowns across 400 simulated 5-year paths (2000 total years). Shows worst-case (P5), median, and best-case (P95) scenarios.">Max Drawdown Distribution</div>
+                            {(() => {
+                              const dd = sanityState.report.pathRisk.monteCarlo.drawdowns
+                              const minVal = dd.p95
+                              const maxVal = dd.p5
+                              const range = maxVal - minVal || 0.01
+                              const toPos = (v: number) => Math.max(0, Math.min(100, ((v - minVal) / range) * 100))
+                              return (
+                                <>
+                                  <div className="relative h-4 bg-muted/30 rounded overflow-hidden">
+                                    <div
+                                      className="absolute h-full bg-danger/40"
+                                      style={{ left: `${toPos(dd.p75)}%`, width: `${Math.abs(toPos(dd.p25) - toPos(dd.p75))}%` }}
+                                    />
+                                    <div
+                                      className="absolute h-full w-0.5 bg-danger"
+                                      style={{ left: `${toPos(dd.p50)}%` }}
+                                    />
+                                  </div>
+                                  <div className="flex justify-between text-xs mt-0.5">
+                                    <span className="text-danger">P95: {formatPctVal(dd.p5)}</span>
+                                    <span className="font-semibold">P50: {formatPctVal(dd.p50)}</span>
+                                    <span className="text-success">P5: {formatPctVal(dd.p95)}</span>
+                                  </div>
+                                </>
+                              )
+                            })()}
+                          </div>
+
+                          {/* MC CAGR Distribution */}
+                          <div className="mb-3">
+                            <div className="text-xs text-muted mb-1 cursor-help text-center" title="Distribution of annualized returns (CAGR) across 200 simulated 5-year paths. P5 is worst, P95 is best expected returns.">CAGR Distribution</div>
+                            {(() => {
+                              const cagr = sanityState.report.pathRisk.monteCarlo.cagrs
+                              const minVal = Math.min(cagr.p5, cagr.p95)
+                              const maxVal = Math.max(cagr.p5, cagr.p95)
+                              const range = maxVal - minVal || 1
+                              const toPos = (v: number) => ((v - minVal) / range) * 100
+                              return (
+                                <>
+                                  <div className="relative h-4 bg-muted/30 rounded overflow-hidden">
+                                    <div
+                                      className="absolute h-full bg-success/40"
+                                      style={{ left: `${toPos(cagr.p25)}%`, width: `${toPos(cagr.p75) - toPos(cagr.p25)}%` }}
+                                    />
+                                    <div
+                                      className="absolute h-full w-0.5 bg-success"
+                                      style={{ left: `${toPos(cagr.p50)}%` }}
+                                    />
+                                  </div>
+                                  <div className="flex justify-between text-xs mt-0.5">
+                                    <span className="text-danger">P5: {formatPctVal(cagr.p5)}</span>
+                                    <span className="font-semibold">P50: {formatPctVal(cagr.p50)}</span>
+                                    <span className="text-success">P95: {formatPctVal(cagr.p95)}</span>
+                                  </div>
+                                </>
+                              )
+                            })()}
+                          </div>
+
+                          {/* MC Sharpe Distribution */}
+                          {sanityState.report.pathRisk.monteCarlo.sharpes && (
+                            <div className="mb-3">
+                              <div className="text-xs text-muted mb-1 cursor-help text-center" title="Distribution of Sharpe ratios across Monte Carlo simulations. Higher is better.">Sharpe Distribution</div>
+                              {(() => {
+                                const sh = sanityState.report.pathRisk.monteCarlo.sharpes
+                                const minVal = sh.p5
+                                const maxVal = sh.p95
+                                const range = maxVal - minVal || 0.01
+                                const toPos = (v: number) => Math.max(0, Math.min(100, ((v - minVal) / range) * 100))
+                                const hasP25P75 = sh.p25 != null && sh.p75 != null
+                                return (
+                                  <>
+                                    <div className="relative h-4 bg-muted/30 rounded overflow-hidden">
+                                      {hasP25P75 && (
+                                        <div
+                                          className="absolute h-full bg-success/40"
+                                          style={{ left: `${toPos(sh.p25)}%`, width: `${toPos(sh.p75) - toPos(sh.p25)}%` }}
+                                        />
+                                      )}
+                                      <div
+                                        className="absolute h-full w-0.5 bg-success"
+                                        style={{ left: `${toPos(sh.p50)}%` }}
+                                      />
+                                    </div>
+                                    <div className="flex justify-between text-xs mt-0.5">
+                                      <span className="text-danger">P5: {sh.p5?.toFixed(2) ?? '-'}</span>
+                                      <span className="font-semibold">P50: {sh.p50?.toFixed(2) ?? '-'}</span>
+                                      <span className="text-success">P95: {sh.p95?.toFixed(2) ?? '-'}</span>
+                                    </div>
+                                  </>
+                                )
+                              })()}
+                            </div>
+                          )}
+
+                          {/* MC Volatility Distribution */}
+                          {sanityState.report.pathRisk.monteCarlo.volatilities && (
+                            <div>
+                              <div className="text-xs text-muted mb-1 cursor-help text-center" title="Distribution of annualized volatility across Monte Carlo simulations. Lower is generally better.">Volatility Distribution</div>
+                              {(() => {
+                                const vol = sanityState.report.pathRisk.monteCarlo.volatilities
+                                const minVal = vol.p95
+                                const maxVal = vol.p5
+                                const range = maxVal - minVal || 0.01
+                                const toPos = (v: number) => Math.max(0, Math.min(100, ((v - minVal) / range) * 100))
+                                const hasP25P75 = vol.p25 != null && vol.p75 != null
+                                return (
+                                  <>
+                                    <div className="relative h-4 bg-muted/30 rounded overflow-hidden">
+                                      {hasP25P75 && (
+                                        <div
+                                          className="absolute h-full bg-danger/40"
+                                          style={{ left: `${toPos(vol.p75)}%`, width: `${toPos(vol.p25) - toPos(vol.p75)}%` }}
+                                        />
+                                      )}
+                                      <div
+                                        className="absolute h-full w-0.5 bg-danger"
+                                        style={{ left: `${toPos(vol.p50)}%` }}
+                                      />
+                                    </div>
+                                    <div className="flex justify-between text-xs mt-0.5">
+                                      <span className="text-danger">P95: {formatPctVal(vol.p95)}</span>
+                                      <span className="font-semibold">P50: {formatPctVal(vol.p50)}</span>
+                                      <span className="text-success">P5: {formatPctVal(vol.p5)}</span>
+                                    </div>
+                                  </>
+                                )
+                              })()}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Distribution Curves Card */}
+                        <div className="border border-border rounded-xl p-3 flex flex-col gap-3 h-full">
+                          <div className="text-xs font-bold mb-1 text-center">Distribution Curves</div>
+
+                          {/* CAGR Distribution Bar Chart */}
+                          <div>
+                            <div className="text-xs text-muted mb-1 cursor-help text-center" title="Distribution of CAGR values across 200 Monte Carlo simulations. Each bar represents a bucket of CAGR values.">CAGR Distribution</div>
+                            {(() => {
+                              const histogram = sanityState.report.pathRisk.monteCarlo.cagrs.histogram
+                              if (!histogram || histogram.length === 0) return <div className="text-xs text-muted">No histogram data</div>
+                              const maxCount = Math.max(...histogram.map((b: { count: number }) => b.count))
+                              return (
+                                <div className="flex items-end gap-px h-16">
+                                  {histogram.map((bucket: { midpoint: number; count: number; min: number; max: number }, i: number) => {
+                                    const heightPct = maxCount > 0 ? (bucket.count / maxCount) * 100 : 0
+                                    const isPositive = bucket.midpoint >= 0
+                                    return (
+                                      <div
+                                        key={i}
+                                        className={`flex-1 rounded-t ${isPositive ? 'bg-success/60' : 'bg-danger/60'}`}
+                                        style={{ height: `${heightPct}%`, minHeight: bucket.count > 0 ? '2px' : '0' }}
+                                        title={`${(bucket.min * 100).toFixed(1)}% to ${(bucket.max * 100).toFixed(1)}%: ${bucket.count} sims`}
+                                      />
+                                    )
+                                  })}
+                                </div>
+                              )
+                            })()}
+                            <div className="flex justify-between text-xs mt-0.5">
+                              <span className="text-muted">{((sanityState.report.pathRisk.monteCarlo.cagrs.histogram?.[0]?.min ?? 0) * 100).toFixed(0)}%</span>
+                              <span className="text-muted">{((sanityState.report.pathRisk.monteCarlo.cagrs.histogram?.[sanityState.report.pathRisk.monteCarlo.cagrs.histogram.length - 1]?.max ?? 0) * 100).toFixed(0)}%</span>
+                            </div>
+                          </div>
+
+                          {/* MaxDD Distribution Bar Chart */}
+                          <div>
+                            <div className="text-xs text-muted mb-1 cursor-help text-center" title="Distribution of Max Drawdown values across 200 Monte Carlo simulations. Each bar represents a bucket of drawdown values.">Max Drawdown Distribution</div>
+                            {(() => {
+                              const histogram = sanityState.report.pathRisk.monteCarlo.drawdowns.histogram
+                              if (!histogram || histogram.length === 0) return <div className="text-xs text-muted">No histogram data</div>
+                              const maxCount = Math.max(...histogram.map((b: { count: number }) => b.count))
+                              return (
+                                <div className="flex items-end gap-px h-16">
+                                  {histogram.map((bucket: { midpoint: number; count: number; min: number; max: number }, i: number) => {
+                                    const heightPct = maxCount > 0 ? (bucket.count / maxCount) * 100 : 0
+                                    const severity = Math.abs(bucket.midpoint)
+                                    const bgClass = severity > 0.4 ? 'bg-danger/80' : severity > 0.25 ? 'bg-danger/60' : 'bg-warning/60'
+                                    return (
+                                      <div
+                                        key={i}
+                                        className={`flex-1 rounded-t ${bgClass}`}
+                                        style={{ height: `${heightPct}%`, minHeight: bucket.count > 0 ? '2px' : '0' }}
+                                        title={`${(bucket.min * 100).toFixed(1)}% to ${(bucket.max * 100).toFixed(1)}%: ${bucket.count} sims`}
+                                      />
+                                    )
+                                  })}
+                                </div>
+                              )
+                            })()}
+                            <div className="flex justify-between text-xs mt-0.5">
+                              <span className="text-muted">{((sanityState.report.pathRisk.monteCarlo.drawdowns.histogram?.[0]?.min ?? 0) * 100).toFixed(0)}%</span>
+                              <span className="text-muted">{((sanityState.report.pathRisk.monteCarlo.drawdowns.histogram?.[sanityState.report.pathRisk.monteCarlo.drawdowns.histogram.length - 1]?.max ?? 0) * 100).toFixed(0)}%</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Right Card: K-Fold */}
+                        <div className="border border-border rounded-xl p-3 flex flex-col h-full">
+                          <div className="text-xs font-bold mb-2 text-center">K-Fold (200 Folds)</div>
+
+                          {/* KF Drawdown Distribution */}
+                          <div className="mb-3">
+                            <div className="text-xs text-muted mb-1 cursor-help text-center" title="Distribution of maximum drawdowns across 200 K-Fold subsets (90% of data each). Tests stability when portions of history are removed.">Max Drawdown Distribution</div>
+                            {(() => {
+                              const dd = sanityState.report.pathRisk.kfold.drawdowns
+                              const minVal = dd.p95
+                              const maxVal = dd.p5
+                              const range = maxVal - minVal || 0.01
+                              const toPos = (v: number) => Math.max(0, Math.min(100, ((v - minVal) / range) * 100))
+                              return (
+                                <>
+                                  <div className="relative h-4 bg-muted/30 rounded overflow-hidden">
+                                    <div
+                                      className="absolute h-full bg-danger/40"
+                                      style={{ left: `${toPos(dd.p75)}%`, width: `${Math.abs(toPos(dd.p25) - toPos(dd.p75))}%` }}
+                                    />
+                                    <div
+                                      className="absolute h-full w-0.5 bg-danger"
+                                      style={{ left: `${toPos(dd.p50)}%` }}
+                                    />
+                                  </div>
+                                  <div className="flex justify-between text-xs mt-0.5">
+                                    <span className="text-danger">P95: {formatPctVal(dd.p5)}</span>
+                                    <span className="font-semibold">P50: {formatPctVal(dd.p50)}</span>
+                                    <span className="text-success">P5: {formatPctVal(dd.p95)}</span>
+                                  </div>
+                                </>
+                              )
+                            })()}
+                          </div>
+
+                          {/* KF CAGR Distribution */}
+                          <div className="mb-3">
+                            <div className="text-xs text-muted mb-1 cursor-help text-center" title="Distribution of annualized returns across 200 K-Fold subsets. Tests how consistent CAGR is when portions of history are removed.">CAGR Distribution</div>
+                            {(() => {
+                              const cagr = sanityState.report.pathRisk.kfold.cagrs
+                              const minVal = Math.min(cagr.p5, cagr.p95)
+                              const maxVal = Math.max(cagr.p5, cagr.p95)
+                              const range = maxVal - minVal || 1
+                              const toPos = (v: number) => ((v - minVal) / range) * 100
+                              return (
+                                <>
+                                  <div className="relative h-4 bg-muted/30 rounded overflow-hidden">
+                                    <div
+                                      className="absolute h-full bg-success/40"
+                                      style={{ left: `${toPos(cagr.p25)}%`, width: `${toPos(cagr.p75) - toPos(cagr.p25)}%` }}
+                                    />
+                                    <div
+                                      className="absolute h-full w-0.5 bg-success"
+                                      style={{ left: `${toPos(cagr.p50)}%` }}
+                                    />
+                                  </div>
+                                  <div className="flex justify-between text-xs mt-0.5">
+                                    <span className="text-danger">P5: {formatPctVal(cagr.p5)}</span>
+                                    <span className="font-semibold">P50: {formatPctVal(cagr.p50)}</span>
+                                    <span className="text-success">P95: {formatPctVal(cagr.p95)}</span>
+                                  </div>
+                                </>
+                              )
+                            })()}
+                          </div>
+
+                          {/* KF Sharpe Distribution */}
+                          {sanityState.report.pathRisk.kfold.sharpes && (
+                            <div className="mb-3">
+                              <div className="text-xs text-muted mb-1 cursor-help text-center" title="Distribution of Sharpe ratios across K-Fold subsets. Higher is better.">Sharpe Distribution</div>
+                              {(() => {
+                                const sh = sanityState.report.pathRisk.kfold.sharpes
+                                const minVal = sh.p5
+                                const maxVal = sh.p95
+                                const range = maxVal - minVal || 0.01
+                                const toPos = (v: number) => Math.max(0, Math.min(100, ((v - minVal) / range) * 100))
+                                const hasP25P75 = sh.p25 != null && sh.p75 != null
+                                return (
+                                  <>
+                                    <div className="relative h-4 bg-muted/30 rounded overflow-hidden">
+                                      {hasP25P75 && (
+                                        <div
+                                          className="absolute h-full bg-success/40"
+                                          style={{ left: `${toPos(sh.p25)}%`, width: `${toPos(sh.p75) - toPos(sh.p25)}%` }}
+                                        />
+                                      )}
+                                      <div
+                                        className="absolute h-full w-0.5 bg-success"
+                                        style={{ left: `${toPos(sh.p50)}%` }}
+                                      />
+                                    </div>
+                                    <div className="flex justify-between text-xs mt-0.5">
+                                      <span className="text-danger">P5: {sh.p5?.toFixed(2) ?? '-'}</span>
+                                      <span className="font-semibold">P50: {sh.p50?.toFixed(2) ?? '-'}</span>
+                                      <span className="text-success">P95: {sh.p95?.toFixed(2) ?? '-'}</span>
+                                    </div>
+                                  </>
+                                )
+                              })()}
+                            </div>
+                          )}
+
+                          {/* KF Volatility Distribution */}
+                          {sanityState.report.pathRisk.kfold.volatilities && (
+                            <div>
+                              <div className="text-xs text-muted mb-1 cursor-help text-center" title="Distribution of annualized volatility across K-Fold subsets. Lower is generally better.">Volatility Distribution</div>
+                              {(() => {
+                                const vol = sanityState.report.pathRisk.kfold.volatilities
+                                const minVal = vol.p95
+                                const maxVal = vol.p5
+                                const range = maxVal - minVal || 0.01
+                                const toPos = (v: number) => Math.max(0, Math.min(100, ((v - minVal) / range) * 100))
+                                const hasP25P75 = vol.p25 != null && vol.p75 != null
+                                return (
+                                  <>
+                                    <div className="relative h-4 bg-muted/30 rounded overflow-hidden">
+                                      {hasP25P75 && (
+                                        <div
+                                          className="absolute h-full bg-danger/40"
+                                          style={{ left: `${toPos(vol.p75)}%`, width: `${toPos(vol.p25) - toPos(vol.p75)}%` }}
+                                        />
+                                      )}
+                                      <div
+                                        className="absolute h-full w-0.5 bg-danger"
+                                        style={{ left: `${toPos(vol.p50)}%` }}
+                                      />
+                                    </div>
+                                    <div className="flex justify-between text-xs mt-0.5">
+                                      <span className="text-danger">P95: {formatPctVal(vol.p95)}</span>
+                                      <span className="font-semibold">P50: {formatPctVal(vol.p50)}</span>
+                                      <span className="text-success">P5: {formatPctVal(vol.p5)}</span>
+                                    </div>
+                                  </>
+                                )
+                              })()}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                    </>
+                  )}
+                </>
+              )
+            })()}
+          </div>
         ) : status === 'running' ? (
           <div className="text-muted font-bold p-4 text-center">Running backtest…</div>
         ) : (
@@ -12553,8 +13332,13 @@ function App() {
   const [userId, setUserId] = useState<UserId | null>(() => initialUserId)
   const [userRole, setUserRole] = useState<string | null>(() => initialUserRole)
 
-  // Check if current user is admin
-  const isAdmin = userRole === 'admin'
+  // Role hierarchy checks
+  // Admin = sub_admin, main_admin, or legacy 'admin' role
+  const isAdmin = userRole === 'admin' || userRole === 'main_admin' || userRole === 'sub_admin'
+  // Main admin = main_admin or legacy 'admin' role (can manage other admins)
+  const isMainAdmin = userRole === 'admin' || userRole === 'main_admin'
+  // Engineer access = engineer or higher (for Databases tab)
+  const hasEngineerAccess = userRole === 'engineer' || userRole === 'sub_admin' || userRole === 'main_admin' || userRole === 'admin'
 
   const [savedBots, setSavedBots] = useState<SavedBot[]>(() => initialUserData.savedBots)
   const [watchlists, setWatchlists] = useState<Watchlist[]>(() => initialUserData.watchlists)
@@ -12573,6 +13357,9 @@ function App() {
     data?: Record<string, ComparisonMetrics>
     error?: string
   }>({ status: 'idle' })
+
+  // Model tab sanity report state (for unsaved models being built)
+  const [modelSanityReport, setModelSanityReport] = useState<SanityReportState>({ status: 'idle' })
 
   // Cross-user Nexus bots for Nexus tab (populated via API in useEffect)
   const [allNexusBots, setAllNexusBots] = useState<SavedBot[]>([])
@@ -13009,12 +13796,13 @@ function App() {
   const [activeBotId, setActiveBotId] = useState<string>(() => initialBot.id)
   const [clipboard, setClipboard] = useState<FlowNode | null>(null)
   const [copiedNodeId, setCopiedNodeId] = useState<string | null>(null) // Track original node ID that was copied
+  const [copiedCallChainId, setCopiedCallChainId] = useState<string | null>(null) // Track copied Call Chain ID
   const [isImporting, setIsImporting] = useState(false)
   const [tab, setTab] = useState<'Dashboard' | 'Nexus' | 'Analyze' | 'Model' | 'Help/Support' | 'Admin' | 'Databases'>('Model')
   const [dashboardSubtab, setDashboardSubtab] = useState<'Portfolio' | 'Partner Program'>('Portfolio')
   const [analyzeSubtab, setAnalyzeSubtab] = useState<'Systems' | 'Correlation Tool'>('Systems')
   const [adminTab, setAdminTab] = useState<AdminSubtab>('Atlas Overview')
-  const [databasesTab, setDatabasesTab] = useState<'Users' | 'Systems' | 'Portfolios' | 'Cache' | 'Admin Config'>('Users')
+  const [databasesTab, setDatabasesTab] = useState<DatabasesSubtab>('Users')
 
   // Eligibility requirements (fetched for Admin tab and Partner Program page)
   const [appEligibilityRequirements, setAppEligibilityRequirements] = useState<EligibilityRequirement[]>([])
@@ -13721,6 +14509,17 @@ function App() {
     (parentId: string, slot: SlotId, index: number, child: FlowNode) => {
       // Use single-pass clone + normalize for better performance
       const next = insertAtSlot(current, parentId, slot, index, cloneAndNormalize(child))
+      push(next)
+    },
+    [current, push],
+  )
+
+  const handlePasteCallRef = useCallback(
+    (parentId: string, slot: SlotId, index: number, callChainId: string) => {
+      // Create a call node with the callRefId pre-set
+      const callNode = createNode('call')
+      callNode.callRefId = callChainId
+      const next = insertAtSlot(current, parentId, slot, index, ensureSlots(callNode))
       push(next)
     },
     [current, push],
@@ -14724,6 +15523,46 @@ function App() {
     }
   }, [benchmarkMetrics.status])
 
+  // Run robustness analysis for the Model tab (works with saved or unsaved strategies)
+  const runModelRobustness = useCallback(async () => {
+    const savedBotId = activeBot?.savedBotId
+
+    setModelSanityReport({ status: 'loading' })
+
+    try {
+      let res: Response
+
+      if (savedBotId) {
+        // Use saved bot endpoint (cached)
+        res = await fetch(`${API_BASE}/bots/${savedBotId}/sanity-report`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: backtestMode, costBps: backtestCostBps }),
+        })
+      } else {
+        // Use direct payload endpoint for unsaved strategies
+        // Send the current tree as the payload (same format as saved bots)
+        const payload = JSON.stringify(ensureSlots(cloneNode(current)))
+        res = await fetch(`${API_BASE}/sanity-report`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ payload, mode: backtestMode, costBps: backtestCostBps }),
+        })
+      }
+
+      if (res.ok) {
+        const data = await res.json() as { success: boolean; report: SanityReport; cached: boolean; cachedAt?: number }
+        setModelSanityReport({ status: 'done', report: data.report })
+      } else {
+        const errorData = await res.json().catch(() => ({ error: 'Server sanity report failed' }))
+        setModelSanityReport({ status: 'error', error: errorData.error || 'Failed to generate sanity report' })
+      }
+    } catch (err) {
+      const message = String((err as Error)?.message || err)
+      setModelSanityReport({ status: 'error', error: message })
+    }
+  }, [activeBot?.savedBotId, current, callChains, backtestMode, backtestCostBps])
+
   const runAnalyzeTickerContribution = useCallback(
     async (key: string, ticker: string, botResult: BacktestResult) => {
       setAnalyzeTickerContrib((prev) => {
@@ -15429,7 +16268,7 @@ function App() {
             </div>
           </div>
           <div className="flex gap-2 mt-3">
-            {(['Dashboard', 'Nexus', 'Analyze', 'Model', 'Help/Support', ...(isAdmin ? ['Admin', 'Databases'] : [])] as ('Dashboard' | 'Nexus' | 'Analyze' | 'Model' | 'Help/Support' | 'Admin' | 'Databases')[]).map((t) => (
+            {(['Dashboard', 'Nexus', 'Analyze', 'Model', 'Help/Support', ...(isAdmin ? ['Admin'] : []), ...(hasEngineerAccess ? ['Databases'] : [])] as ('Dashboard' | 'Nexus' | 'Analyze' | 'Model' | 'Help/Support' | 'Admin' | 'Databases')[]).map((t) => (
               <Button
                 key={t}
                 variant={tab === t ? 'accent' : 'secondary'}
@@ -15779,6 +16618,10 @@ function App() {
                   onJumpToError={handleJumpToBacktestError}
                   indicatorOverlays={indicatorOverlayData}
                   theme={uiState.theme}
+                  benchmarkMetrics={benchmarkMetrics}
+                  onFetchBenchmarks={fetchBenchmarkMetrics}
+                  modelSanityReport={modelSanityReport}
+                  onFetchRobustness={runModelRobustness}
                 />
               </div>
 
@@ -15855,18 +16698,19 @@ function App() {
                               {c.collapsed ? 'Expand' : 'Collapse'}
                             </Button>
                             <Button
-                              variant="ghost"
+                              variant={copiedCallChainId === c.id ? 'accent' : 'ghost'}
                               size="sm"
                               onClick={async () => {
                                 try {
                                   await navigator.clipboard.writeText(c.id)
+                                  setCopiedCallChainId(c.id)
                                 } catch {
                                   // ignore
                                 }
                               }}
-                              title="Copy call ID"
+                              title={copiedCallChainId === c.id ? 'Call ID copied!' : 'Copy call ID'}
                             >
-                              Copy ID
+                              {copiedCallChainId === c.id ? 'Copied!' : 'Copy ID'}
                             </Button>
                             <Button
                               variant="destructive"
@@ -15914,6 +16758,12 @@ function App() {
                                 onPaste={(parentId, slot, index, child) => {
                                   // Use single-pass clone + normalize for better performance
                                   const next = insertAtSlot(c.root, parentId, slot, index, cloneAndNormalize(child))
+                                  pushCallChain(c.id, next)
+                                }}
+                                onPasteCallRef={(parentId, slot, index, callChainId) => {
+                                  const callNode = createNode('call')
+                                  callNode.callRefId = callChainId
+                                  const next = insertAtSlot(c.root, parentId, slot, index, ensureSlots(callNode))
                                   pushCallChain(c.id, next)
                                 }}
                                 onRename={(id, title) => {
@@ -15998,6 +16848,7 @@ function App() {
                                 }}
                                 clipboard={clipboard}
                                 copiedNodeId={copiedNodeId}
+                                copiedCallChainId={copiedCallChainId}
                                 callChains={callChains}
                                 onUpdateCallRef={(id, callId) => {
                                   const next = updateCallReference(c.root, id, callId)
@@ -16092,6 +16943,7 @@ function App() {
                     onDelete={handleDelete}
                     onCopy={handleCopy}
                     onPaste={handlePaste}
+                    onPasteCallRef={handlePasteCallRef}
                     onRename={handleRename}
                     onWeightChange={handleWeightChange}
                     onUpdateCappedFallback={handleUpdateCappedFallback}
@@ -16117,6 +16969,7 @@ function App() {
                     onChoosePosition={handleChoosePos}
                     clipboard={clipboard}
                     copiedNodeId={copiedNodeId}
+                    copiedCallChainId={copiedCallChainId}
                     callChains={callChains}
                     onUpdateCallRef={handleUpdateCallRef}
                     onAddEntryCondition={handleAddEntryCondition}
@@ -16147,7 +17000,7 @@ function App() {
 
                 <div className="mb-8 p-4 border border-border rounded-lg">
                   <h3 className="font-bold mb-2">Contact</h3>
-                  <p className="text-muted text-sm">For support inquiries, please reach out to your account administrator.</p>
+                  <p className="text-muted text-sm">Message me on Discord</p>
                 </div>
 
                 <div className="space-y-6">
@@ -16160,9 +17013,16 @@ function App() {
                         <div>
                           <div className="font-semibold text-sm text-green-600 dark:text-green-400">Added</div>
                           <ul className="list-disc list-inside text-sm text-muted ml-2 space-y-0.5">
-                            <li>Dashboard as default landing page for logged-in users</li>
-                            <li>Changelog visible in Help/Support tab</li>
-                            <li>Contact information for support</li>
+                            <li>Role hierarchy system: main_admin, sub_admin, engineer, user, partner</li>
+                            <li>Engineers can now access the Databases tab</li>
+                            <li>Role management dropdown in User Management (main admins can change roles)</li>
+                            <li>Main admin protection - role cannot be changed by anyone</li>
+                            <li>Model tab Benchmark Comparison now includes K-Fold row and all 10 benchmarks</li>
+                            <li>Model tab Robustness now has full 4-column layout with distribution charts</li>
+                            <li>Added DBC, DBO, GBTC to Model tab benchmarks</li>
+                            <li>Added MaxDD-95, Calmar-95, Treynor columns to Model tab</li>
+                            <li>Tickers tab in Databases panel to view ticker registry</li>
+                            <li>Batch size and pause settings for yFinance/Tiingo downloads</li>
                           </ul>
                         </div>
                         <div>
@@ -16172,12 +17032,17 @@ function App() {
                             <li>Monthly Returns heatmap now respects dark/light theme</li>
                             <li>Time period selector now respects dark/light theme</li>
                             <li>Hidden TradingView watermark from all charts</li>
+                            <li>yFinance/Tiingo download buttons always enabled</li>
+                            <li>User Management now shows color-coded role badges</li>
                           </ul>
                         </div>
                         <div>
                           <div className="font-semibold text-sm text-amber-600 dark:text-amber-400">Fixed</div>
                           <ul className="list-disc list-inside text-sm text-muted ml-2 space-y-0.5">
                             <li>Save to Watchlist button now shows visual feedback</li>
+                            <li>Analyze tab benchmarks now load correctly (on-demand ticker loading)</li>
+                            <li>Beta and Treynor values now calculate properly</li>
+                            <li>Benchmark cache invalidation now includes benchmark_metrics_cache</li>
                           </ul>
                         </div>
                       </div>

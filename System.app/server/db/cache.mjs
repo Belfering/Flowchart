@@ -271,8 +271,9 @@ export function invalidateBotCache(botId) {
 export function invalidateAllCache() {
   const result1 = cacheDb.prepare('DELETE FROM backtest_cache').run()
   const result2 = cacheDb.prepare('DELETE FROM sanity_report_cache').run()
-  const total = result1.changes + result2.changes
-  console.log(`[Cache] Invalidated all cache entries (backtest: ${result1.changes}, sanity: ${result2.changes})`)
+  const result3 = cacheDb.prepare('DELETE FROM benchmark_metrics_cache').run()
+  const total = result1.changes + result2.changes + result3.changes
+  console.log(`[Cache] Invalidated all cache entries (backtest: ${result1.changes}, sanity: ${result2.changes}, benchmarks: ${result3.changes})`)
   return total
 }
 
