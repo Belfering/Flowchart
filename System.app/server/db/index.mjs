@@ -96,7 +96,9 @@ export function initializeDatabase() {
       privacy_accepted_at INTEGER,
       created_at INTEGER,
       updated_at INTEGER,
-      last_login_at INTEGER
+      last_login_at INTEGER,
+      theme TEXT DEFAULT 'dark',
+      color_scheme TEXT DEFAULT 'slate'
     );
 
     CREATE TABLE IF NOT EXISTS bots (
@@ -314,6 +316,20 @@ export function initializeDatabase() {
       sqlite.exec("ALTER TABLE users ADD COLUMN terms_accepted_at INTEGER")
       sqlite.exec("ALTER TABLE users ADD COLUMN privacy_accepted_at INTEGER")
       console.log('[DB] Migration complete: auth columns added to users table')
+    }
+  } catch (e) {
+    // Columns might already exist
+  }
+
+  // Migration: Add theme/colorScheme columns to users table
+  try {
+    const userCols = sqlite.prepare("PRAGMA table_info(users)").all()
+    const hasTheme = userCols.some(c => c.name === 'theme')
+    if (!hasTheme) {
+      console.log('[DB] Migrating users table: adding theme preference columns...')
+      sqlite.exec("ALTER TABLE users ADD COLUMN theme TEXT DEFAULT 'dark'")
+      sqlite.exec("ALTER TABLE users ADD COLUMN color_scheme TEXT DEFAULT 'slate'")
+      console.log('[DB] Migration complete: theme columns added to users table')
     }
   } catch (e) {
     // Columns might already exist
