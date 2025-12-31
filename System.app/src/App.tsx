@@ -502,6 +502,7 @@ const fetchNexusBotsFromApi = async (): Promise<SavedBot[]> => {
       id: bot.id,
       name: bot.name,
       builderId: bot.ownerId as UserId,
+      builderDisplayName: bot.owner?.displayName,
       payload: null as unknown as FlowNode, // IP protection: no payload
       visibility: 'community' as BotVisibility,
       tags: bot.tags ? JSON.parse(bot.tags) : undefined,
@@ -1470,121 +1471,6 @@ function TickerSearchModal({
   )
 }
 
-/**
- * FlowchartScrollWrapper - Wrapper with fixed horizontal scrollbar at viewport bottom
- * The scrollbar floats at the bottom of the screen when the flowchart is visible
- */
-function FlowchartScrollWrapper({
-  children,
-  className
-}: {
-  children: React.ReactNode
-  className?: string
-}) {
-  const containerRef = useRef<HTMLDivElement>(null)
-  const contentRef = useRef<HTMLDivElement>(null)
-  const scrollbarRef = useRef<HTMLDivElement>(null)
-  const [contentWidth, setContentWidth] = useState(0)
-  const [containerWidth, setContainerWidth] = useState(0)
-  const [containerRect, setContainerRect] = useState<{ left: number; right: number; top: number; bottom: number } | null>(null)
-  const [isVisible, setIsVisible] = useState(false)
-
-  // Update content width and container position
-  useEffect(() => {
-    const content = contentRef.current
-    const container = containerRef.current
-    if (!content || !container) return
-
-    const updateDimensions = () => {
-      setContentWidth(content.scrollWidth)
-      setContainerWidth(content.clientWidth)
-      const rect = container.getBoundingClientRect()
-      setContainerRect({ left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom })
-      // Scrollbar visible if container is on screen and content is wider
-      const onScreen = rect.top < window.innerHeight && rect.bottom > 0
-      setIsVisible(onScreen && content.scrollWidth > content.clientWidth)
-    }
-
-    updateDimensions()
-
-    // Track resize
-    const resizeObserver = new ResizeObserver(updateDimensions)
-    resizeObserver.observe(content)
-    resizeObserver.observe(container)
-
-    // Track scroll to update visibility
-    const handleScroll = () => updateDimensions()
-    window.addEventListener('scroll', handleScroll, { passive: true })
-    window.addEventListener('resize', handleScroll, { passive: true })
-
-    return () => {
-      resizeObserver.disconnect()
-      window.removeEventListener('scroll', handleScroll)
-      window.removeEventListener('resize', handleScroll)
-    }
-  }, [children])
-
-  // Sync scrollbar scroll to content
-  const handleScrollbarScroll = () => {
-    if (contentRef.current && scrollbarRef.current) {
-      contentRef.current.scrollLeft = scrollbarRef.current.scrollLeft
-    }
-  }
-
-  // Sync content scroll to scrollbar
-  const handleContentScroll = () => {
-    if (contentRef.current && scrollbarRef.current) {
-      scrollbarRef.current.scrollLeft = contentRef.current.scrollLeft
-    }
-  }
-
-  const needsScroll = contentWidth > containerWidth
-
-  return (
-    <div ref={containerRef} className={className} style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-      {/* Scrollable content area */}
-      <div
-        ref={contentRef}
-        onScroll={handleContentScroll}
-        style={{
-          flex: 1,
-          overflowX: 'auto',
-          overflowY: 'visible',
-          // Hide scrollbar on content, we use custom one
-          scrollbarWidth: 'none',
-          msOverflowStyle: 'none',
-        }}
-        className="[&::-webkit-scrollbar]:hidden"
-      >
-        <div style={{ minWidth: 'max-content' }}>
-          {children}
-        </div>
-      </div>
-
-      {/* Fixed scrollbar at bottom of viewport - positioned to match container width */}
-      {needsScroll && isVisible && containerRect && (
-        <div
-          ref={scrollbarRef}
-          onScroll={handleScrollbarScroll}
-          className="flowchart-scrollbar-fixed"
-          style={{
-            position: 'fixed',
-            bottom: 0,
-            left: containerRect.left,
-            width: containerRect.right - containerRect.left,
-            zIndex: 100,
-          }}
-        >
-          <div
-            className="flowchart-scrollbar-inner"
-            style={{ width: contentWidth }}
-          />
-        </div>
-      )}
-    </div>
-  )
-}
-
 
 type BotBacktestState = {
   status: 'idle' | 'running' | 'done' | 'error'
@@ -1623,6 +1509,7 @@ type SavedSystem = {
   id: string
   name: string
   builderId: UserId
+  builderDisplayName?: string // Display name of the builder (for showing in UI)
   payload: FlowNode
   visibility: BotVisibility
   createdAt: number
@@ -8019,6 +7906,7 @@ const NodeCard = ({
                   highlightedInstance={highlightedInstance}
                   enabledOverlays={enabledOverlays}
                   onToggleOverlay={onToggleOverlay}
+                  openTickerModal={openTickerModal}
                 />
                 {node.kind === 'function' && slot === 'next' && index > 0 ? (
                   <Button variant="destructive" size="icon" className="h-7 w-7" onClick={() => onRemoveSlotEntry(node.id, slot, index)}>
@@ -12669,7 +12557,7 @@ function BacktesterPanel({
         <div className="grid grid-cols-[1fr_1fr_1fr] gap-3 items-stretch">
           {/* Left section: Run Backtest through Show benchmark - all on one row */}
           <div className="flex flex-nowrap gap-2 items-stretch">
-            <Button onClick={handleRun} disabled={status === 'running'} className="flex-1 px-5 text-sm font-bold whitespace-nowrap h-full">
+            <Button onClick={handleRun} disabled={status === 'running'} className="flex-1 px-5 text-sm font-bold whitespace-nowrap h-full bg-accent text-white hover:bg-accent/90">
               {status === 'running' ? 'Running…' : 'Run Backtest'}
             </Button>
             <div className="flex-1 flex flex-col items-center justify-center border border-border rounded px-3">
@@ -13871,19 +13759,21 @@ function App() {
   }, [userId])
 
   // Load UI preferences from database API when user logs in
-  const [_prefsLoadedFromApi, setPrefsLoadedFromApi] = useState(false)
+  const [prefsLoadedFromApi, setPrefsLoadedFromApi] = useState(false)
   useEffect(() => {
     if (!userId) return
     setPrefsLoadedFromApi(false)
     loadPreferencesFromApi(userId).then((apiPrefs) => {
       if (apiPrefs) {
         setUiState(apiPrefs)
-        console.log('[Preferences] Loaded from API')
+        console.log('[Preferences] Loaded from API:', apiPrefs.theme, apiPrefs.colorTheme)
       } else {
         // No API prefs yet, check localStorage for migration
         const localData = loadUserData(userId)
         if (localData.ui && localData.ui.theme) {
           // Migrate localStorage preferences to API
+          console.log('[Preferences] Migrating from localStorage:', localData.ui.theme, localData.ui.colorTheme)
+          setUiState(localData.ui) // Apply localStorage prefs immediately
           savePreferencesToApi(userId, localData.ui).catch(err =>
             console.warn('[API] Failed to migrate preferences:', err)
           )
@@ -13897,6 +13787,7 @@ function App() {
   }, [userId])
 
   // Save UI preferences to database API when they change (debounced)
+  // Only save AFTER preferences have been loaded to avoid overwriting with defaults
   const uiStateRef = useRef(uiState)
   useEffect(() => {
     uiStateRef.current = uiState
@@ -13904,14 +13795,18 @@ function App() {
 
   useEffect(() => {
     if (!userId) return
+    // IMPORTANT: Don't save until preferences have been loaded from API
+    // This prevents overwriting saved preferences with defaults on login
+    if (!prefsLoadedFromApi) return
     // Debounce preferences save to avoid excessive API calls
     const timer = setTimeout(() => {
+      console.log('[Preferences] Saving to API:', uiStateRef.current.theme, uiStateRef.current.colorTheme)
       savePreferencesToApi(userId, uiStateRef.current).catch(err =>
         console.warn('[API] Failed to save preferences:', err)
       )
     }, 1000) // 1 second debounce
     return () => clearTimeout(timer)
-  }, [userId, uiState])
+  }, [userId, uiState, prefsLoadedFromApi])
 
   // Load call chains from database API when user logs in
   const [_callChainsLoadedFromApi, setCallChainsLoadedFromApi] = useState(false)
@@ -14181,6 +14076,50 @@ function App() {
   const [addToWatchlistNewName, setAddToWatchlistNewName] = useState('')
   const [callbackNodesCollapsed, setCallbackNodesCollapsed] = useState(true)
   const [customIndicatorsCollapsed, setCustomIndicatorsCollapsed] = useState(true)
+
+  // Flowchart scroll state for floating scrollbar
+  const flowchartScrollRef = useRef<HTMLDivElement>(null)
+  const floatingScrollRef = useRef<HTMLDivElement>(null)
+  const [flowchartScrollWidth, setFlowchartScrollWidth] = useState(0)
+  const [flowchartClientWidth, setFlowchartClientWidth] = useState(0)
+
+  // Update scroll dimensions when tab changes or window resizes
+  useEffect(() => {
+    if (tab !== 'Model') return
+
+    const updateScrollDimensions = () => {
+      if (flowchartScrollRef.current) {
+        const sw = flowchartScrollRef.current.scrollWidth
+        const cw = flowchartScrollRef.current.clientWidth
+        setFlowchartScrollWidth(sw)
+        setFlowchartClientWidth(cw)
+      }
+    }
+
+    // Initial update after delays to ensure DOM is ready
+    const timer1 = setTimeout(updateScrollDimensions, 100)
+    const timer2 = setTimeout(updateScrollDimensions, 500)
+    const timer3 = setTimeout(updateScrollDimensions, 1000)
+
+    // Also update on window resize
+    window.addEventListener('resize', updateScrollDimensions)
+
+    // Use MutationObserver to detect DOM changes inside flowchart
+    let observer: MutationObserver | null = null
+    if (flowchartScrollRef.current) {
+      observer = new MutationObserver(updateScrollDimensions)
+      observer.observe(flowchartScrollRef.current, { childList: true, subtree: true })
+    }
+
+    return () => {
+      clearTimeout(timer1)
+      clearTimeout(timer2)
+      clearTimeout(timer3)
+      window.removeEventListener('resize', updateScrollDimensions)
+      observer?.disconnect()
+    }
+  }, [tab])
+
   const [communityTopSort, setCommunityTopSort] = useState<CommunitySort>({ key: 'oosCagr', dir: 'desc' })
   const [communitySearchFilters, setCommunitySearchFilters] = useState<Array<{ id: string; mode: 'builder' | 'cagr' | 'sharpe' | 'calmar' | 'maxdd'; comparison: 'greater' | 'less'; value: string }>>([
     { id: 'filter-0', mode: 'builder', comparison: 'greater', value: '' }
@@ -15720,9 +15659,9 @@ function App() {
             [bot.id]: { status: 'done', result },
           }))
 
-          // Auto eligibility tagging (only for regular users, not admin)
-          if (userId && !isAdmin && result?.metrics) {
-          console.log('[Eligibility] Checking bot:', bot.name, 'userId:', userId)
+          // Auto eligibility tagging (for all logged-in users)
+          if (userId && result?.metrics) {
+          console.log('[Eligibility] Checking bot:', bot.name, 'userId:', userId, 'isAdmin:', isAdmin)
           try {
             // Fetch eligibility requirements
             const eligRes = await fetch('/api/admin/eligibility')
@@ -16941,7 +16880,7 @@ function App() {
       />
       <main className="flex-1 overflow-hidden min-h-0">
         {tab === 'Model' ? (
-          <Card className="h-full flex flex-col overflow-hidden m-4">
+          <Card className="h-full flex flex-col overflow-hidden mx-2 my-4">
             <CardContent className="flex-1 flex flex-col gap-4 p-4 overflow-auto min-h-0">
               {/* Top Zone - Backtester */}
               <div className="shrink-0 border-b border-border pb-4">
@@ -17264,7 +17203,7 @@ function App() {
                 </div>
 
                 {/* Bottom Right Zone - Flow Tree Builder with Floating Toolbar */}
-                <div className={`flex flex-col transition-all relative ${callbackNodesCollapsed && customIndicatorsCollapsed ? 'flex-1' : 'w-1/2'}`}>
+                <div className={`flex flex-col transition-all relative min-h-0 overflow-hidden ${callbackNodesCollapsed && customIndicatorsCollapsed ? 'flex-1' : 'w-1/2'}`}>
                   {/* ETFs Only Toggle + Find/Replace - FLOATING TOOLBAR (sticky like Callback Nodes) */}
                   <div className="grid grid-cols-[1fr_auto_1fr] gap-3 items-center px-4 py-2 border border-border rounded-lg mb-2 sticky top-4 z-20" style={{ backgroundColor: 'color-mix(in srgb, var(--color-muted) 60%, var(--color-card))' }}>
                     {/* Left section: ETFs Only checkbox + ticker count */}
@@ -17471,9 +17410,23 @@ function App() {
                     </div>
                   </div>
                   {/* Flowchart Card - separate from toolbar */}
-                  <div className="flex-1 overflow-auto border border-border rounded-lg bg-card">
-                  <FlowchartScrollWrapper className="p-4">
-                  <NodeCard
+                  <div className="flex-1 border border-border rounded-lg bg-card min-h-0 p-4 relative" style={{ height: 'calc(100vh - 340px)', overflow: 'hidden' }}>
+                    <div
+                      ref={flowchartScrollRef}
+                      style={{
+                        width: '100%',
+                        height: 'calc(100% + 20px)',
+                        marginBottom: '-20px',
+                        overflowY: 'auto',
+                        overflowX: 'scroll',
+                      }}
+                      onScroll={(e) => {
+                        if (floatingScrollRef.current) {
+                          floatingScrollRef.current.scrollLeft = e.currentTarget.scrollLeft
+                        }
+                      }}
+                    >
+                      <NodeCard
                     node={current}
                     depth={0}
                     parentId={null}
@@ -17512,6 +17465,7 @@ function App() {
                     onAddPosition={handleAddPos}
                     onRemovePosition={handleRemovePos}
                     onChoosePosition={handleChoosePos}
+                    openTickerModal={openTickerModal}
                     clipboard={clipboard}
                     copiedNodeId={copiedNodeId}
                     copiedCallChainId={copiedCallChainId}
@@ -17532,7 +17486,7 @@ function App() {
                     enabledOverlays={enabledOverlays}
                     onToggleOverlay={handleToggleOverlay}
                   />
-                  </FlowchartScrollWrapper>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -17837,7 +17791,7 @@ function App() {
                           {b.tags?.includes('Nexus Eligible') && (
                             <Badge variant="secondary">Nexus Eligible</Badge>
                           )}
-                          <Badge variant="default">Builder: {b.builderId}</Badge>
+                          <Badge variant="default">{b.builderDisplayName || b.builderId}</Badge>
                           <div className="flex gap-1.5 flex-wrap">
                             {tags.map((w) => (
                               <Badge key={w.id} variant="accent" className="gap-1.5">
@@ -18961,7 +18915,7 @@ function App() {
               const communityBotRows: CommunityBotRow[] = allNexusBots.map((bot) => {
                   const tagNames = (watchlistsByBotId.get(bot.id) ?? []).map((w) => w.name)
                   // Since this is specifically for Nexus bots, primary tag is always Nexus
-                  const tags = ['Nexus', `Builder: ${bot.builderId}`, ...tagNames]
+                  const tags = ['Nexus', bot.builderDisplayName || bot.builderId, ...tagNames]
                   // Use frontend-cached metrics if available, otherwise fall back to API-provided backtestResult
                   const metrics = analyzeBacktests[bot.id]?.result?.metrics ?? bot.backtestResult
                   // Display anonymized name: "X's Fund #Y" instead of actual bot name
@@ -19017,10 +18971,10 @@ function App() {
                 .sort((a, b) => b.oosSharpe - a.oosSharpe)
                 .slice(0, 100)
 
-              // Get unique builder IDs for autocomplete
+              // Get unique builder names for autocomplete (now just the display name, not "Builder: X")
               const allBuilderIds = [...new Set(communityBotRows.map((r) => {
-                const builderTag = r.tags.find((t) => t.startsWith('Builder: '))
-                return builderTag?.replace('Builder: ', '') ?? ''
+                // The builder name is now the 2nd tag (index 1) - 'Nexus', 'BrianE', ...
+                return r.tags[1] ?? ''
               }).filter(Boolean))]
 
               // Search results - filter by multiple criteria (AND logic)
@@ -19032,11 +18986,13 @@ function App() {
 
                 // Get current user's private bots (non-Nexus)
                 const nexusBotIds = new Set(allNexusBots.map(b => b.id))
+                // For private bots, use the current user's display name
+                const currentUserDisplayName = userDisplayName || userId
                 const myPrivateBotRows: CommunityBotRow[] = savedBots
                   .filter(bot => bot.builderId === userId && !nexusBotIds.has(bot.id))
                   .map((bot) => {
                     const tagNames = (watchlistsByBotId.get(bot.id) ?? []).map((w) => w.name)
-                    const tags = ['Private', `Builder: ${bot.builderId}`, ...tagNames]
+                    const tags = ['Private', bot.builderDisplayName || currentUserDisplayName, ...tagNames]
                     // Use frontend-cached metrics if available, otherwise fall back to API-provided backtestResult
                     const metrics = analyzeBacktests[bot.id]?.result?.metrics ?? bot.backtestResult
                     return {
@@ -19065,9 +19021,9 @@ function App() {
 
                   if (filter.mode === 'builder') {
                     result = result.filter((r) => {
-                      const builderTag = r.tags.find((t) => t.startsWith('Builder: '))
-                      const builderId = builderTag?.replace('Builder: ', '').toLowerCase() ?? ''
-                      return builderId.includes(searchVal) || r.name.toLowerCase().includes(searchVal)
+                      // Builder name is now at index 1 (after 'Nexus' or 'Private')
+                      const builderName = (r.tags[1] ?? '').toLowerCase()
+                      return builderName.includes(searchVal) || r.name.toLowerCase().includes(searchVal)
                     })
                   } else {
                     const threshold = parseFloat(filter.value)
@@ -19165,7 +19121,7 @@ function App() {
                             {b.tags?.includes('Nexus Eligible') && (
                               <Badge variant="secondary">Nexus Eligible</Badge>
                             )}
-                            <Badge variant="default">Builder: {b.builderId}</Badge>
+                            <Badge variant="default">{b.builderDisplayName || b.builderId}</Badge>
                             <div className="flex gap-1.5 flex-wrap">
                               {wlTags.map((w) => (
                                 <Badge key={w.id} variant="accent" className="gap-1.5">
@@ -19979,7 +19935,7 @@ function App() {
                                 <Badge variant={b?.tags?.includes('Nexus') ? 'default' : b?.tags?.includes('Atlas') ? 'default' : 'accent'}>
                                   {b?.tags?.includes('Nexus') ? 'Nexus' : b?.tags?.includes('Atlas') ? 'Atlas' : 'Private'}
                                 </Badge>
-                                {b?.builderId && <Badge variant="default">Builder: {b.builderId}</Badge>}
+                                {(b?.builderDisplayName || b?.builderId) && <Badge variant="default">{b?.builderDisplayName || b?.builderId}</Badge>}
                                 <div className="flex gap-1.5 flex-wrap">
                                   {wlTags.map((w) => (
                                     <Badge key={w.id} variant="accent" className="gap-1.5">
@@ -20543,7 +20499,7 @@ function App() {
                                 {b.tags?.includes('Nexus Eligible') && (
                                   <Badge variant="secondary">Nexus Eligible</Badge>
                                 )}
-                                <Badge variant="default">Builder: {b.builderId}</Badge>
+                                <Badge variant="default">{b.builderDisplayName || b.builderId}</Badge>
                                 <div className="flex gap-1.5 flex-wrap">
                                   {wlTags.map((w) => (
                                     <Badge key={w.id} variant="accent" className="gap-1.5">
@@ -21388,6 +21344,25 @@ function App() {
           </div>
         ) : null}
       </main>
+      {/* Floating horizontal scrollbar for flowchart - only visible on Model tab when content is wider than container */}
+      {tab === 'Model' && flowchartScrollWidth > flowchartClientWidth && (
+        <div
+          ref={floatingScrollRef}
+          className="fixed bottom-0 left-0 right-0 z-50 bg-surface border-t border-border"
+          style={{
+            height: '14px',
+            overflowX: 'scroll',
+            overflowY: 'hidden',
+          }}
+          onScroll={(e) => {
+            if (flowchartScrollRef.current) {
+              flowchartScrollRef.current.scrollLeft = e.currentTarget.scrollLeft
+            }
+          }}
+        >
+          <div style={{ width: flowchartScrollWidth, height: '1px' }} />
+        </div>
+      )}
     </div>
   )
 }
