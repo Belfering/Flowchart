@@ -12666,6 +12666,15 @@ function App() {
     loadPortfolio()
   }, [userId])
 
+  // Set Dashboard as default tab for logged-in users (only on initial mount)
+  const [hasSetInitialTab, setHasSetInitialTab] = useState(false)
+  useEffect(() => {
+    if (userId && !hasSetInitialTab) {
+      setTab('Dashboard')
+      setHasSetInitialTab(true)
+    }
+  }, [userId, hasSetInitialTab])
+
   // Load watchlists from database API when user logs in
   const [_watchlistsLoadedFromApi, setWatchlistsLoadedFromApi] = useState(false)
   useEffect(() => {
