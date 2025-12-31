@@ -10,6 +10,10 @@
 # ============================================
 FROM node:20-slim AS builder
 
+# Cache buster - Railway sets RAILWAY_GIT_COMMIT_SHA automatically
+ARG RAILWAY_GIT_COMMIT_SHA
+ARG CACHEBUST=1
+
 WORKDIR /app
 
 # Install build dependencies for native modules
@@ -20,6 +24,9 @@ COPY System.app/package*.json ./
 
 # Install ALL dependencies (including dev)
 RUN npm ci
+
+# Force cache invalidation when source changes (using commit SHA or manual bust)
+RUN echo "Build: ${RAILWAY_GIT_COMMIT_SHA:-$CACHEBUST}"
 
 # Copy source files from System.app
 COPY System.app/ .
