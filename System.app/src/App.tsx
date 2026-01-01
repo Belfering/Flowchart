@@ -482,7 +482,7 @@ type NexusBotFromApi = {
   tags: string | null
   fundSlot: number | null
   createdAt: string
-  owner?: { id: string; displayName: string } | null
+  owner_display_name?: string | null  // Flat field from SQL JOIN
   metrics?: {
     cagr?: number
     maxDrawdown?: number
@@ -502,7 +502,7 @@ const fetchNexusBotsFromApi = async (): Promise<SavedBot[]> => {
       id: bot.id,
       name: bot.name,
       builderId: bot.ownerId as UserId,
-      builderDisplayName: bot.owner?.displayName,
+      builderDisplayName: bot.owner_display_name ?? undefined,
       payload: null as unknown as FlowNode, // IP protection: no payload
       visibility: 'community' as BotVisibility,
       tags: bot.tags ? JSON.parse(bot.tags) : undefined,
@@ -17588,6 +17588,21 @@ function App() {
                       >
                         {theme === 'dark' ? 'Light mode' : 'Dark mode'}
                       </Button>
+                      <Button
+                        variant="accent"
+                        size="sm"
+                        onClick={async () => {
+                          const success = await savePreferencesToApi(userId, uiState)
+                          if (success) {
+                            alert('Theme preferences saved!')
+                          } else {
+                            alert('Failed to save preferences')
+                          }
+                        }}
+                        title="Save theme preferences"
+                      >
+                        Save
+                      </Button>
                     </div>
                   </div>
                 </div>
@@ -18915,15 +18930,16 @@ function App() {
               const communityBotRows: CommunityBotRow[] = allNexusBots.map((bot) => {
                   const tagNames = (watchlistsByBotId.get(bot.id) ?? []).map((w) => w.name)
                   // Since this is specifically for Nexus bots, primary tag is always Nexus
-                  const tags = ['Nexus', bot.builderDisplayName || bot.builderId, ...tagNames]
+                  const builderName = bot.builderDisplayName || bot.builderId
+                  const tags = ['Nexus', builderName, ...tagNames]
                   // Use frontend-cached metrics if available, otherwise fall back to API-provided backtestResult
                   const metrics = analyzeBacktests[bot.id]?.result?.metrics ?? bot.backtestResult
                   // Display anonymized name: "X's Fund #Y" instead of actual bot name
                   // Use fundSlot from bot, or look up from fundZones as fallback
                   const fundSlot = bot.fundSlot ?? getFundSlotForBot(bot.id)
                   const displayName = fundSlot
-                    ? `${bot.builderId}'s Fund #${fundSlot}`
-                    : `${bot.builderId}'s Fund`
+                    ? `${builderName}'s Fund #${fundSlot}`
+                    : `${builderName}'s Fund`
                   return {
                     id: bot.id,
                     name: displayName,
@@ -19102,10 +19118,11 @@ function App() {
                       // Use anonymized display name for Nexus bots in Community tab
                       // Use fundSlot from bot, or look up from fundZones as fallback
                       const fundSlot = b.fundSlot ?? getFundSlotForBot(b.id)
+                      const builderName = b.builderDisplayName || b.builderId
                       const displayName = b.tags?.includes('Nexus') && fundSlot
-                        ? `${b.builderId}'s Fund #${fundSlot}`
+                        ? `${builderName}'s Fund #${fundSlot}`
                         : b.tags?.includes('Nexus')
-                          ? `${b.builderId}'s Fund`
+                          ? `${builderName}'s Fund`
                           : b.name
 
                       return (
@@ -19918,10 +19935,11 @@ function App() {
 
                           // Use anonymized display name for Nexus bots from other users
                           const fundSlot = b?.fundSlot ?? getFundSlotForBot(inv.botId)
+                          const builderName = b?.builderDisplayName || b?.builderId
                           const displayName = b?.tags?.includes('Nexus') && b?.builderId !== userId && fundSlot
-                            ? `${b.builderId}'s Fund #${fundSlot}`
+                            ? `${builderName}'s Fund #${fundSlot}`
                             : b?.tags?.includes('Nexus') && b?.builderId !== userId
-                              ? `${b.builderId}'s Fund`
+                              ? `${builderName}'s Fund`
                               : inv.botName
 
                           return (

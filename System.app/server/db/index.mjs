@@ -618,6 +618,7 @@ export async function getNexusBots() {
     return {
       ...bot,
       payload: undefined, // IP protection
+      owner_display_name: ownerRow?.display_name || null, // Flat field to match other endpoints
       // Transform snake_case DB columns to match frontend expectations (fetchNexusBotsFromApi expects *Ratio names)
       metrics: metricsRow ? {
         cagr: metricsRow.cagr,
@@ -630,7 +631,6 @@ export async function getNexusBots() {
         winRate: metricsRow.win_rate,
         tradingDays: metricsRow.trading_days,
       } : null,
-      owner: ownerRow ? { id: ownerRow.id, displayName: ownerRow.display_name } : null,
     }
   }))
 
@@ -1025,6 +1025,17 @@ export async function updateUserPreferences(userId, data) {
       uiState: data.uiState || '{}',
       updatedAt: now,
     })
+  }
+
+  // Also update the users table theme/color_scheme (for admin view)
+  if (data.theme || data.colorScheme) {
+    await db.update(schema.users)
+      .set({
+        ...(data.theme && { theme: data.theme }),
+        ...(data.colorScheme && { colorScheme: data.colorScheme }),
+        updatedAt: now,
+      })
+      .where(eq(schema.users.id, userId))
   }
 }
 

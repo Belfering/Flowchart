@@ -13,6 +13,8 @@ All notable changes to System Block Chain are documented here.
 - Backtest mode dropdown now shows tooltips explaining each timing mode (CC, OO, OC, CO)
 - Ticker search modal with search by ticker or company name, ETF/Stock filter checkboxes
 - Popular tickers shown first when modal opens (SPY, QQQ, IWM, etc.)
+- Save button for theme/color scheme preferences in Help/Support tab
+- Number inputs now auto-select content on focus for easier editing
 
 ### Changed
 - "Run" buttons renamed to "Re-run" in Benchmarks for consistency
@@ -26,7 +28,9 @@ All notable changes to System Block Chain are documented here.
 - Monthly Returns and Allocations (recent) are now equal-width cards side by side
 - Hidden TradingView/lightweight-charts watermark from all charts
 - Updated header logo to new QuantNexus branding with improved scaling
-- Rate limit increased from 100 to 500 requests/minute for smoother experience
+- Removed rate limiting entirely for uninterrupted workflow
+- Admin Systems database now shows all bots saved to any user's watchlist with owner info
+- Number input spinner arrows hidden for cleaner UI
 
 ### Fixed
 - Save to Watchlist button now shows visual feedback
@@ -35,6 +39,13 @@ All notable changes to System Block Chain are documented here.
 - Orphaned systems can now be deleted from Admin panel
 - Header logo now properly fills container while maintaining aspect ratio
 - Ticker search modal now displays exchange information from database
+- User preferences (theme/color scheme) now persist correctly after login
+- Last login timestamp now properly recorded on user login
+- Nexus eligibility auto-tagging now works for all users (was only for non-admin)
+- Builder tags in watchlists now show display name instead of UUID
+- Ticker search modal now works for nested position nodes (was missing prop passthrough)
+- Model tab flowchart container now expands to fill available height (no longer cut off)
+- Builder name in Nexus/Community tabs now shows display name instead of UUID
 
 ---
 

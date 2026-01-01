@@ -31,6 +31,7 @@ Atlas Engine enables users to visually design trading strategies by connecting d
   - OO/CO/OC modes: Adj Close for signals, actual Open/Close for execution
 - **Rich Indicator Library**: RSI, SMA, EMA, ROC, Volatility, Drawdown, Cumulative Return, 13612W Momentum, and more
 - **Ticker Search Modal**: Search tickers by symbol or company name with ETF/Stock filtering
+- **Theme Customization**: Dark/light mode with 10 color schemes, persistent preferences
 - **Undo/Redo**: Full history-based state management
 - **Copy/Paste**: Clone node subtrees with a single click
 - **Live Data Visualization**: View candlestick charts for tickers using DuckDB-powered queries

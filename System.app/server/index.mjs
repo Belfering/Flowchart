@@ -5,7 +5,6 @@ import { spawn } from 'node:child_process'
 import express from 'express'
 import cors from 'cors'
 import helmet from 'helmet'
-import rateLimit from 'express-rate-limit'
 import duckdb from 'duckdb'
 import { encrypt, decrypt } from './utils/crypto.mjs'
 import { validateDisplayName } from './utils/profanity-filter.mjs'
@@ -70,28 +69,6 @@ const corsOptions = {
 }
 app.use(cors(corsOptions))
 
-// Rate limiting for auth endpoints
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 10, // 10 requests per window
-  message: { error: 'Too many authentication attempts, please try again later' },
-  standardHeaders: true,
-  legacyHeaders: false
-})
-
-// General API rate limiter
-const apiLimiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minute
-  max: 500, // 500 requests per minute
-  message: { error: 'Too many requests, please slow down' },
-  standardHeaders: true,
-  legacyHeaders: false
-})
-
-// Apply rate limiters
-app.use('/api/auth/login', authLimiter)
-app.use('/api/auth/register', authLimiter)
-app.use('/api/', apiLimiter)
 
 app.use(express.json({ limit: '1mb' }))
 
@@ -3226,17 +3203,23 @@ app.get('/api/admin/db/:table', async (req, res) => {
         columns: ['id', 'username', 'display_name', 'role', 'is_partner_eligible', 'theme', 'color_scheme', 'created_at', 'updated_at', 'last_login_at']
       },
       'bots': {
-        query: `SELECT b.id, b.owner_id, b.name, b.visibility, b.tags, b.fund_slot,
+        query: `SELECT b.id, b.owner_id, u.display_name as owner_name, b.name, b.visibility, b.tags, b.fund_slot,
                 ROUND(m.cagr * 100, 2) as cagr_pct,
                 ROUND(m.sharpe_ratio, 2) as sharpe,
                 ROUND(m.max_drawdown * 100, 2) as maxdd_pct,
                 ROUND(m.sortino_ratio, 2) as sortino,
+                (SELECT COUNT(*) FROM watchlist_bots wb WHERE wb.bot_id = b.id) as watchlist_count,
+                (SELECT GROUP_CONCAT(w.name, ', ') FROM watchlist_bots wb JOIN watchlists w ON wb.watchlist_id = w.id WHERE wb.bot_id = b.id) as in_watchlists,
                 b.created_at, b.deleted_at
                 FROM bots b
                 LEFT JOIN bot_metrics m ON b.id = m.bot_id
+                LEFT JOIN users u ON b.owner_id = u.id
+                WHERE b.id IN (SELECT DISTINCT bot_id FROM watchlist_bots)
+                   OR b.visibility IN ('nexus', 'nexus_eligible', 'atlas')
+                   OR (b.tags IS NOT NULL AND b.tags != '[]' AND b.tags != 'null')
                 ORDER BY m.cagr DESC NULLS LAST
                 LIMIT 500`,
-        columns: ['id', 'owner_id', 'name', 'visibility', 'tags', 'fund_slot', 'cagr_pct', 'sharpe', 'maxdd_pct', 'sortino', 'created_at', 'deleted_at']
+        columns: ['id', 'owner_id', 'owner_name', 'name', 'visibility', 'tags', 'fund_slot', 'cagr_pct', 'sharpe', 'maxdd_pct', 'sortino', 'watchlist_count', 'in_watchlists', 'created_at', 'deleted_at']
       },
       'bot_metrics': {
         query: `SELECT * FROM bot_metrics ORDER BY cagr DESC LIMIT 500`,
