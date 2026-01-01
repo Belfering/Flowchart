@@ -154,11 +154,11 @@ export async function markTickersSynced(tickers, date) {
 }
 
 /**
- * Mark a single ticker as synced
+ * Mark a single ticker as synced (also reactivates if it was inactive)
  */
 export async function markTickerSynced(ticker, date) {
   await db.update(tickerRegistry)
-    .set({ lastSynced: date, updatedAt: new Date() })
+    .set({ lastSynced: date, isActive: true, updatedAt: new Date() })
     .where(eq(tickerRegistry.ticker, ticker.toUpperCase()))
 }
 
