@@ -6546,7 +6546,7 @@ function DatabasesPanel({
                                 Open
                               </Button>
                             )}
-                            {databasesTab === 'Tickers' && row['isActive'] === false && (
+                            {databasesTab === 'Tickers' && !row['isActive'] && (
                               <Button
                                 size="sm"
                                 variant="outline"
