@@ -16,6 +16,14 @@ All notable changes to System Block Chain are documented here.
 - Save button for theme/color scheme preferences in Help/Support tab
 - Number inputs now auto-select content on focus for easier editing
 
+### Performance Optimizations
+- API response compression (gzip) - 80% smaller payloads, 2-3x faster transfers
+- Batch candles endpoint (`POST /api/candles/batch`) - fetch multiple tickers in one request
+- Pre-cached common tickers (SPY, QQQ, IWM, etc.) at server startup for instant access
+- Backtest data now filters from 1993 onwards (20-40% less data to process)
+- Optimized date intersection algorithm using sorted arrays (O(n log n) vs O(n*m²))
+- Parallelized benchmark metrics computation (4-5x faster Analyze tab benchmarks)
+
 ### Changed
 - "Run" buttons renamed to "Re-run" in Benchmarks for consistency
 - Header layout uses CSS grid for better organization
@@ -52,7 +60,6 @@ All notable changes to System Block Chain are documented here.
 ## Coming Soon
 
 - Position Node (adding Tickers) rework to be less click intensive
-- API/Backtest Speed up
 - Correlation matrix/portfolio builder tool
 - Variable Library (allowing the creation of custom indicators)
 

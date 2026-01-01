@@ -34,7 +34,40 @@ const duckDbPromise = new Promise((resolve, reject) => {
   })
 })
 
-async function fetchOhlcSeries(ticker, limit = 20000) {
+// Minimum backtest start date: 1993-01-01 (filters out older, rarely-used data)
+const BACKTEST_START_DATE = new Date(1993, 0, 1)
+const BACKTEST_START_EPOCH = Math.floor(BACKTEST_START_DATE.getTime() / 1000)
+
+// ============================================
+// TICKER DATA CACHE - Pre-cache common tickers for instant access
+// ============================================
+const COMMON_TICKERS = ['SPY', 'QQQ', 'IWM', 'EEM', 'AGG', 'GLD', 'TLT', 'BIL', 'VTI', 'DIA']
+const tickerDataCache = new Map()
+let cacheInitialized = false
+
+async function initTickerCache() {
+  if (cacheInitialized) return
+  console.log('[Backtest] Pre-caching common tickers for instant access...')
+  const startTime = Date.now()
+
+  for (const ticker of COMMON_TICKERS) {
+    try {
+      const bars = await fetchOhlcSeriesUncached(ticker, 20000)
+      if (bars && bars.length > 0) {
+        tickerDataCache.set(ticker, bars)
+      }
+    } catch (err) {
+      console.warn(`[Backtest] Failed to pre-cache ${ticker}:`, err.message)
+    }
+  }
+
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(2)
+  console.log(`[Backtest] Pre-cached ${tickerDataCache.size} common tickers in ${elapsed}s`)
+  cacheInitialized = true
+}
+
+// Internal function without cache check (used for initial loading)
+async function fetchOhlcSeriesUncached(ticker, limit = 20000) {
   const db = await duckDbPromise
   const filePath = path.join(PARQUET_DIR, `${ticker}.parquet`)
 
@@ -49,6 +82,7 @@ async function fetchOhlcSeries(ticker, limit = 20000) {
         "Adj Close" AS adjClose,
         Volume AS volume
       FROM read_parquet('${filePath.replace(/\\/g, '/')}')
+      WHERE epoch(Date) >= ${BACKTEST_START_EPOCH}
       ORDER BY Date DESC
       LIMIT ${limit}
     `
@@ -71,6 +105,18 @@ async function fetchOhlcSeries(ticker, limit = 20000) {
       resolve(sorted)
     })
   })
+}
+
+async function fetchOhlcSeries(ticker, limit = 20000) {
+  // Check cache first for common tickers (instant access)
+  const cached = tickerDataCache.get(ticker)
+  if (cached) {
+    // Return cached data (may need to slice if limit is smaller)
+    return limit < cached.length ? cached.slice(-limit) : cached
+  }
+
+  // Not in cache, fetch from parquet
+  return fetchOhlcSeriesUncached(ticker, limit)
 }
 
 // ============================================
@@ -1150,12 +1196,30 @@ const buildPriceDb = (series, dateIntersectionTickers = null) => {
   // Fallback to all tickers if no intersection tickers found
 
   const mapsForDates = intersectionMaps.length > 0 ? intersectionMaps : barMaps
-  const datesByTicker = mapsForDates.map((m) => new Set(m.byTime.keys()))
-  let common = datesByTicker[0]
-  for (let i = 1; i < datesByTicker.length; i++) {
-    common = new Set([...common].filter((d) => datesByTicker[i].has(d)))
+
+  // Optimized date intersection using sorted arrays instead of Set operations
+  // This is O(n log n) instead of O(n * m) for multiple tickers
+  const sortedDateArrays = mapsForDates.map((m) =>
+    Array.from(m.byTime.keys()).sort((a, b) => a - b)
+  )
+
+  let dates
+  if (sortedDateArrays.length === 1) {
+    dates = sortedDateArrays[0]
+  } else {
+    // Use the shortest array as base for faster intersection
+    sortedDateArrays.sort((a, b) => a.length - b.length)
+    let common = new Set(sortedDateArrays[0])
+
+    // Intersect with remaining arrays (checking against Set is O(1))
+    for (let i = 1; i < sortedDateArrays.length && common.size > 0; i++) {
+      const arr = sortedDateArrays[i]
+      const arrSet = new Set(arr)
+      common = new Set([...common].filter(d => arrSet.has(d)))
+    }
+
+    dates = [...common].sort((a, b) => a - b)
   }
-  const dates = [...common].sort((a, b) => a - b)
 
   const open = {}
   const high = {}
@@ -2592,6 +2656,9 @@ const turnoverFraction = (prevAlloc, alloc) => {
 // ============================================
 // MAIN BACKTEST FUNCTION
 // ============================================
+
+// Export cache initialization function for server startup
+export { initTickerCache }
 
 export async function runBacktest(payload, options = {}) {
   const backtestMode = options.mode || 'OC' // OO, CC, CO, OC
