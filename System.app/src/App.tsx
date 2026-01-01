@@ -17823,41 +17823,38 @@ function App() {
 
                     <div className="space-y-4">
                     <div>
-                      <h4 className="font-bold text-sm text-muted mb-2">[Unreleased]</h4>
+                      <h4 className="font-bold text-sm text-muted mb-2">[1.2.0] - 2026-01-01</h4>
                       <div className="pl-4 space-y-3">
                         <div>
                           <div className="font-semibold text-sm text-green-600 dark:text-green-400">Added</div>
                           <ul className="list-disc list-inside text-sm text-muted ml-2 space-y-0.5">
-                            <li>Role hierarchy system: main_admin, sub_admin, engineer, user, partner</li>
-                            <li>Engineers can now access the Databases tab</li>
-                            <li>Role management dropdown in User Management (main admins can change roles)</li>
-                            <li>Main admin protection - role cannot be changed by anyone</li>
-                            <li>Model tab Benchmark Comparison now includes K-Fold row and all 10 benchmarks</li>
-                            <li>Model tab Robustness now has full 4-column layout with distribution charts</li>
-                            <li>Added DBC, DBO, GBTC to Model tab benchmarks</li>
-                            <li>Added MaxDD-95, Calmar-95, Treynor columns to Model tab</li>
-                            <li>Tickers tab in Databases panel to view ticker registry</li>
-                            <li>Batch size and pause settings for yFinance/Tiingo downloads</li>
-                          </ul>
-                        </div>
-                        <div>
-                          <div className="font-semibold text-sm text-blue-600 dark:text-blue-400">Changed</div>
-                          <ul className="list-disc list-inside text-sm text-muted ml-2 space-y-0.5">
-                            <li>TradingView charts now match app theme (dark/light mode)</li>
-                            <li>Monthly Returns heatmap now respects dark/light theme</li>
-                            <li>Time period selector now respects dark/light theme</li>
-                            <li>Hidden TradingView watermark from all charts</li>
-                            <li>yFinance/Tiingo download buttons always enabled</li>
-                            <li>User Management now shows color-coded role badges</li>
+                            <li>Auto-sync ticker registry before downloads - yFinance and Tiingo buttons now refresh from Tiingo's master list automatically</li>
                           </ul>
                         </div>
                         <div>
                           <div className="font-semibold text-sm text-amber-600 dark:text-amber-400">Fixed</div>
                           <ul className="list-disc list-inside text-sm text-muted ml-2 space-y-0.5">
-                            <li>Save to Watchlist button now shows visual feedback</li>
-                            <li>Analyze tab benchmarks now load correctly (on-demand ticker loading)</li>
-                            <li>Beta and Treynor values now calculate properly</li>
-                            <li>Benchmark cache invalidation now includes benchmark_metrics_cache</li>
+                            <li>Duplicate ticker handling - tickers listed on multiple exchanges now correctly use the active listing</li>
+                            <li>Download progress UI now properly updates when all tickers are already synced</li>
+                            <li>Tickers automatically reactivate when data is successfully downloaded</li>
+                            <li>Analyze tab now shows display name instead of user ID</li>
+                          </ul>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div>
+                      <h4 className="font-bold text-sm text-muted mb-2">[1.1.0] - 2025-12-31</h4>
+                      <div className="pl-4 space-y-3">
+                        <div>
+                          <div className="font-semibold text-sm text-green-600 dark:text-green-400">Added</div>
+                          <ul className="list-disc list-inside text-sm text-muted ml-2 space-y-0.5">
+                            <li>Tiingo-only download mode - download data exclusively from Tiingo API</li>
+                            <li>Stop button for downloads - cancel running downloads mid-process</li>
+                            <li>Ticker search modal - search by ticker symbol or company name with ETF/Stock filters</li>
+                            <li>Popular tickers (SPY, QQQ, IWM, etc.) shown first when opening ticker search</li>
+                            <li>Backtest mode tooltips explaining each timing mode (CC, OO, OC, CO)</li>
+                            <li>Number inputs auto-select on focus for easier editing</li>
                           </ul>
                         </div>
                         <div>
@@ -17865,10 +17862,33 @@ function App() {
                           <ul className="list-disc list-inside text-sm text-muted ml-2 space-y-0.5">
                             <li>API response compression (gzip) - 80% smaller payloads</li>
                             <li>Batch candles endpoint - fetch multiple tickers in one request</li>
-                            <li>Pre-cached common tickers (SPY, QQQ, IWM) at server startup</li>
-                            <li>Backtest data filters from 1993 onwards (20-40% faster)</li>
-                            <li>Optimized date intersection algorithm (O(n log n))</li>
-                            <li>Parallelized benchmark metrics (4-5x faster Analyze tab)</li>
+                            <li>Common tickers pre-cached at startup (SPY, QQQ, IWM, etc.)</li>
+                            <li>Backtest data filters from 1993 onwards (20-40% less data)</li>
+                            <li>Optimized date intersection algorithm</li>
+                            <li>Parallelized benchmark metrics computation</li>
+                          </ul>
+                        </div>
+                        <div>
+                          <div className="font-semibold text-sm text-blue-600 dark:text-blue-400">Changed</div>
+                          <ul className="list-disc list-inside text-sm text-muted ml-2 space-y-0.5">
+                            <li>Ticker selection uses modal dialog instead of dropdown/datalist</li>
+                            <li>TradingView charts match app theme (dark/light mode)</li>
+                            <li>Monthly Returns heatmap respects dark/light theme</li>
+                            <li>Time period selector respects dark/light theme</li>
+                            <li>Allocation chart Y-axis shows percentages instead of decimals</li>
+                            <li>Monthly Returns and Allocations cards are equal-width side by side</li>
+                            <li>Hidden chart watermarks for cleaner visuals</li>
+                            <li>Number input spinner arrows hidden</li>
+                          </ul>
+                        </div>
+                        <div>
+                          <div className="font-semibold text-sm text-amber-600 dark:text-amber-400">Fixed</div>
+                          <ul className="list-disc list-inside text-sm text-muted ml-2 space-y-0.5">
+                            <li>Save to Watchlist button visual feedback</li>
+                            <li>Call node copy/paste functionality</li>
+                            <li>Ticker search modal displays exchange information</li>
+                            <li>Ticker search works for nested position nodes</li>
+                            <li>Model tab flowchart container fills available height</li>
                           </ul>
                         </div>
                       </div>
@@ -17884,9 +17904,7 @@ function App() {
                           <li>Backtesting with equity curves and performance metrics</li>
                           <li>Benchmark comparisons (SPY, QQQ, VTI, etc.)</li>
                           <li>Robustness analysis with bootstrap simulations</li>
-                          <li>User authentication and preferences</li>
                           <li>Watchlists for organizing trading systems</li>
-                          <li>Admin panel for ticker data management</li>
                           <li>Dark/Light theme support with multiple color schemes</li>
                         </ul>
                       </div>

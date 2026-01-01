@@ -13,6 +13,7 @@ All notable changes to Atlas Engine are documented here.
 - Duplicate ticker handling - tickers listed on multiple exchanges (like SPYM) now correctly use the active listing
 - Download progress UI now properly updates when all tickers are already synced for the day
 - Tickers automatically reactivate when data is successfully downloaded
+- Analyze tab now shows display name instead of user ID
 
 ---
 
