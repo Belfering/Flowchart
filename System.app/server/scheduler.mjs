@@ -15,7 +15,8 @@ const DEFAULT_SCHEDULE = {
   updateTime: '18:00',  // 6:00 PM in 24h format
   timezone: 'America/New_York',
   batchSize: 100,
-  sleepSeconds: 2.0,
+  sleepSeconds: 2.0,       // yFinance pause between batches
+  tiingoSleepSeconds: 0.2, // Tiingo pause between API calls (faster rate limit)
 }
 
 let schedulerInterval = null
@@ -251,6 +252,10 @@ async function runTickerSync(config, tickerDataRoot, parquetDir, pythonCmd, data
     // Build script args based on source
     const scriptName = source === 'tiingo' ? 'tiingo_download.py' : 'download.py'
     const scriptPath = path.join(tickerDataRoot, scriptName)
+    // Use tiingoSleepSeconds for tiingo source, sleepSeconds for yfinance
+    const sleepSecs = source === 'tiingo'
+      ? (config.tiingoSleepSeconds ?? 0.2)
+      : (config.sleepSeconds ?? 2.0)
     const args = [
       '-u',
       scriptPath,
@@ -261,7 +266,7 @@ async function runTickerSync(config, tickerDataRoot, parquetDir, pythonCmd, data
       '--batch-size',
       String(config.batchSize || 100),
       '--sleep-seconds',
-      String(config.sleepSeconds || 2.0),
+      String(sleepSecs),
       '--max-retries',
       '3',
       '--skip-metadata-json',

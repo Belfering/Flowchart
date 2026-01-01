@@ -5652,9 +5652,25 @@ function AdminPanel({
 
             {/* yFinance Download - downloads all parquet tickers */}
             <Button
-              variant="default"
-              disabled={syncSchedule?.status?.isRunning}
+              variant={syncSchedule?.status?.isRunning && syncSchedule?.status?.currentJob?.source === 'yfinance' ? 'destructive' : 'default'}
               onClick={async () => {
+                // If running yfinance, this becomes a stop button
+                if (syncSchedule?.status?.isRunning && syncSchedule?.status?.currentJob?.source === 'yfinance') {
+                  if (!confirm('Stop the running yFinance download?')) return
+                  setRegistryMsg('Stopping download...')
+                  try {
+                    const res = await fetch('/api/admin/sync-schedule/kill', { method: 'POST' })
+                    const data = await res.json()
+                    setRegistryMsg(data.message || 'Download stopped')
+                    const schedRes = await fetch('/api/admin/sync-schedule')
+                    if (schedRes.ok) setSyncSchedule(await schedRes.json())
+                  } catch (e) {
+                    setRegistryMsg(`Error: ${e}`)
+                  }
+                  return
+                }
+                // If another download is running, don't allow starting
+                if (syncSchedule?.status?.isRunning) return
                 if (!confirm(`Download/update ${parquetTickers.length.toLocaleString()} tickers from yFinance?`)) return
                 setRegistryMsg('Starting yFinance download...')
                 try {
@@ -5676,14 +5692,35 @@ function AdminPanel({
                 }
               }}
             >
-              {syncSchedule?.status?.isRunning ? 'Running...' : `yFinance (${parquetTickers.length.toLocaleString()})`}
+              {syncSchedule?.status?.isRunning && syncSchedule?.status?.currentJob?.source === 'yfinance'
+                ? '⬛ Stop yFinance'
+                : syncSchedule?.status?.isRunning
+                  ? 'Running...'
+                  : `yFinance (${parquetTickers.length.toLocaleString()})`}
             </Button>
 
             {/* Tiingo Download - fills gaps from yFinance */}
             <Button
-              variant="default"
-              disabled={syncSchedule?.status?.isRunning || !tiingoKeyStatus.hasKey}
+              variant={syncSchedule?.status?.isRunning && syncSchedule?.status?.currentJob?.source === 'tiingo' ? 'destructive' : 'default'}
+              disabled={!syncSchedule?.status?.isRunning && !tiingoKeyStatus.hasKey}
               onClick={async () => {
+                // If running tiingo, this becomes a stop button
+                if (syncSchedule?.status?.isRunning && syncSchedule?.status?.currentJob?.source === 'tiingo') {
+                  if (!confirm('Stop the running Tiingo download?')) return
+                  setRegistryMsg('Stopping download...')
+                  try {
+                    const res = await fetch('/api/admin/sync-schedule/kill', { method: 'POST' })
+                    const data = await res.json()
+                    setRegistryMsg(data.message || 'Download stopped')
+                    const schedRes = await fetch('/api/admin/sync-schedule')
+                    if (schedRes.ok) setSyncSchedule(await schedRes.json())
+                  } catch (e) {
+                    setRegistryMsg(`Error: ${e}`)
+                  }
+                  return
+                }
+                // If another download is running, don't allow starting
+                if (syncSchedule?.status?.isRunning) return
                 if (!confirm(`Download missing data and metadata from Tiingo for ${parquetTickers.length.toLocaleString()} tickers?`)) return
                 setRegistryMsg('Starting Tiingo download (fills gaps + metadata)...')
                 try {
@@ -5706,7 +5743,11 @@ function AdminPanel({
               }}
               title={!tiingoKeyStatus.hasKey ? 'Configure Tiingo API key first' : undefined}
             >
-              {syncSchedule?.status?.isRunning ? 'Running...' : `Tiingo (${parquetTickers.length.toLocaleString()})`}
+              {syncSchedule?.status?.isRunning && syncSchedule?.status?.currentJob?.source === 'tiingo'
+                ? '⬛ Stop Tiingo'
+                : syncSchedule?.status?.isRunning
+                  ? 'Running...'
+                  : `Tiingo (${parquetTickers.length.toLocaleString()})`}
             </Button>
 
             {/* Refresh Stats */}
@@ -5732,7 +5773,7 @@ function AdminPanel({
           </div>
 
           {/* ========== BATCH & PAUSE SETTINGS ========== */}
-          <div className="flex items-center gap-6 px-1">
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-2 px-1">
             <div className="flex items-center gap-2">
               <label className="text-sm text-muted-foreground whitespace-nowrap">Batch Size:</label>
               <input
@@ -5760,7 +5801,7 @@ function AdminPanel({
               />
             </div>
             <div className="flex items-center gap-2">
-              <label className="text-sm text-muted-foreground whitespace-nowrap">Pause (sec):</label>
+              <label className="text-sm text-muted-foreground whitespace-nowrap">yFinance Pause:</label>
               <input
                 type="number"
                 min="0"
@@ -5783,12 +5824,40 @@ function AdminPanel({
                     setRegistryMsg('Error updating pause time')
                   }
                 }}
-                className="w-20 px-2 py-1 rounded border border-border bg-background text-sm"
+                className="w-16 px-2 py-1 rounded border border-border bg-background text-sm"
+                title="Pause between yFinance batches (seconds)"
               />
+              <span className="text-xs text-muted-foreground">s</span>
             </div>
-            <span className="text-xs text-muted-foreground">
-              Download {syncSchedule?.config?.batchSize ?? 100} tickers, then wait {syncSchedule?.config?.sleepSeconds ?? 2}s
-            </span>
+            <div className="flex items-center gap-2">
+              <label className="text-sm text-muted-foreground whitespace-nowrap">Tiingo Pause:</label>
+              <input
+                type="number"
+                min="0"
+                max="10"
+                step="0.1"
+                value={syncSchedule?.config?.tiingoSleepSeconds ?? 0.2}
+                onChange={async (e) => {
+                  const val = Math.max(0, Math.min(10, parseFloat(e.target.value) || 0.2))
+                  try {
+                    const res = await fetch('/api/admin/sync-schedule', {
+                      method: 'PUT',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ tiingoSleepSeconds: val })
+                    })
+                    if (res.ok) {
+                      const schedRes = await fetch('/api/admin/sync-schedule')
+                      if (schedRes.ok) setSyncSchedule(await schedRes.json())
+                    }
+                  } catch {
+                    setRegistryMsg('Error updating Tiingo pause time')
+                  }
+                }}
+                className="w-16 px-2 py-1 rounded border border-border bg-background text-sm"
+                title="Pause between Tiingo API calls (seconds) - 0.2s recommended"
+              />
+              <span className="text-xs text-muted-foreground">s</span>
+            </div>
           </div>
 
           {/* ========== SCHEDULE SETTINGS ========== */}
