@@ -60,14 +60,45 @@ export async function importTickers(tickers, options = { usOnly: true }) {
     )
   }
 
+  // IMPORTANT: Deduplicate tickers - Tiingo can have multiple entries for the same ticker
+  // (e.g., SPYM on NYSE ARCA and NASDAQ). Keep the entry with the LATEST endDate,
+  // as that represents the currently active listing.
+  const tickerMap = new Map()
+  for (const t of filtered) {
+    const key = t.ticker.toUpperCase()
+    const existing = tickerMap.get(key)
+
+    if (!existing) {
+      tickerMap.set(key, t)
+    } else {
+      // Compare endDates - prefer the one with the later date (or no endDate = still active)
+      const existingEnd = existing.endDate ? new Date(existing.endDate) : new Date('9999-12-31')
+      const newEnd = t.endDate ? new Date(t.endDate) : new Date('9999-12-31')
+
+      if (newEnd > existingEnd) {
+        tickerMap.set(key, t)
+      }
+    }
+  }
+
+  const deduped = Array.from(tickerMap.values())
+  console.log(`[ticker-registry] Deduplicated ${filtered.length} entries to ${deduped.length} unique tickers`)
+
   // Upsert in batches
   const batchSize = 500
   let imported = 0
 
-  for (let i = 0; i < filtered.length; i += batchSize) {
-    const batch = filtered.slice(i, i + batchSize)
+  for (let i = 0; i < deduped.length; i += batchSize) {
+    const batch = deduped.slice(i, i + batchSize)
 
     for (const t of batch) {
+      // Consider ticker active if:
+      // 1. No endDate (still trading)
+      // 2. endDate is in the future or recent past (30 days grace period)
+      // Tickers with endDate > 30 days ago are likely truly delisted
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+      const isTickerActive = !t.endDate || new Date(t.endDate) >= thirtyDaysAgo
+
       await db.insert(tickerRegistry)
         .values({
           ticker: t.ticker.toUpperCase(),
@@ -76,7 +107,7 @@ export async function importTickers(tickers, options = { usOnly: true }) {
           currency: t.priceCurrency,
           startDate: t.startDate || null,
           endDate: t.endDate || null,
-          isActive: t.endDate ? new Date(t.endDate) >= new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) : true,
+          isActive: isTickerActive,
           createdAt: now,
           updatedAt: now,
         })
@@ -88,7 +119,7 @@ export async function importTickers(tickers, options = { usOnly: true }) {
             currency: t.priceCurrency,
             startDate: t.startDate || null,
             endDate: t.endDate || null,
-            isActive: t.endDate ? new Date(t.endDate) >= new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) : true,
+            isActive: isTickerActive,
             updatedAt: now,
           },
         })
@@ -97,7 +128,7 @@ export async function importTickers(tickers, options = { usOnly: true }) {
     imported += batch.length
   }
 
-  return { imported, total: filtered.length }
+  return { imported, total: deduped.length }
 }
 
 /**
