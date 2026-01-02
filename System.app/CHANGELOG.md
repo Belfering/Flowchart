@@ -4,6 +4,28 @@ All notable changes to Atlas Engine are documented here.
 
 ---
 
+## [1.3.0] - 2026-01-01
+
+### Added
+- Portfolio Builder - new Correlation Tool in Analyze tab for building diversified portfolios
+  - Three-panel layout: Your Systems | Nexus Systems | Portfolio Builder
+  - Mean-variance optimization calculates optimal weights for selected bots
+  - Interactive correlation matrix with color-coded cells (green = low, red = high)
+  - Optimization metrics: Min Correlation, Min Volatility, Min Beta, Max Sharpe
+  - Time period selection: Full History, 1 Year, 3 Years, 5 Years
+  - Dynamic recommendations show which bots would best diversify your portfolio
+  - Performance filters: Min CAGR, Max Drawdown, Min Sharpe
+  - Configurable max weight per bot (10-100%)
+  - Search boxes to filter Your Systems and Nexus Systems by name, tags, or builder
+  - Save portfolio as watchlist / Load watchlist into portfolio
+- Display Nickname field on registration - new users can set their display name during sign up
+
+### Performance
+- Backtest engine optimizations - merged duplicate indicator calculation functions
+- Improved caching for volatility-weighted allocations
+
+---
+
 ## [1.2.0] - 2026-01-01
 
 ### Added
@@ -69,8 +91,8 @@ All notable changes to Atlas Engine are documented here.
 ## Coming Soon
 
 - Position Node (adding Tickers) rework to be less click intensive
-- Correlation matrix/portfolio builder tool
 - Variable Library (allowing the creation of custom indicators)
+- Paper trading integration
 
 ---
 

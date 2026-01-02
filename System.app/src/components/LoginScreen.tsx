@@ -12,6 +12,7 @@ export function LoginScreen({ onLogin }: { onLogin: (userId: string) => void }) 
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [inviteCode, setInviteCode] = useState('')
+  const [displayName, setDisplayName] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -113,7 +114,7 @@ export function LoginScreen({ onLogin }: { onLogin: (userId: string) => void }) 
       const res = await fetch('/api/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email.trim(), password, inviteCode: inviteCode.trim() })
+        body: JSON.stringify({ email: email.trim(), password, inviteCode: inviteCode.trim(), displayName: displayName.trim() || undefined })
       })
       const data = await res.json()
       if (!res.ok) {
@@ -125,6 +126,7 @@ export function LoginScreen({ onLogin }: { onLogin: (userId: string) => void }) 
       setPassword('')
       setConfirmPassword('')
       setInviteCode('')
+      setDisplayName('')
     } catch {
       setError('Network error. Please try again.')
     } finally {
@@ -339,15 +341,25 @@ export function LoginScreen({ onLogin }: { onLogin: (userId: string) => void }) 
           )}
 
           {mode === 'register' && (
-            <label className="grid gap-1.5">
-              <div className="font-bold text-xs">Invite Code</div>
-              <Input
-                value={inviteCode}
-                onChange={(e) => { setInviteCode(e.target.value); setError(null) }}
-                placeholder="Enter your invite code"
-                onKeyDown={(e) => e.key === 'Enter' && submit()}
-              />
-            </label>
+            <>
+              <label className="grid gap-1.5">
+                <div className="font-bold text-xs">Display Nickname <span className="font-normal text-muted">(optional)</span></div>
+                <Input
+                  value={displayName}
+                  onChange={(e) => { setDisplayName(e.target.value); setError(null) }}
+                  placeholder="How others will see you"
+                />
+              </label>
+              <label className="grid gap-1.5">
+                <div className="font-bold text-xs">Invite Code</div>
+                <Input
+                  value={inviteCode}
+                  onChange={(e) => { setInviteCode(e.target.value); setError(null) }}
+                  placeholder="Enter your invite code"
+                  onKeyDown={(e) => e.key === 'Enter' && submit()}
+                />
+              </label>
+            </>
           )}
 
           {mode === 'login' && (

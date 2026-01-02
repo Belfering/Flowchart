@@ -18,7 +18,7 @@ const REFRESH_SECRET = process.env.REFRESH_SECRET || 'dev-refresh-secret-change-
  * Register with invite code (required during alpha/beta phases)
  */
 router.post('/register', async (req, res) => {
-  const { email, password, inviteCode, username } = req.body
+  const { email, password, inviteCode, username, displayName } = req.body
 
   // Validate required fields
   if (!email || !password) {
@@ -84,14 +84,24 @@ router.post('/register', async (req, res) => {
       return res.status(409).json({ error: 'Username is already taken' })
     }
 
+
+    // Check if display name is taken (if provided)
+    if (displayName?.trim()) {
+      const existingDisplayName = sqlite.prepare(\`
+        SELECT id FROM users WHERE LOWER(display_name) = LOWER(?)
+      \`).get(displayName.trim())
+      if (existingDisplayName) {
+        return res.status(409).json({ error: 'Display name is already taken' })
+      }
+    }
     // Create user
     const userId = crypto.randomUUID()
     const passwordHash = await bcrypt.hash(password, 12)
 
     sqlite.prepare(`
-      INSERT INTO users (id, username, password_hash, email, email_verified, status, tier, role, invite_code_used, created_at, updated_at)
-      VALUES (?, ?, ?, ?, 0, 'pending_verification', 'free', 'user', ?, datetime('now'), datetime('now'))
-    `).run(userId, finalUsername, passwordHash, email.toLowerCase(), inviteCode)
+      INSERT INTO users (id, username, password_hash, email, display_name, email_verified, status, tier, role, invite_code_used, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 0, 'pending_verification', 'free', 'user', ?, datetime('now'), datetime('now'))
+    `).run(userId, finalUsername, passwordHash, email.toLowerCase(), displayName?.trim() || null, inviteCode)
 
     // Mark invite code as used
     sqlite.prepare(`

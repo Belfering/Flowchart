@@ -4420,7 +4420,7 @@ function AdminDataPanel({
   )
 }
 
-type AdminSubtab = 'Atlas Overview' | 'Nexus Maintenance' | 'Ticker Data' | 'User Management'
+type AdminSubtab = 'Atlas Overview' | 'Nexus Maintenance' | 'Ticker Data' | 'User Management' | 'Trading Control'
 
 function AdminPanel({
   adminTab,
@@ -4441,6 +4441,9 @@ function AdminPanel({
   onPrewarmComplete?: () => void
   userId: string
 }) {
+  // Helper to get auth token from either localStorage or sessionStorage
+  const getAuthToken = () => localStorage.getItem('accessToken') || sessionStorage.getItem('accessToken')
+
   const [, setStatus] = useState<AdminStatus | null>(null)
   const [, setTickers] = useState<string[]>([])
   const [parquetTickers, setParquetTickers] = useState<string[]>([])
@@ -4485,6 +4488,40 @@ function AdminPanel({
     status: { isRunning: boolean; schedulerActive: boolean; currentJob?: { pid: number | null; syncedCount: number; tickerCount: number; startedAt: number; phase?: string; source?: string } }
   } | null>(null)
   const [syncKilling, setSyncKilling] = useState(false)
+
+  // Trading Control state (broker credentials, dry run, live trading)
+  const [brokerCredentials, setBrokerCredentials] = useState<{
+    hasCredentials: boolean
+    isPaper: boolean
+    baseUrl: string
+    updatedAt?: number
+  } | null>(null)
+  const [brokerApiKey, setBrokerApiKey] = useState('')
+  const [brokerApiSecret, setBrokerApiSecret] = useState('')
+  const [brokerIsPaper, setBrokerIsPaper] = useState(true)
+  const [brokerSaving, setBrokerSaving] = useState(false)
+  const [brokerTesting, setBrokerTesting] = useState(false)
+  const [brokerAccount, setBrokerAccount] = useState<{
+    equity: number
+    cash: number
+    buyingPower: number
+    status: string
+  } | null>(null)
+  const [brokerError, setBrokerError] = useState<string | null>(null)
+  const [dryRunCashReserve, setDryRunCashReserve] = useState(0)
+  const [dryRunCashMode, setDryRunCashMode] = useState<'dollars' | 'percent'>('dollars')
+  const [dryRunResult, setDryRunResult] = useState<{
+    mode: string
+    timestamp: string
+    account: { equity: number; cash: number; reservedCash: number; adjustedEquity: number }
+    positions: Array<{ ticker: string; targetPercent: number; price: number | null; limitPrice?: number; shares: number; value: number; error?: string; skipped?: boolean; reason?: string }>
+    summary: { totalAllocated: number; unallocated: number; allocationPercent: number; positionCount: number }
+    botBreakdown?: Array<{ botId: string; botName: string; investment: number; weight: string; date: string; allocations: Record<string, number>; usedLivePrices?: boolean }>
+    mergedAllocations?: Record<string, number>
+    totalInvested?: number
+    usedLivePrices?: boolean
+  } | null>(null)
+  const [dryRunRunning, setDryRunRunning] = useState(false)
 
   // Registry tickers (all tickers from Tiingo master list)
   const [registryTickers, setRegistryTickers] = useState<string[]>([])
@@ -4644,7 +4681,7 @@ function AdminPanel({
     const checkSuperAdmin = async () => {
       try {
         const res = await fetch('/api/admin/me', {
-          headers: { 'Authorization': `Bearer ${localStorage.getItem('accessToken')}` }
+          headers: { 'Authorization': `Bearer ${getAuthToken()}` }
         })
         if (res.ok) {
           const data = await res.json()
@@ -4666,7 +4703,7 @@ function AdminPanel({
       setAdminUsersError(null)
       try {
         const res = await fetch('/api/admin/users', {
-          headers: { 'Authorization': `Bearer ${localStorage.getItem('accessToken')}` }
+          headers: { 'Authorization': `Bearer ${getAuthToken()}` }
         })
         if (!res.ok) {
           const err = await res.json()
@@ -4686,6 +4723,32 @@ function AdminPanel({
 
     return () => { cancelled = true }
   }, [adminTab, isSuperAdmin])
+
+  // Fetch broker credentials for Trading Control tab
+  useEffect(() => {
+    if (adminTab !== 'Trading Control') return
+    let cancelled = false
+
+    const fetchBrokerCredentials = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/admin/broker/credentials`, {
+          headers: { Authorization: `Bearer ${getAuthToken()}` }
+        })
+        if (!res.ok) return
+        if (cancelled) return
+        const data = await res.json()
+        setBrokerCredentials(data)
+        if (data.hasCredentials) {
+          setBrokerIsPaper(data.isPaper)
+        }
+      } catch {
+        // Ignore errors - credentials may not exist yet
+      }
+    }
+    void fetchBrokerCredentials()
+
+    return () => { cancelled = true }
+  }, [adminTab])
 
   // Fetch admin data for Atlas Overview
   useEffect(() => {
@@ -4918,7 +4981,7 @@ function AdminPanel({
       const res = await fetch(`/api/admin/users/${targetUserId}/role`, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${localStorage.getItem('accessToken')}`,
+          'Authorization': `Bearer ${getAuthToken()}`,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({ role: newRole })
@@ -4949,7 +5012,16 @@ function AdminPanel({
             {t}
           </button>
         ))}
-        {/* User Management tab - only visible to super admin */}
+        {/* Trading Control tab - only visible to main admin (super admin) */}
+        {isSuperAdmin && (
+          <button
+            className={`tab-btn ${adminTab === 'Trading Control' ? 'active' : ''}`}
+            onClick={() => setAdminTab('Trading Control')}
+          >
+            Trading Control
+          </button>
+        )}
+        {/* User Management tab - only visible to main admin (super admin) */}
         {isSuperAdmin && (
           <button
             className={`tab-btn ${adminTab === 'User Management' ? 'active' : ''}`}
@@ -6114,6 +6186,343 @@ function AdminPanel({
               )}
             </div>
           </details>
+        </div>
+      )}
+
+      {/* Trading Control Tab - Main Admin Only, Local Only */}
+      {adminTab === 'Trading Control' && isSuperAdmin && (
+        <div className="space-y-6">
+          <div className="font-black text-lg">Trading Control</div>
+          <p className="text-sm text-muted-foreground">
+            Connect to Alpaca for live trading. Credentials are stored encrypted locally and never leave this machine.
+          </p>
+
+          {brokerError && (
+            <div className="text-destructive text-sm p-3 bg-destructive/10 rounded-lg">
+              {brokerError}
+            </div>
+          )}
+
+          {/* Broker Connection Section */}
+          <Card className="p-6">
+            <div className="font-bold mb-4 flex items-center gap-2">
+              Alpaca Connection
+              {brokerCredentials?.hasCredentials && (
+                <span className={`px-2 py-0.5 rounded text-xs ${brokerCredentials.isPaper ? 'bg-yellow-500/20 text-yellow-500' : 'bg-green-500/20 text-green-500'}`}>
+                  {brokerCredentials.isPaper ? 'Paper Trading' : 'Live Trading'}
+                </span>
+              )}
+            </div>
+
+            {brokerAccount ? (
+              <div className="mb-6 p-4 bg-muted/50 rounded-lg">
+                <div className="grid grid-cols-4 gap-4 text-sm">
+                  <div>
+                    <div className="text-muted-foreground">Equity</div>
+                    <div className="font-bold text-lg">${brokerAccount.equity.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
+                  </div>
+                  <div>
+                    <div className="text-muted-foreground">Cash</div>
+                    <div className="font-bold text-lg">${brokerAccount.cash.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
+                  </div>
+                  <div>
+                    <div className="text-muted-foreground">Buying Power</div>
+                    <div className="font-bold text-lg">${brokerAccount.buyingPower.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
+                  </div>
+                  <div>
+                    <div className="text-muted-foreground">Status</div>
+                    <div className={`font-bold text-lg ${brokerAccount.status === 'ACTIVE' ? 'text-green-500' : 'text-yellow-500'}`}>
+                      {brokerAccount.status}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : brokerCredentials?.hasCredentials ? (
+              <div className="mb-6 p-4 bg-muted/50 rounded-lg text-muted-foreground">
+                Credentials saved. Click "Test Connection" to verify.
+              </div>
+            ) : null}
+
+            <div className="grid grid-cols-2 gap-4 mb-4">
+              <div>
+                <label className="text-sm text-muted-foreground mb-1 block">API Key</label>
+                <input
+                  type="password"
+                  value={brokerApiKey}
+                  onChange={(e) => setBrokerApiKey(e.target.value)}
+                  placeholder={brokerCredentials?.hasCredentials ? '••••••••••••' : 'Enter Alpaca API Key'}
+                  className="w-full px-3 py-2 rounded border border-border bg-background text-sm"
+                />
+              </div>
+              <div>
+                <label className="text-sm text-muted-foreground mb-1 block">API Secret</label>
+                <input
+                  type="password"
+                  value={brokerApiSecret}
+                  onChange={(e) => setBrokerApiSecret(e.target.value)}
+                  placeholder={brokerCredentials?.hasCredentials ? '••••••••••••' : 'Enter Alpaca API Secret'}
+                  className="w-full px-3 py-2 rounded border border-border bg-background text-sm"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center gap-4 mb-4">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={brokerIsPaper}
+                  onChange={(e) => setBrokerIsPaper(e.target.checked)}
+                  className="rounded"
+                />
+                <span className="text-sm">Paper Trading Mode</span>
+              </label>
+              <span className="text-xs text-muted-foreground">
+                {brokerIsPaper ? 'Using paper-api.alpaca.markets (safe for testing)' : 'Using api.alpaca.markets (REAL MONEY!)'}
+              </span>
+            </div>
+
+            <div className="flex gap-2">
+              <Button
+                onClick={async () => {
+                  if (!brokerApiKey || !brokerApiSecret) {
+                    setBrokerError('Please enter both API Key and API Secret')
+                    return
+                  }
+                  setBrokerSaving(true)
+                  setBrokerError(null)
+                  try {
+                    const res = await fetch(`${API_BASE}/admin/broker/credentials`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getAuthToken()}` },
+                      body: JSON.stringify({ apiKey: brokerApiKey, apiSecret: brokerApiSecret, isPaper: brokerIsPaper }),
+                    })
+                    const data = await res.json()
+                    if (!res.ok) throw new Error(data.error || 'Failed to save credentials')
+                    setBrokerCredentials({ hasCredentials: true, isPaper: brokerIsPaper, baseUrl: brokerIsPaper ? 'https://paper-api.alpaca.markets' : 'https://api.alpaca.markets' })
+                    setBrokerApiKey('')
+                    setBrokerApiSecret('')
+                  } catch (e) {
+                    setBrokerError(String((e as Error)?.message || e))
+                  } finally {
+                    setBrokerSaving(false)
+                  }
+                }}
+                disabled={brokerSaving || (!brokerApiKey && !brokerApiSecret)}
+              >
+                {brokerSaving ? 'Saving...' : 'Save Credentials'}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={async () => {
+                  setBrokerTesting(true)
+                  setBrokerError(null)
+                  try {
+                    const res = await fetch(`${API_BASE}/admin/broker/test`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getAuthToken()}` },
+                    })
+                    const data = await res.json()
+                    if (!res.ok) throw new Error(data.error || 'Connection test failed')
+                    setBrokerAccount(data.account)
+                  } catch (e) {
+                    setBrokerError(String((e as Error)?.message || e))
+                    setBrokerAccount(null)
+                  } finally {
+                    setBrokerTesting(false)
+                  }
+                }}
+                disabled={brokerTesting || !brokerCredentials?.hasCredentials}
+              >
+                {brokerTesting ? 'Testing...' : 'Test Connection'}
+              </Button>
+            </div>
+          </Card>
+
+          {/* Dry Run Section */}
+          <Card className="p-6">
+            <div className="font-bold mb-4">Dry Run (Simulated Trade)</div>
+            <p className="text-sm text-muted-foreground mb-4">
+              Simulates executing today's allocations based on your Dashboard investments. Each bot's flowchart is evaluated
+              for the current date, and allocations are merged weighted by your investment amounts.
+            </p>
+
+            <div className="flex items-center gap-4 mb-4">
+              <div>
+                <label className="text-sm text-muted-foreground mb-1 block">Cash Reserve</label>
+                <div className="flex gap-2">
+                  <input
+                    type="number"
+                    value={dryRunCashReserve}
+                    onChange={(e) => setDryRunCashReserve(parseFloat(e.target.value) || 0)}
+                    className="w-24 px-2 py-2 rounded border border-border bg-background text-sm"
+                  />
+                  <select
+                    value={dryRunCashMode}
+                    onChange={(e) => setDryRunCashMode(e.target.value as 'dollars' | 'percent')}
+                    className="px-2 py-2 rounded border border-border bg-background text-sm"
+                  >
+                    <option value="dollars">$</option>
+                    <option value="percent">%</option>
+                  </select>
+                </div>
+              </div>
+
+              <Button
+                onClick={async () => {
+                  setDryRunRunning(true)
+                  setBrokerError(null)
+                  setDryRunResult(null)
+                  try {
+                    const res = await fetch(`${API_BASE}/admin/live/dry-run`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getAuthToken()}` },
+                      body: JSON.stringify({ cashReserve: dryRunCashReserve, cashMode: dryRunCashMode }),
+                    })
+                    const data = await res.json()
+                    if (!res.ok) throw new Error(data.error || 'Dry run failed')
+                    setDryRunResult(data)
+                  } catch (e) {
+                    setBrokerError(String((e as Error)?.message || e))
+                  } finally {
+                    setDryRunRunning(false)
+                  }
+                }}
+                disabled={dryRunRunning || !brokerCredentials?.hasCredentials}
+                className="mt-5"
+              >
+                {dryRunRunning ? 'Evaluating bots...' : 'Run Dry Test'}
+              </Button>
+            </div>
+
+            {dryRunResult && (
+              <div className="mt-4 space-y-4">
+                {/* Live Price Indicator */}
+                {dryRunResult.usedLivePrices && (
+                  <div className="flex items-center gap-2 text-sm text-green-600">
+                    <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
+                    Using live prices from Alpaca for signal calculation
+                  </div>
+                )}
+                {!dryRunResult.usedLivePrices && dryRunResult.botBreakdown && (
+                  <div className="flex items-center gap-2 text-sm text-yellow-600">
+                    <span className="w-2 h-2 bg-yellow-500 rounded-full"></span>
+                    Using historical close prices (market may be closed)
+                  </div>
+                )}
+
+                {/* Bot Breakdown */}
+                {dryRunResult.botBreakdown && dryRunResult.botBreakdown.length > 0 && (
+                  <div className="p-4 bg-muted/30 rounded-lg">
+                    <div className="font-medium mb-2">Bot Allocations (as of {dryRunResult.botBreakdown[0]?.date || 'today'})</div>
+                    <div className="grid gap-3">
+                      {dryRunResult.botBreakdown.map(bot => (
+                        <div key={bot.botId} className="flex items-start gap-4 text-sm">
+                          <div className="flex-1">
+                            <div className="font-medium">{bot.botName}</div>
+                            <div className="text-muted-foreground text-xs">
+                              ${bot.investment.toLocaleString()} ({bot.weight})
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap gap-1">
+                            {Object.entries(bot.allocations)
+                              .filter(([, pct]) => pct > 0)
+                              .sort((a, b) => b[1] - a[1])
+                              .map(([ticker, pct]) => (
+                                <span key={ticker} className="px-1.5 py-0.5 bg-background rounded text-xs">
+                                  {ticker} {pct.toFixed(0)}%
+                                </span>
+                              ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    {dryRunResult.mergedAllocations && (
+                      <div className="mt-3 pt-3 border-t border-border">
+                        <div className="text-sm font-medium mb-1">Merged Allocation:</div>
+                        <div className="flex flex-wrap gap-1">
+                          {Object.entries(dryRunResult.mergedAllocations)
+                            .filter(([, pct]) => pct > 0.5)
+                            .sort((a, b) => b[1] - a[1])
+                            .map(([ticker, pct]) => (
+                              <span key={ticker} className="px-2 py-1 bg-primary/10 rounded text-sm font-medium">
+                                {ticker} {pct.toFixed(1)}%
+                              </span>
+                            ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Account Summary */}
+                <div className="p-4 bg-muted/50 rounded-lg">
+                  <div className="grid grid-cols-4 gap-4 mb-4 text-sm">
+                    <div>
+                      <div className="text-muted-foreground">Account Equity</div>
+                      <div className="font-bold">${dryRunResult.account.equity.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
+                    </div>
+                    <div>
+                      <div className="text-muted-foreground">Cash Reserved</div>
+                      <div className="font-bold">${dryRunResult.account.reservedCash.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
+                    </div>
+                    <div>
+                      <div className="text-muted-foreground">Total Allocated</div>
+                      <div className="font-bold">${dryRunResult.summary.totalAllocated.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
+                    </div>
+                    <div>
+                      <div className="text-muted-foreground">Allocation %</div>
+                      <div className="font-bold">{dryRunResult.summary.allocationPercent.toFixed(2)}%</div>
+                    </div>
+                  </div>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Ticker</TableHead>
+                        <TableHead className="text-right">Target %</TableHead>
+                        <TableHead className="text-right">Price</TableHead>
+                        <TableHead className="text-right">Limit Price</TableHead>
+                        <TableHead className="text-right">Shares</TableHead>
+                        <TableHead className="text-right">Value</TableHead>
+                        <TableHead>Status</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {dryRunResult.positions.map(pos => (
+                        <TableRow key={pos.ticker}>
+                          <TableCell className="font-medium">{pos.ticker}</TableCell>
+                          <TableCell className="text-right">{pos.targetPercent.toFixed(2)}%</TableCell>
+                          <TableCell className="text-right">{pos.price ? `$${pos.price.toFixed(2)}` : '-'}</TableCell>
+                          <TableCell className="text-right">{pos.limitPrice ? `$${pos.limitPrice.toFixed(2)}` : '-'}</TableCell>
+                          <TableCell className="text-right">{pos.shares}</TableCell>
+                          <TableCell className="text-right">${pos.value.toLocaleString(undefined, { minimumFractionDigits: 2 })}</TableCell>
+                          <TableCell>
+                            {pos.error ? (
+                              <span className="text-destructive text-xs">{pos.error}</span>
+                            ) : pos.skipped ? (
+                              <span className="text-yellow-500 text-xs">{pos.reason}</span>
+                            ) : (
+                              <span className="text-green-500 text-xs">OK</span>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </div>
+            )}
+          </Card>
+
+          {/* Warning for Live Trading */}
+          {!brokerCredentials?.isPaper && brokerCredentials?.hasCredentials && (
+            <div className="p-4 bg-destructive/10 border border-destructive/30 rounded-lg">
+              <div className="font-bold text-destructive mb-1">⚠️ Live Trading Mode Enabled</div>
+              <p className="text-sm text-destructive/80">
+                You are connected to Alpaca's live trading API. Any executed trades will use real money.
+                Consider using Paper Trading mode for testing.
+              </p>
+            </div>
+          )}
         </div>
       )}
 
@@ -13733,6 +14142,201 @@ function App() {
     dir: 'asc',
   })
 
+  // Correlation Tool state
+  const [correlationSelectedBotIds, setCorrelationSelectedBotIds] = useState<string[]>([])
+  const [correlationOptimizationMetric, setCorrelationOptimizationMetric] = useState<'correlation' | 'volatility' | 'beta' | 'sharpe'>('correlation')
+  const [correlationTimePeriod, setCorrelationTimePeriod] = useState<'full' | '1y' | '3y' | '5y'>('full')
+  const [correlationMaxWeight, setCorrelationMaxWeight] = useState<number>(40)
+  const [correlationMatrix, setCorrelationMatrix] = useState<number[][] | null>(null)
+  const [correlationWeights, setCorrelationWeights] = useState<Record<string, number>>({})
+  const [correlationPortfolioMetrics, setCorrelationPortfolioMetrics] = useState<{
+    cagr: number
+    volatility: number
+    sharpe: number
+    maxDrawdown: number
+    beta: number
+  } | null>(null)
+  const [correlationLoading, setCorrelationLoading] = useState(false)
+  const [correlationError, setCorrelationError] = useState<string | null>(null)
+  const [correlationValidBotIds, setCorrelationValidBotIds] = useState<string[]>([])
+  const [correlationUserRecommendations, setCorrelationUserRecommendations] = useState<Array<{ botId: string; score: number; correlation: number; metrics: { cagr?: number; sharpe?: number } }>>([])
+  const [correlationNexusRecommendations, setCorrelationNexusRecommendations] = useState<Array<{ botId: string; score: number; correlation: number; metrics: { cagr?: number; sharpe?: number } }>>([])
+  // Performance filters
+  const [correlationMinCagr, setCorrelationMinCagr] = useState<number | ''>('')
+  const [correlationMaxDrawdown, setCorrelationMaxDrawdown] = useState<number | ''>('')
+  const [correlationMinSharpe, setCorrelationMinSharpe] = useState<number | ''>(``)
+
+  // Search filters for correlation panels
+  const [correlationUserSearch, setCorrelationUserSearch] = useState('')
+  const [correlationNexusSearch, setCorrelationNexusSearch] = useState('')
+
+  // Filter function for bots based on performance criteria
+  const passesCorrelationFilters = (metrics: { cagr?: number; maxDrawdown?: number; sharpe?: number; sharpeRatio?: number } | null | undefined): boolean => {
+    if (!metrics) return false
+    if (correlationMinCagr !== '' && (metrics.cagr ?? 0) * 100 < correlationMinCagr) return false
+    if (correlationMaxDrawdown !== '' && Math.abs(metrics.maxDrawdown ?? 0) * 100 > correlationMaxDrawdown) return false
+    if (correlationMinSharpe !== '' && (metrics.sharpe ?? metrics.sharpeRatio ?? 0) < correlationMinSharpe) return false
+    return true
+  }
+
+  // Search filter for user's bots (by name or tags)
+  const passesUserSearch = (bot: SavedBot): boolean => {
+    if (!correlationUserSearch.trim()) return true
+    const search = correlationUserSearch.toLowerCase().trim()
+    if (bot.name.toLowerCase().includes(search)) return true
+    if (bot.tags?.some(tag => tag.toLowerCase().includes(search))) return true
+    return false
+  }
+
+  // Search filter for Nexus bots (by name, tags, or builder display name)
+  const passesNexusSearch = (bot: SavedBot): boolean => {
+    if (!correlationNexusSearch.trim()) return true
+    const search = correlationNexusSearch.toLowerCase().trim()
+    if (bot.name.toLowerCase().includes(search)) return true
+    if (bot.tags?.some(tag => tag.toLowerCase().includes(search))) return true
+    if (bot.builderDisplayName?.toLowerCase().includes(search)) return true
+    return false
+  }
+
+  // Call optimization API when correlation parameters change
+  useEffect(() => {
+    if (correlationSelectedBotIds.length < 2) {
+      setCorrelationMatrix(null)
+      setCorrelationWeights({})
+      setCorrelationPortfolioMetrics(null)
+      setCorrelationValidBotIds([])
+      setCorrelationError(null)
+      return
+    }
+
+    const fetchOptimization = async () => {
+      setCorrelationLoading(true)
+      setCorrelationError(null)
+      try {
+        const token = localStorage.getItem('accessToken') || sessionStorage.getItem('accessToken')
+        const res = await fetch('/api/correlation/optimize', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            botIds: correlationSelectedBotIds,
+            metric: correlationOptimizationMetric,
+            period: correlationTimePeriod,
+            maxWeight: correlationMaxWeight / 100
+          })
+        })
+        const data = await res.json()
+        if (!res.ok) {
+          throw new Error(data.error || 'Optimization failed')
+        }
+
+        // Convert weights array to object keyed by botId
+        const weightsObj: Record<string, number> = {}
+        data.validBotIds.forEach((botId: string, i: number) => {
+          weightsObj[botId] = (data.weights[i] ?? 0) * 100
+        })
+
+        setCorrelationWeights(weightsObj)
+        setCorrelationMatrix(data.correlationMatrix)
+        setCorrelationValidBotIds(data.validBotIds)
+        setCorrelationPortfolioMetrics({
+          cagr: data.portfolioMetrics.cagr,
+          volatility: data.portfolioMetrics.volatility,
+          sharpe: data.portfolioMetrics.sharpe,
+          maxDrawdown: data.portfolioMetrics.maxDrawdown,
+          beta: data.portfolioMetrics.beta
+        })
+      } catch (err) {
+        console.error('[Correlation] Optimization error:', err)
+        setCorrelationError(err instanceof Error ? err.message : String(err))
+      } finally {
+        setCorrelationLoading(false)
+      }
+    }
+
+    fetchOptimization()
+  }, [correlationSelectedBotIds, correlationOptimizationMetric, correlationTimePeriod, correlationMaxWeight])
+
+  // Fetch recommendations for user bots and nexus bots
+  useEffect(() => {
+    const fetchRecommendations = async () => {
+      const token = localStorage.getItem('accessToken') || sessionStorage.getItem('accessToken')
+      if (!token) return
+
+      // Get user bot IDs with backtest data
+      const userBotIds = savedBots
+        .filter(b => b.backtestResult || analyzeBacktests[b.id]?.result)
+        .filter(b => passesUserSearch(b)).filter(b => !correlationSelectedBotIds.includes(b.id))
+        .map(b => b.id)
+
+      // Get nexus bot IDs with backtest data
+      const nexusBotIds = allNexusBots
+        .filter(b => b.backtestResult)
+        .filter(b => passesNexusSearch(b)).filter(b => !correlationSelectedBotIds.includes(b.id))
+        .map(b => b.id)
+
+      // Fetch user recommendations
+      if (userBotIds.length > 0) {
+        try {
+          const res = await fetch('/api/correlation/recommend', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({
+              currentBotIds: correlationSelectedBotIds,
+              candidateBotIds: userBotIds,
+              metric: correlationOptimizationMetric,
+              period: correlationTimePeriod,
+              limit: 3
+            })
+          })
+          const data = await res.json()
+          if (res.ok && data.recommendations) {
+            setCorrelationUserRecommendations(data.recommendations)
+          }
+        } catch (err) {
+          console.error('[Correlation] User recommendations error:', err)
+        }
+      } else {
+        setCorrelationUserRecommendations([])
+      }
+
+      // Fetch nexus recommendations
+      if (nexusBotIds.length > 0) {
+        try {
+          const res = await fetch('/api/correlation/recommend', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({
+              currentBotIds: correlationSelectedBotIds,
+              candidateBotIds: nexusBotIds,
+              metric: correlationOptimizationMetric,
+              period: correlationTimePeriod,
+              limit: 3
+            })
+          })
+          const data = await res.json()
+          if (res.ok && data.recommendations) {
+            setCorrelationNexusRecommendations(data.recommendations)
+          }
+        } catch (err) {
+          console.error('[Correlation] Nexus recommendations error:', err)
+        }
+      } else {
+        setCorrelationNexusRecommendations([])
+      }
+    }
+
+    fetchRecommendations()
+  }, [correlationSelectedBotIds, correlationOptimizationMetric, correlationTimePeriod, savedBots, allNexusBots, analyzeBacktests])
+
   const theme = userId ? uiState.theme : deviceTheme
 
   const [availableTickers, setAvailableTickers] = useState<string[]>([])
@@ -17884,16 +18488,506 @@ function App() {
             </div>
 
             {analyzeSubtab === 'Correlation Tool' ? (
-              <div className="mt-3 grid grid-cols-3 gap-3">
-                <Card className="grid place-items-center min-h-[220px] font-black">
-                  Placeholder Text: Invested Systems
+              <div className="mt-3 flex flex-col gap-3 flex-1 min-h-0">
+                {/* Filters Bar */}
+                <Card className="p-3 flex items-center gap-4 flex-wrap">
+                  <label className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-muted">Optimize for</span>
+                    <Select
+                      value={correlationOptimizationMetric}
+                      onChange={(e) => setCorrelationOptimizationMetric(e.target.value as typeof correlationOptimizationMetric)}
+                      className="text-sm"
+                    >
+                      <option value="correlation">Min Correlation</option>
+                      <option value="volatility">Min Volatility</option>
+                      <option value="beta">Min Beta</option>
+                      <option value="sharpe">Max Sharpe</option>
+                    </Select>
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-muted">Period</span>
+                    <Select
+                      value={correlationTimePeriod}
+                      onChange={(e) => setCorrelationTimePeriod(e.target.value as typeof correlationTimePeriod)}
+                      className="text-sm"
+                    >
+                      <option value="full">Full History</option>
+                      <option value="1y">1 Year</option>
+                      <option value="3y">3 Years</option>
+                      <option value="5y">5 Years</option>
+                    </Select>
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-muted">Max Weight</span>
+                    <input
+                      type="number"
+                      value={correlationMaxWeight}
+                      onChange={(e) => setCorrelationMaxWeight(Math.min(100, Math.max(10, parseInt(e.target.value) || 40)))}
+                      className="w-16 px-2 py-1 rounded border border-border bg-background text-sm"
+                      min={10}
+                      max={100}
+                    />
+                    <span className="text-xs text-muted">%</span>
+                  </label>
+                  <div className="w-px h-6 bg-border" />
+                  <label className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-muted">Min CAGR</span>
+                    <input
+                      type="number"
+                      value={correlationMinCagr}
+                      onChange={(e) => setCorrelationMinCagr(e.target.value === '' ? '' : parseFloat(e.target.value))}
+                      className="w-14 px-2 py-1 rounded border border-border bg-background text-sm"
+                      placeholder="--"
+                    />
+                    <span className="text-xs text-muted">%</span>
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-muted">Max DD</span>
+                    <input
+                      type="number"
+                      value={correlationMaxDrawdown}
+                      onChange={(e) => setCorrelationMaxDrawdown(e.target.value === '' ? '' : parseFloat(e.target.value))}
+                      className="w-14 px-2 py-1 rounded border border-border bg-background text-sm"
+                      placeholder="--"
+                    />
+                    <span className="text-xs text-muted">%</span>
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-muted">Min Sharpe</span>
+                    <input
+                      type="number"
+                      step="0.1"
+                      value={correlationMinSharpe}
+                      onChange={(e) => setCorrelationMinSharpe(e.target.value === '' ? '' : parseFloat(e.target.value))}
+                      className="w-14 px-2 py-1 rounded border border-border bg-background text-sm"
+                      placeholder="--"
+                    />
+                  </label>
                 </Card>
-                <Card className="grid place-items-center min-h-[220px] font-black">
-                  Placeholder Text: Community suggestions based on filters (Beta, Correlation, Volatility weighting)
-                </Card>
-                <Card className="grid place-items-center min-h-[220px] font-black">
-                  Combined portfolio and allocations based on suggestions
-                </Card>
+
+                {/* Three Panel Layout */}
+                <div className="grid grid-cols-3 gap-3 flex-1 min-h-0">
+                  {/* Left Panel: Your Systems */}
+                  <Card className="flex flex-col min-h-[400px] max-h-[600px]">
+                    <div className="p-3 border-b border-border">
+                      <div className="flex items-center gap-2"><div className="font-bold text-sm shrink-0">Your Systems</div><Input placeholder="Search..." value={correlationUserSearch} onChange={(e) => setCorrelationUserSearch(e.target.value)} className="h-6 text-xs flex-1" /></div>
+                    </div>
+                    <div className="flex-1 overflow-hidden flex flex-col">
+                      {savedBots.filter(b => b.backtestResult || analyzeBacktests[b.id]?.result).length === 0 ? (
+                        <div className="text-sm text-muted p-2">No backtested systems yet. Run backtests in the Analyze tab first.</div>
+                      ) : (
+                        <>
+                          {/* Top 3 Recommended - Fixed Section (always visible) */}
+                          <div className="p-2 border-b border-border bg-green-500/5 shrink-0">
+                            <div className="text-xs font-bold text-green-600 mb-2">Top 3 Recommended</div>
+                            <div className="grid gap-1">
+                              {(() => {
+                                // Get filtered bots not already in portfolio
+                                const filteredBots = savedBots
+                                  .filter(b => b.backtestResult || analyzeBacktests[b.id]?.result)
+                                  .filter(b => {
+                                    const metrics = analyzeBacktests[b.id]?.result?.metrics ?? b.backtestResult
+                                    return passesCorrelationFilters(metrics)
+                                  })
+                                  .filter(b => passesUserSearch(b)).filter(b => !correlationSelectedBotIds.includes(b.id))
+
+                                // If we have API recommendations, use those; otherwise sort by Sharpe
+                                let top3: typeof filteredBots = []
+                                if (correlationUserRecommendations.length > 0) {
+                                  top3 = correlationUserRecommendations
+                                    .slice(0, 3)
+                                    .map(rec => filteredBots.find(b => b.id === rec.botId))
+                                    .filter((b): b is NonNullable<typeof b> => b != null)
+                                } else {
+                                  top3 = [...filteredBots]
+                                    .sort((a, b) => {
+                                      const aMetrics = analyzeBacktests[a.id]?.result?.metrics ?? a.backtestResult
+                                      const bMetrics = analyzeBacktests[b.id]?.result?.metrics ?? b.backtestResult
+                                      return (bMetrics?.sharpe ?? 0) - (aMetrics?.sharpe ?? 0)
+                                    })
+                                    .slice(0, 3)
+                                }
+
+                                if (top3.length === 0) {
+                                  return <div className="text-xs text-muted">No recommendations available</div>
+                                }
+
+                                return top3.map(bot => {
+                                  const metrics = analyzeBacktests[bot.id]?.result?.metrics ?? bot.backtestResult
+                                  const rec = correlationUserRecommendations.find(r => r.botId === bot.id)
+                                  return (
+                                    <div
+                                      key={bot.id}
+                                      className="flex items-center justify-between p-2 rounded text-sm border border-green-500/30 bg-background hover:bg-green-500/10"
+                                    >
+                                      <div className="flex flex-col min-w-0 flex-1">
+                                        <div className="font-medium truncate">{bot.name}</div>
+                                        <div className="text-xs text-muted">
+                                          {rec ? `Corr: ${rec.correlation.toFixed(2)} | ` : ''}CAGR: {((metrics?.cagr ?? 0) * 100).toFixed(1)}%
+                                        </div>
+                                      </div>
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        onClick={() => setCorrelationSelectedBotIds(prev => [...prev, bot.id])}
+                                      >
+                                        +
+                                      </Button>
+                                    </div>
+                                  )
+                                })
+                              })()}
+                            </div>
+                          </div>
+
+                          {/* All Your Bots - Scrollable Section */}
+                          <div className="flex-1 overflow-auto p-2">
+                            <div className="text-xs font-bold text-muted mb-2">All Systems</div>
+                            <div className="grid gap-1">
+                              {savedBots
+                                .filter(b => b.backtestResult || analyzeBacktests[b.id]?.result)
+                                .filter(b => {
+                                  const metrics = analyzeBacktests[b.id]?.result?.metrics ?? b.backtestResult
+                                  return passesCorrelationFilters(metrics)
+                                })
+                                .filter(b => passesUserSearch(b))
+                                .map(bot => {
+                                  const metrics = analyzeBacktests[bot.id]?.result?.metrics ?? bot.backtestResult
+                                  const isSelected = correlationSelectedBotIds.includes(bot.id)
+                                  return (
+                                    <div
+                                      key={bot.id}
+                                      className={`flex items-center justify-between p-2 rounded text-sm ${isSelected ? 'bg-accent/20 opacity-50' : 'hover:bg-accent/10'}`}
+                                    >
+                                      <div className="flex flex-col min-w-0 flex-1">
+                                        <div className="font-medium truncate">{bot.name}</div>
+                                        <div className="text-xs text-muted">
+                                          CAGR: {((metrics?.cagr ?? 0) * 100).toFixed(1)}% | DD: {((metrics?.maxDrawdown ?? 0) * 100).toFixed(1)}%
+                                        </div>
+                                      </div>
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        disabled={isSelected}
+                                        onClick={() => setCorrelationSelectedBotIds(prev => [...prev, bot.id])}
+                                      >
+                                        +
+                                      </Button>
+                                    </div>
+                                  )
+                                })}
+                            </div>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </Card>
+
+                  {/* Middle Panel: Nexus Systems */}
+                  <Card className="flex flex-col min-h-[400px] max-h-[600px]">
+                    <div className="p-3 border-b border-border">
+                      <div className="flex items-center gap-2"><div className="font-bold text-sm shrink-0">Nexus Systems</div><Input placeholder="Search..." value={correlationNexusSearch} onChange={(e) => setCorrelationNexusSearch(e.target.value)} className="h-6 text-xs flex-1" /></div>
+                    </div>
+                    <div className="flex-1 overflow-hidden flex flex-col">
+                      {allNexusBots.filter(b => b.backtestResult).length === 0 ? (
+                        <div className="text-sm text-muted p-2">No Nexus systems with metrics available.</div>
+                      ) : (
+                        <>
+                          {/* Top 3 Recommended - Fixed Section (always visible) */}
+                          <div className="p-2 border-b border-border bg-green-500/5 shrink-0">
+                            <div className="text-xs font-bold text-green-600 mb-2">Top 3 Recommended</div>
+                            <div className="grid gap-1">
+                              {(() => {
+                                // Get filtered bots not already in portfolio
+                                const filteredBots = allNexusBots
+                                  .filter(b => b.backtestResult)
+                                  .filter(b => passesCorrelationFilters(b.backtestResult))
+                                  .filter(b => passesNexusSearch(b)).filter(b => !correlationSelectedBotIds.includes(b.id))
+
+                                // If we have API recommendations, use those; otherwise sort by Sharpe
+                                let top3: typeof filteredBots = []
+                                if (correlationNexusRecommendations.length > 0) {
+                                  top3 = correlationNexusRecommendations
+                                    .slice(0, 3)
+                                    .map(rec => filteredBots.find(b => b.id === rec.botId))
+                                    .filter((b): b is NonNullable<typeof b> => b != null)
+                                } else {
+                                  top3 = [...filteredBots]
+                                    .sort((a, b) => (b.backtestResult?.sharpe ?? 0) - (a.backtestResult?.sharpe ?? 0))
+                                    .slice(0, 3)
+                                }
+
+                                if (top3.length === 0) {
+                                  return <div className="text-xs text-muted">No recommendations available</div>
+                                }
+
+                                return top3.map(bot => {
+                                  const metrics = bot.backtestResult
+                                  const rec = correlationNexusRecommendations.find(r => r.botId === bot.id)
+                                  return (
+                                    <div
+                                      key={bot.id}
+                                      className="flex items-center justify-between p-2 rounded text-sm border border-green-500/30 bg-background hover:bg-green-500/10"
+                                    >
+                                      <div className="flex flex-col min-w-0 flex-1">
+                                        <div className="font-medium truncate">{bot.name}</div>
+                                        <div className="text-xs text-muted">
+                                          {rec ? `Corr: ${rec.correlation.toFixed(2)} | ` : ''}CAGR: {((metrics?.cagr ?? 0) * 100).toFixed(1)}%
+                                        </div>
+                                      </div>
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        onClick={() => setCorrelationSelectedBotIds(prev => [...prev, bot.id])}
+                                      >
+                                        +
+                                      </Button>
+                                    </div>
+                                  )
+                                })
+                              })()}
+                            </div>
+                          </div>
+
+                          {/* All Nexus Bots - Scrollable Section */}
+                          <div className="flex-1 overflow-auto p-2">
+                            <div className="text-xs font-bold text-muted mb-2">All Systems</div>
+                            <div className="grid gap-1">
+                              {allNexusBots
+                                .filter(b => b.backtestResult)
+                                .filter(b => passesCorrelationFilters(b.backtestResult))
+                                .filter(b => passesNexusSearch(b))
+                                .map(bot => {
+                                  const metrics = bot.backtestResult
+                                  const isSelected = correlationSelectedBotIds.includes(bot.id)
+                                  return (
+                                    <div
+                                      key={bot.id}
+                                      className={`flex items-center justify-between p-2 rounded text-sm ${isSelected ? 'bg-accent/20 opacity-50' : 'hover:bg-accent/10'}`}
+                                    >
+                                      <div className="flex flex-col min-w-0 flex-1">
+                                        <div className="font-medium truncate">{bot.name}</div>
+                                        <div className="text-xs text-muted">
+                                          {bot.builderDisplayName && <span className="mr-2">by {bot.builderDisplayName}</span>}
+                                          CAGR: {((metrics?.cagr ?? 0) * 100).toFixed(1)}%
+                                        </div>
+                                      </div>
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        disabled={isSelected}
+                                        onClick={() => setCorrelationSelectedBotIds(prev => [...prev, bot.id])}
+                                      >
+                                        +
+                                      </Button>
+                                    </div>
+                                  )
+                                })}
+                            </div>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </Card>
+
+                  {/* Right Panel: Portfolio Builder */}
+                  <Card className="flex flex-col min-h-[400px] max-h-[600px]">
+                    <div className="p-3 border-b border-border flex items-center justify-between">
+                      <div className="font-bold text-sm">Portfolio Builder</div>
+                      <div className="flex items-center gap-2">
+                        {/* Load Watchlist */}
+                        <Select
+                          value=""
+                          onChange={async (e) => {
+                            const watchlistId = e.target.value
+                            if (!watchlistId) return
+                            const watchlist = watchlists.find(w => w.id === watchlistId)
+                            if (!watchlist) return
+                            // Get bot IDs from watchlist
+                            const botIds = watchlist.botIds || []
+                            setCorrelationSelectedBotIds(botIds)
+                          }}
+                          className="text-xs h-7"
+                        >
+                          <option value="">Load watchlist...</option>
+                          {watchlists.map(w => (
+                            <option key={w.id} value={w.id}>{w.name}</option>
+                          ))}
+                        </Select>
+                        {/* Save as Watchlist */}
+                        {correlationSelectedBotIds.length > 0 && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="text-xs h-7"
+                            onClick={async () => {
+                              const name = prompt('Enter watchlist name:')
+                              if (!name || !userId) return
+                              try {
+                                const token = localStorage.getItem('accessToken') || sessionStorage.getItem('accessToken')
+                                const res = await fetch('/api/watchlists', {
+                                  method: 'POST',
+                                  headers: {
+                                    'Content-Type': 'application/json',
+                                    'Authorization': `Bearer ${token}`
+                                  },
+                                  body: JSON.stringify({
+                                    name,
+                                    userId,
+                                    botIds: correlationSelectedBotIds
+                                  })
+                                })
+                                if (res.ok) {
+                                  const data = await res.json()
+                                  setWatchlists(prev => [...prev, data.watchlist])
+                                  alert('Portfolio saved as watchlist!')
+                                }
+                              } catch (err) {
+                                console.error('Failed to save watchlist:', err)
+                              }
+                            }}
+                          >
+                            Save
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex-1 overflow-auto p-2">
+                      {correlationSelectedBotIds.length === 0 ? (
+                        <div className="text-sm text-muted p-2">Add systems from the left panels or load a watchlist to build your portfolio.</div>
+                      ) : (
+                        <div className="grid gap-3">
+                          {/* Selected Bots */}
+                          <div>
+                            <div className="text-xs font-bold text-muted mb-2">Selected Systems</div>
+                            <div className="grid gap-1">
+                              {correlationSelectedBotIds.map(botId => {
+                                const bot = savedBots.find(b => b.id === botId) ?? allNexusBots.find(b => b.id === botId)
+                                if (!bot) return null
+                                const weight = correlationWeights[botId] ?? (100 / correlationSelectedBotIds.length)
+                                return (
+                                  <div key={botId} className="flex items-center justify-between p-2 rounded bg-accent/10 text-sm">
+                                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                                      <span className="font-medium truncate">{bot.name}</span>
+                                      <span className="text-xs text-muted">{weight.toFixed(1)}%</span>
+                                    </div>
+                                    <Button
+                                      size="sm"
+                                      variant="ghost"
+                                      onClick={() => setCorrelationSelectedBotIds(prev => prev.filter(id => id !== botId))}
+                                    >
+                                      ×
+                                    </Button>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          </div>
+
+                          {/* Loading/Error State */}
+                          {correlationLoading && (
+                            <div className="text-xs text-muted p-2 text-center">
+                              Calculating optimal weights...
+                            </div>
+                          )}
+                          {correlationError && (
+                            <div className="text-xs text-red-500 p-2 bg-red-500/10 rounded">
+                              {correlationError}
+                            </div>
+                          )}
+
+                          {/* Correlation Matrix */}
+                          {correlationSelectedBotIds.length >= 2 && correlationMatrix && correlationValidBotIds.length >= 2 && (
+                            <div>
+                              <div className="text-xs font-bold text-muted mb-2">Correlation Matrix</div>
+                              <div className="overflow-x-auto">
+                                <table className="text-xs w-full">
+                                  <thead>
+                                    <tr>
+                                      <th className="p-1 text-left"></th>
+                                      {correlationValidBotIds.map(id => {
+                                        const bot = savedBots.find(b => b.id === id) ?? allNexusBots.find(b => b.id === id)
+                                        return (
+                                          <th key={id} className="p-1 text-center font-medium truncate max-w-[60px]" title={bot?.name}>
+                                            {bot?.name?.slice(0, 6) ?? id.slice(0, 6)}
+                                          </th>
+                                        )
+                                      })}
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {correlationValidBotIds.map((rowId, i) => {
+                                      const rowBot = savedBots.find(b => b.id === rowId) ?? allNexusBots.find(b => b.id === rowId)
+                                      return (
+                                        <tr key={rowId}>
+                                          <td className="p-1 font-medium truncate max-w-[60px]" title={rowBot?.name}>
+                                            {rowBot?.name?.slice(0, 6) ?? rowId.slice(0, 6)}
+                                          </td>
+                                          {correlationValidBotIds.map((colId, j) => {
+                                            const corr = correlationMatrix[i]?.[j] ?? 0
+                                            // Color: green (negative/low) -> yellow (0.5) -> red (high positive)
+                                            const hue = Math.max(0, 120 - corr * 120) // 120=green, 0=red
+                                            const bgColor = i === j ? 'transparent' : `hsl(${hue}, 70%, 85%)`
+                                            return (
+                                              <td
+                                                key={colId}
+                                                className="p-1 text-center"
+                                                style={{ backgroundColor: bgColor }}
+                                              >
+                                                {i === j ? '1.00' : corr.toFixed(2)}
+                                              </td>
+                                            )
+                                          })}
+                                        </tr>
+                                      )
+                                    })}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Portfolio Metrics */}
+                          <div>
+                            <div className="text-xs font-bold text-muted mb-2">Portfolio Metrics</div>
+                            <div className="grid grid-cols-2 gap-2 text-xs">
+                              <div className="bg-accent/5 p-2 rounded">
+                                <div className="text-muted">Expected CAGR</div>
+                                <div className="font-bold">
+                                  {correlationPortfolioMetrics ? `${(correlationPortfolioMetrics.cagr * 100).toFixed(1)}%` : '--'}
+                                </div>
+                              </div>
+                              <div className="bg-accent/5 p-2 rounded">
+                                <div className="text-muted">Volatility</div>
+                                <div className="font-bold">
+                                  {correlationPortfolioMetrics ? `${(correlationPortfolioMetrics.volatility * 100).toFixed(1)}%` : '--'}
+                                </div>
+                              </div>
+                              <div className="bg-accent/5 p-2 rounded">
+                                <div className="text-muted">Sharpe Ratio</div>
+                                <div className="font-bold">
+                                  {correlationPortfolioMetrics ? correlationPortfolioMetrics.sharpe.toFixed(2) : '--'}
+                                </div>
+                              </div>
+                              <div className="bg-accent/5 p-2 rounded">
+                                <div className="text-muted">Max Drawdown</div>
+                                <div className="font-bold">
+                                  {correlationPortfolioMetrics ? `${(correlationPortfolioMetrics.maxDrawdown * 100).toFixed(1)}%` : '--'}
+                                </div>
+                              </div>
+                              <div className="bg-accent/5 p-2 rounded col-span-2">
+                                <div className="text-muted">Portfolio Beta</div>
+                                <div className="font-bold">
+                                  {correlationPortfolioMetrics ? correlationPortfolioMetrics.beta.toFixed(2) : '--'}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </Card>
+                </div>
               </div>
             ) : null}
 
