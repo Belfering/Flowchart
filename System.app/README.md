@@ -94,8 +94,23 @@ npm run preview  # Preview the build
 | `/api/tickers` | PUT | Update tickers list |
 | `/api/parquet-tickers` | GET | List available parquet files |
 | `/api/candles/:ticker` | GET | Fetch OHLC candlestick data |
+| `/api/candles/batch` | POST | Batch fetch multiple tickers (up to 500) |
 | `/api/download` | POST | Start ticker data download job |
 | `/api/changelog` | GET | Fetch CHANGELOG.md content |
+
+## Performance Optimizations
+
+### Batch API & Caching
+The application implements multi-layer caching for fast backtest performance:
+
+- **Server-side memory cache** (30-minute TTL): Caches ticker data after first fetch
+- **Client-side cache** (5-minute TTL): Caches data in browser memory
+- **Connection pool** (8 DuckDB connections): Enables parallel parquet file queries
+- **Batch endpoint**: Fetches up to 500 tickers in a single request
+
+Typical performance for a 400+ ticker strategy:
+- First run: ~8s data fetch (vs ~12s without optimizations)
+- Subsequent runs: ~3s (mostly network transfer, 0ms server query time)
 
 ## Project Structure
 

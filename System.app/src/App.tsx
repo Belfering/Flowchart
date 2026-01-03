@@ -7630,6 +7630,256 @@ const cloneNode = (node: FlowNode): FlowNode => {
   return cloned
 }
 
+// ============================================================================
+// Tree Compression for Backtest Optimization
+// ============================================================================
+
+// Deep clone preserving IDs (for compression, not for UI cloning)
+const deepCloneForCompression = (node: FlowNode | null): FlowNode | null => {
+  if (!node) return null
+  const clone: FlowNode = {
+    id: node.id,
+    kind: node.kind,
+    title: node.title,
+    children: {},
+    positions: node.positions ? [...node.positions] : undefined,
+    weighting: node.weighting,
+    conditions: node.conditions ? node.conditions.map((c) => ({ ...c })) : undefined,
+  }
+  // Copy all other properties
+  if (node.weightingThen) clone.weightingThen = node.weightingThen
+  if (node.weightingElse) clone.weightingElse = node.weightingElse
+  if (node.cappedFallback) clone.cappedFallback = node.cappedFallback
+  if (node.cappedFallbackThen) clone.cappedFallbackThen = node.cappedFallbackThen
+  if (node.cappedFallbackElse) clone.cappedFallbackElse = node.cappedFallbackElse
+  if (node.volWindow) clone.volWindow = node.volWindow
+  if (node.volWindowThen) clone.volWindowThen = node.volWindowThen
+  if (node.volWindowElse) clone.volWindowElse = node.volWindowElse
+  if (node.numbered) clone.numbered = JSON.parse(JSON.stringify(node.numbered))
+  if (node.metric) clone.metric = node.metric
+  if (node.window) clone.window = node.window
+  if (node.bottom !== undefined) clone.bottom = node.bottom
+  if (node.rank) clone.rank = node.rank
+  if (node.bgColor) clone.bgColor = node.bgColor
+  if (node.collapsed) clone.collapsed = node.collapsed
+  if (node.callRefId) clone.callRefId = node.callRefId
+  if (node.entryConditions) clone.entryConditions = node.entryConditions.map((c) => ({ ...c }))
+  if (node.exitConditions) clone.exitConditions = node.exitConditions.map((c) => ({ ...c }))
+  if (node.scaleMetric) clone.scaleMetric = node.scaleMetric
+  if (node.scaleWindow) clone.scaleWindow = node.scaleWindow
+  if (node.scaleTicker) clone.scaleTicker = node.scaleTicker
+  if (node.scaleFrom !== undefined) clone.scaleFrom = node.scaleFrom
+  if (node.scaleTo !== undefined) clone.scaleTo = node.scaleTo
+
+  for (const slot of getAllSlotsForNode(node)) {
+    const arr = node.children[slot]
+    clone.children[slot] = arr ? arr.map((c) => deepCloneForCompression(c)) : [null]
+  }
+  return clone
+}
+
+// Count total nodes in a tree
+const countNodesInTree = (node: FlowNode | null): number => {
+  if (!node) return 0
+  let count = 1
+  for (const children of Object.values(node.children || {})) {
+    for (const child of children || []) {
+      if (child) count += countNodesInTree(child)
+    }
+  }
+  return count
+}
+
+// Check if a node represents an "empty" allocation
+const isEmptyAllocation = (node: FlowNode | null): boolean => {
+  if (!node) return true
+  if (node.kind === 'position') {
+    const positions = node.positions || []
+    return positions.length === 0 || positions.every((p) => p === 'Empty' || p === '')
+  }
+  for (const slot of Object.keys(node.children || {})) {
+    const slotChildren = node.children[slot as SlotId] || []
+    for (const child of slotChildren) {
+      if (!isEmptyAllocation(child)) return false
+    }
+  }
+  return true
+}
+
+// Prune branches that lead only to empty allocations
+const pruneEmptyBranches = (node: FlowNode | null): FlowNode | null => {
+  if (!node) return null
+  if (isEmptyAllocation(node)) return null
+
+  const newChildren: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
+  let hasNonEmptyChild = false
+
+  for (const [slot, children] of Object.entries(node.children || {})) {
+    const prunedChildren: Array<FlowNode | null> = []
+    for (const child of children || []) {
+      const pruned = pruneEmptyBranches(child)
+      if (pruned) {
+        prunedChildren.push(pruned)
+        hasNonEmptyChild = true
+      }
+    }
+    newChildren[slot as SlotId] = prunedChildren
+  }
+
+  if (node.kind === 'indicator') {
+    const thenBranch = newChildren.then || []
+    const elseBranch = newChildren.else || []
+    if (thenBranch.length === 0 && elseBranch.length === 0) return null
+  }
+
+  if (['basic', 'function'].includes(node.kind) && !hasNonEmptyChild) return null
+
+  return { ...node, children: newChildren }
+}
+
+// Collapse single-child wrapper nodes
+const collapseSingleChildren = (node: FlowNode | null): FlowNode | null => {
+  if (!node) return null
+
+  const newChildren: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
+  for (const [slot, children] of Object.entries(node.children || {})) {
+    newChildren[slot as SlotId] = (children || []).map((child) => collapseSingleChildren(child)).filter(Boolean) as Array<FlowNode | null>
+  }
+
+  const result = { ...node, children: newChildren }
+
+  if (['basic', 'function'].includes(node.kind)) {
+    const nextChildren = newChildren.next || []
+    if (nextChildren.length === 1) {
+      const child = nextChildren[0]
+      if (node.kind === 'basic' && (node.weighting === 'equal' || !node.weighting) && child) {
+        return child
+      }
+    }
+  }
+
+  return result
+}
+
+// Compute a hash for a subtree to detect duplicates
+const computeSubtreeHash = (node: FlowNode | null): string => {
+  if (!node) return 'null'
+  const parts = [node.kind]
+  if (node.positions) parts.push('pos:' + node.positions.sort().join(','))
+  if (node.weighting) parts.push('w:' + node.weighting)
+  if (node.conditions) parts.push('cond:' + JSON.stringify(node.conditions))
+  for (const [slot, children] of Object.entries(node.children || {})) {
+    const childHashes = (children || []).map((c) => computeSubtreeHash(c))
+    parts.push(slot + ':' + childHashes.join('|'))
+  }
+  return parts.join(';')
+}
+
+// Merge gate chains where nested indicators have equivalent "then" outcomes
+const mergeGateChains = (node: FlowNode | null): FlowNode | null => {
+  if (!node) return null
+
+  const newChildren: Partial<Record<SlotId, Array<FlowNode | null>>> = {}
+  for (const [slot, children] of Object.entries(node.children || {})) {
+    newChildren[slot as SlotId] = (children || []).map((child) => mergeGateChains(child)).filter(Boolean) as Array<FlowNode | null>
+  }
+
+  let result: FlowNode = { ...node, children: newChildren }
+
+  if (node.kind !== 'indicator') return result
+
+  const elseBranch = newChildren.else || []
+  const thenBranch = newChildren.then || []
+
+  if (elseBranch.length === 1 && elseBranch[0]?.kind === 'indicator') {
+    const nestedIndicator = elseBranch[0]
+    const nestedThen = nestedIndicator.children?.then || []
+
+    if (thenBranch.length === nestedThen.length) {
+      let allEquivalent = true
+      for (let i = 0; i < thenBranch.length; i++) {
+        if (computeSubtreeHash(thenBranch[i]) !== computeSubtreeHash(nestedThen[i])) {
+          allEquivalent = false
+          break
+        }
+      }
+
+      if (allEquivalent) {
+        const mergedConditions = [...(node.conditions || []), ...(nestedIndicator.conditions || [])]
+        const mergedElse = nestedIndicator.children?.else || []
+
+        result = {
+          ...result,
+          conditions: mergedConditions,
+          children: { ...newChildren, else: mergedElse },
+        }
+        return mergeGateChains(result)
+      }
+    }
+  }
+
+  return result
+}
+
+type CompressionStats = {
+  originalNodes: number
+  compressedNodes: number
+  nodesRemoved: number
+  gateChainsMerged: number
+  compressionTimeMs: number
+}
+
+// Main compression function
+const compressTreeForBacktest = (
+  node: FlowNode | null
+): {
+  tree: FlowNode | null
+  stats: CompressionStats
+} => {
+  const startTime = performance.now()
+
+  if (!node) {
+    return {
+      tree: null,
+      stats: { originalNodes: 0, compressedNodes: 0, nodesRemoved: 0, gateChainsMerged: 0, compressionTimeMs: 0 },
+    }
+  }
+
+  const originalNodes = countNodesInTree(node)
+  let result = deepCloneForCompression(node)
+
+  result = pruneEmptyBranches(result)
+  if (!result) {
+    return {
+      tree: null,
+      stats: { originalNodes, compressedNodes: 0, nodesRemoved: originalNodes, gateChainsMerged: 0, compressionTimeMs: performance.now() - startTime },
+    }
+  }
+
+  result = collapseSingleChildren(result)
+  result = mergeGateChains(result)
+
+  const compressedNodes = countNodesInTree(result)
+  const compressionTimeMs = performance.now() - startTime
+
+  // Count merged gates
+  let gateChainsMerged = 0
+  const countMerged = (n: FlowNode | null) => {
+    if (!n) return
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if ((n as any)._mergedGates) gateChainsMerged += (n as any)._mergedGates - 1
+    for (const children of Object.values(n.children || {})) {
+      for (const child of children || []) countMerged(child)
+    }
+  }
+  countMerged(result)
+
+  return {
+    tree: result,
+    stats: { originalNodes, compressedNodes, nodesRemoved: originalNodes - compressedNodes, gateChainsMerged, compressionTimeMs },
+  }
+}
+
 const findNode = (node: FlowNode, id: string): FlowNode | null => {
   if (node.id === id) return node
   for (const slot of getAllSlotsForNode(node)) {
@@ -12645,6 +12895,98 @@ const fetchOhlcSeries = async (ticker: string, limit: number): Promise<Array<{ t
   return candles.map((c) => ({ time: c.time as UTCTimestamp, open: Number(c.open), close: Number(c.close), adjClose: Number((c as unknown as { adjClose?: number }).adjClose ?? c.close) }))
 }
 
+// Client-side ticker data cache for faster subsequent backtests
+type CachedOhlcData = Array<{ time: UTCTimestamp; open: number; close: number; adjClose: number }>
+const ohlcDataCache = new Map<string, { data: CachedOhlcData; limit: number; timestamp: number }>()
+const OHLC_CACHE_TTL = 5 * 60 * 1000 // 5 minutes
+
+// Batch fetch multiple tickers in a single request (much faster than individual fetches)
+const fetchOhlcSeriesBatch = async (
+  tickers: string[],
+  limit: number
+): Promise<Map<string, CachedOhlcData>> => {
+  const results = new Map<string, CachedOhlcData>()
+  const now = Date.now()
+  const tickersToFetch: string[] = []
+
+  // Check cache first
+  for (const ticker of tickers) {
+    const key = getSeriesKey(ticker)
+    const cached = ohlcDataCache.get(key)
+    if (cached && cached.limit >= limit && now - cached.timestamp < OHLC_CACHE_TTL) {
+      results.set(ticker, cached.data)
+    } else {
+      tickersToFetch.push(ticker)
+    }
+  }
+
+  if (tickersToFetch.length === 0) {
+    console.log(`[Backtest] All ${tickers.length} tickers served from cache`)
+    return results
+  }
+
+  console.log(`[Backtest] Fetching ${tickersToFetch.length} tickers via batch API (${results.size} from cache)`)
+
+  // Batch fetch in chunks of 500 (server limit)
+  const BATCH_SIZE = 500
+  for (let i = 0; i < tickersToFetch.length; i += BATCH_SIZE) {
+    const batch = tickersToFetch.slice(i, i + BATCH_SIZE)
+    const normalizedBatch = batch.map((t) => getSeriesKey(t))
+
+    try {
+      const res = await fetch('/api/candles/batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tickers: normalizedBatch, limit }),
+      })
+
+      if (!res.ok) {
+        throw new Error(`Batch fetch failed: HTTP ${res.status}`)
+      }
+
+      const payload = (await res.json()) as {
+        success: boolean
+        results: Record<string, Array<{ time: number; open: number; close: number; adjClose: number }>>
+        errors?: string[]
+      }
+
+      // Process results and cache them
+      for (const [tickerKey, candles] of Object.entries(payload.results)) {
+        const data = candles.map((c) => ({
+          time: c.time as UTCTimestamp,
+          open: Number(c.open),
+          close: Number(c.close),
+          adjClose: Number(c.adjClose ?? c.close),
+        }))
+        // Find original ticker (might have different case)
+        const originalTicker = batch.find((t) => getSeriesKey(t) === tickerKey) || tickerKey
+        results.set(originalTicker, data)
+        ohlcDataCache.set(tickerKey, { data, limit, timestamp: now })
+      }
+
+      if (payload.errors && payload.errors.length > 0) {
+        console.warn('[Backtest] Batch fetch errors:', payload.errors)
+      }
+    } catch (err) {
+      console.error('[Backtest] Batch fetch failed, falling back to individual fetches:', err)
+      // Fallback to individual fetches for this batch
+      await Promise.all(
+        batch.map(async (ticker) => {
+          try {
+            const data = await fetchOhlcSeries(ticker, limit)
+            results.set(ticker, data)
+            ohlcDataCache.set(getSeriesKey(ticker), { data, limit, timestamp: now })
+          } catch (e) {
+            console.warn(`[Backtest] Failed to fetch ${ticker}:`, e)
+          }
+        })
+      )
+    }
+  }
+
+  return results
+}
+
 // Build price database from series data
 // dateIntersectionTickers: if provided, only these tickers are used to calculate the date intersection
 // This allows indicator tickers (with longer history) to set the date range, while position tickers
@@ -15635,7 +15977,29 @@ function App() {
 
   const runBacktestForNode = useCallback(
     async (node: FlowNode) => {
+      const backtestStartTime = performance.now()
+      const timings: Record<string, number> = {}
+
+      // Phase 1: Tree preparation & compression
+      const prepStartTime = performance.now()
       const prepared = normalizeNodeForBacktest(ensureSlots(cloneNode(node)))
+
+      // Compress tree for faster evaluation
+      const { tree: compressedTree, stats: compressionStats } = compressTreeForBacktest(prepared)
+      if (!compressedTree) {
+        throw makeValidationError([{ nodeId: prepared.id, field: 'tree', message: 'Strategy is empty after compression (all branches lead to Empty).' }])
+      }
+      timings['1_preparation'] = performance.now() - prepStartTime
+
+      // Log compression stats to console
+      console.log(
+        `[Backtest] Tree compression: ${compressionStats.originalNodes} → ${compressionStats.compressedNodes} nodes ` +
+          `(${compressionStats.nodesRemoved} removed, ${compressionStats.gateChainsMerged} gates merged) in ${compressionStats.compressionTimeMs.toFixed(1)}ms`
+      )
+
+      // Phase 2: Input collection & validation
+      const inputStartTime = performance.now()
+      // Use compressed tree for backtest, but original for validation/ticker collection
       const inputs = collectBacktestInputs(prepared, callChainsById)
       if (inputs.errors.length > 0) {
         throw makeValidationError(inputs.errors)
@@ -15643,21 +16007,39 @@ function App() {
       if (inputs.tickers.length === 0) {
         throw makeValidationError([{ nodeId: prepared.id, field: 'tickers', message: 'No tickers found in this strategy.' }])
       }
+      timings['2_inputCollection'] = performance.now() - inputStartTime
 
+      // Phase 3: Data fetching (using batch API for 5-10x speedup)
+      const fetchStartTime = performance.now()
       const decisionPrice: EvalCtx['decisionPrice'] = backtestMode === 'CC' || backtestMode === 'CO' ? 'close' : 'open'
       const limit = 20000
       const benchTicker = normalizeChoice(backtestBenchmark)
       const needsBench = benchTicker && benchTicker !== 'Empty' && !inputs.tickers.includes(benchTicker)
-      const benchPromise = needsBench ? fetchOhlcSeries(benchTicker, limit) : null
-
-      // Always fetch SPY for Treynor Ratio calculation (fixed benchmark)
       const needsSpy = !inputs.tickers.includes('SPY') && benchTicker !== 'SPY'
-      const spyPromise = needsSpy ? fetchOhlcSeries('SPY', limit) : null
 
-      const loaded = await Promise.all(inputs.tickers.map(async (t) => ({ ticker: t, bars: await fetchOhlcSeries(t, limit) })))
-      const benchSettled = benchPromise ? await Promise.allSettled([benchPromise]) : []
-      const spySettled = spyPromise ? await Promise.allSettled([spyPromise]) : []
+      // Build list of all tickers to fetch (including benchmark and SPY if needed)
+      const allTickersToFetch = [...inputs.tickers]
+      if (needsBench && benchTicker) allTickersToFetch.push(benchTicker)
+      if (needsSpy) allTickersToFetch.push('SPY')
 
+      // Batch fetch all tickers at once (much faster than individual fetches)
+      const batchResults = await fetchOhlcSeriesBatch(allTickersToFetch, limit)
+
+      // Convert batch results to the expected format
+      const loaded = inputs.tickers.map((t) => ({
+        ticker: t,
+        bars: batchResults.get(t) || [],
+      }))
+
+      // Extract benchmark and SPY data from batch results
+      const benchBarsFromBatch = needsBench && benchTicker ? batchResults.get(benchTicker) || null : null
+      const spyBarsFromBatch = needsSpy ? batchResults.get('SPY') || null : null
+
+      timings['3_dataFetching'] = performance.now() - fetchStartTime
+      console.log(`[Backtest] Fetched ${inputs.tickers.length} tickers in ${timings['3_dataFetching'].toFixed(1)}ms`)
+
+      // Phase 4: Build price DB
+      const dbBuildStartTime = performance.now()
       // Collect indicator tickers (for date intersection) vs position tickers (can start later)
       const indicatorTickers = collectIndicatorTickers(prepared, callChainsById)
       const positionTickers = collectPositionTickers(prepared, callChainsById)
@@ -15668,25 +16050,29 @@ function App() {
       if (db.dates.length < 3) {
         throw makeValidationError([{ nodeId: prepared.id, field: 'data', message: 'Not enough overlapping price data to run a backtest.' }])
       }
+      timings['4_dbBuild'] = performance.now() - dbBuildStartTime
+      console.log(`[Backtest] Built price DB: ${db.dates.length} dates, ${Object.keys(db.close).length} tickers in ${timings['4_dbBuild'].toFixed(1)}ms`)
 
+      // Phase 5: Setup before evaluation
+      const setupStartTime = performance.now()
       const cache = emptyCache()
       const warnings: BacktestWarning[] = []
       const trace = createBacktestTraceCollector()
 
+      // Get benchmark bars (either from main data or separately fetched)
       let benchBars: Array<{ time: UTCTimestamp; open: number; close: number; adjClose: number }> | null = null
       if (benchTicker && benchTicker !== 'Empty') {
         const already = loaded.find((x) => getSeriesKey(x.ticker) === benchTicker)
-        if (already) {
+        if (already && already.bars.length > 0) {
           benchBars = already.bars
-        } else if (benchSettled.length && benchSettled[0].status === 'fulfilled') {
-          benchBars = benchSettled[0].value
-        } else if (benchSettled.length && benchSettled[0].status === 'rejected') {
+        } else if (benchBarsFromBatch && benchBarsFromBatch.length > 0) {
+          benchBars = benchBarsFromBatch
+        } else {
           warnings.push({
             time: db.dates[0],
             date: isoFromUtcSeconds(db.dates[0]),
-            message: `Benchmark ${benchTicker} failed to load: ${String(benchSettled[0].reason?.message || benchSettled[0].reason)}`,
+            message: `Benchmark ${benchTicker} failed to load`,
           })
-          benchBars = null
         }
       }
 
@@ -15701,10 +16087,10 @@ function App() {
         spyBars = benchBars
       } else {
         const alreadySpy = loaded.find((x) => getSeriesKey(x.ticker) === 'SPY')
-        if (alreadySpy) {
+        if (alreadySpy && alreadySpy.bars.length > 0) {
           spyBars = alreadySpy.bars
-        } else if (spySettled.length && spySettled[0].status === 'fulfilled') {
-          spyBars = spySettled[0].value
+        } else if (spyBarsFromBatch && spyBarsFromBatch.length > 0) {
+          spyBars = spyBarsFromBatch
         }
       }
 
@@ -15762,7 +16148,11 @@ function App() {
         }
         return callNodeCache.get(id) ?? null
       }
+      timings['5_evalSetup'] = performance.now() - setupStartTime
 
+      // Phase 6: Main evaluation loop (the core backtest)
+      const evalLoopStartTime = performance.now()
+      const numBarsToEval = db.dates.length - startEvalIndex
       for (let i = startEvalIndex; i < db.dates.length; i++) {
         const indicatorIndex = decisionPrice === 'open' ? i - 1 : i
         const ctx: EvalCtx = {
@@ -15775,10 +16165,15 @@ function App() {
           resolveCall: resolveCallNode,
           trace,
         }
-        allocationsAt[i] = evaluateNode(ctx, prepared)
-        contributionsAt[i] = tracePositionContributions(ctx, prepared)
+        allocationsAt[i] = evaluateNode(ctx, compressedTree)
+        contributionsAt[i] = tracePositionContributions(ctx, compressedTree)
       }
+      timings['6_evalLoop'] = performance.now() - evalLoopStartTime
+      const evalPerBar = numBarsToEval > 0 ? timings['6_evalLoop'] / numBarsToEval : 0
+      console.log(`[Backtest] Evaluation loop: ${numBarsToEval} bars in ${timings['6_evalLoop'].toFixed(1)}ms (${evalPerBar.toFixed(3)}ms/bar)`)
 
+      // Phase 7: Return calculation loop
+      const returnCalcStartTime = performance.now()
       const startTradeIndex = startEvalIndex
       const startPointIndex = backtestMode === 'OC' ? Math.max(0, startTradeIndex - 1) : startTradeIndex
       const points: EquityPoint[] = [{ time: db.dates[startPointIndex], value: 1 }]
@@ -15940,8 +16335,32 @@ function App() {
         })
       }
 
+      timings['7_returnCalc'] = performance.now() - returnCalcStartTime
+
+      // Phase 8: Compute metrics
+      const metricsStartTime = performance.now()
       const metrics = computeBacktestSummary(points, days.map((d) => d.drawdown), days, spyBenchmarkPoints.length > 0 ? spyBenchmarkPoints : undefined)
       const monthly = computeMonthlyReturns(days)
+      timings['8_metrics'] = performance.now() - metricsStartTime
+
+      // Total time
+      const totalTime = performance.now() - backtestStartTime
+      timings['total'] = totalTime
+
+      // Print timing summary
+      console.log(`[Backtest] ═══════════════════════════════════════════════════════`)
+      console.log(`[Backtest] TIMING SUMMARY (${compressionStats.compressedNodes} nodes, ${numBarsToEval} bars):`)
+      console.log(`[Backtest]   1. Preparation & Compression: ${timings['1_preparation'].toFixed(1)}ms`)
+      console.log(`[Backtest]   2. Input Collection:          ${timings['2_inputCollection'].toFixed(1)}ms`)
+      console.log(`[Backtest]   3. Data Fetching:             ${timings['3_dataFetching'].toFixed(1)}ms`)
+      console.log(`[Backtest]   4. Price DB Build:            ${timings['4_dbBuild'].toFixed(1)}ms`)
+      console.log(`[Backtest]   5. Evaluation Setup:          ${timings['5_evalSetup'].toFixed(1)}ms`)
+      console.log(`[Backtest]   6. Evaluation Loop:           ${timings['6_evalLoop'].toFixed(1)}ms (${evalPerBar.toFixed(3)}ms/bar)`)
+      console.log(`[Backtest]   7. Return Calculation:        ${timings['7_returnCalc'].toFixed(1)}ms`)
+      console.log(`[Backtest]   8. Metrics Computation:       ${timings['8_metrics'].toFixed(1)}ms`)
+      console.log(`[Backtest] ───────────────────────────────────────────────────────`)
+      console.log(`[Backtest]   TOTAL:                        ${totalTime.toFixed(1)}ms (${(totalTime/1000).toFixed(2)}s)`)
+      console.log(`[Backtest] ═══════════════════════════════════════════════════════`)
 
       return {
         result: {
@@ -16255,7 +16674,7 @@ function App() {
         })
 
         if (res.ok) {
-          const { metrics, equityCurve, benchmarkCurve, allocations: serverAllocations, cached: wasCached } = await res.json() as {
+          const { metrics, equityCurve, benchmarkCurve, allocations: serverAllocations, cached: wasCached, compression } = await res.json() as {
             metrics: {
               cagr: number
               maxDrawdown: number
@@ -16276,10 +16695,19 @@ function App() {
             benchmarkCurve?: { date: string; equity: number }[]
             allocations?: { date: string; alloc: Record<string, number> }[]
             cached?: boolean
+            compression?: {
+              originalNodes: number
+              compressedNodes: number
+              nodesRemoved: number
+              gatesMerged: number
+              compressionTimeMs: number
+            }
           }
 
           if (wasCached) {
             console.log(`[Backtest] Cache hit for ${bot.name}`)
+          } else if (compression) {
+            console.log(`[Backtest] Tree compression: ${compression.originalNodes} → ${compression.compressedNodes} nodes (${compression.nodesRemoved} removed, ${compression.gatesMerged} gates merged) in ${compression.compressionTimeMs}ms`)
           }
 
           // Convert equity curve from server format to frontend format
@@ -17978,6 +18406,11 @@ function App() {
                         >
                           {replaceTicker || 'Ticker'}
                         </button>
+                        {findTicker && foundInstances.length > 0 && (
+                          <span className="text-xs text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
+                            {foundInstances.length} {foundInstances.length === 1 ? 'instance' : 'instances'}
+                          </span>
+                        )}
                       </div>
                       <label className="flex items-center gap-1 text-xs cursor-pointer">
                         <input
@@ -18102,7 +18535,7 @@ function App() {
                           setHighlightedInstance(null)
                         }}
                       >
-                        Replace
+                        Replace{foundInstances.length > 0 ? ` (${foundInstances.length})` : ''}
                       </Button>
                     </div>
                     {/* Right section: Undo/Redo */}

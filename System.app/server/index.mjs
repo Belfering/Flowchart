@@ -106,6 +106,16 @@ const PYTHON = process.env.PYTHON || (process.platform === 'win32' ? 'python' : 
 const db = new duckdb.Database(':memory:')
 const conn = db.connect()
 
+// Connection pool for parallel queries (DuckDB supports multiple connections)
+const POOL_SIZE = 8
+const connectionPool = Array.from({ length: POOL_SIZE }, () => db.connect())
+let poolIndex = 0
+const getPooledConnection = () => {
+  const c = connectionPool[poolIndex]
+  poolIndex = (poolIndex + 1) % POOL_SIZE
+  return c
+}
+
 const jobs = new Map()
 const loadedTickers = new Set() // Track which tickers are loaded into memory
 
@@ -1144,7 +1154,11 @@ app.get('/api/candles/:ticker', async (req, res) => {
   })
 })
 
-// POST /api/candles/batch - Fetch multiple tickers in a single request (3-5x faster)
+// Server-side memory cache for ticker data (much faster than re-querying parquet files)
+const serverTickerCache = new Map()  // ticker -> { data, timestamp }
+const SERVER_CACHE_TTL = 30 * 60 * 1000  // 30 minutes
+
+// POST /api/candles/batch - Fetch multiple tickers from parquet files efficiently
 app.post('/api/candles/batch', async (req, res) => {
   const { tickers, limit: reqLimit = 1500 } = req.body
 
@@ -1153,8 +1167,8 @@ app.post('/api/candles/batch', async (req, res) => {
     return
   }
 
-  if (tickers.length > 50) {
-    res.status(400).json({ error: 'Maximum 50 tickers per batch request' })
+  if (tickers.length > 500) {
+    res.status(400).json({ error: 'Maximum 500 tickers per batch request' })
     return
   }
 
@@ -1162,66 +1176,96 @@ app.post('/api/candles/batch', async (req, res) => {
   const results = {}
   const errors = []
 
-  // Process all tickers in parallel
-  await Promise.all(tickers.map(async (rawTicker) => {
+  // Normalize tickers and verify parquet files exist
+  const validTickers = []
+  for (const rawTicker of tickers) {
     const ticker = normalizeTicker(rawTicker)
     if (!ticker) {
       errors.push(`Invalid ticker: ${rawTicker}`)
-      return
+      continue
     }
-
     const parquetPath = path.join(PARQUET_DIR, `${ticker}.parquet`)
-    const fileForDuckdb = parquetPath.replace(/\\/g, '/').replace(/'/g, "''")
-
-    // Check if parquet file exists
     try {
       await fs.access(parquetPath)
+      validTickers.push(ticker)
     } catch {
       errors.push(`${ticker}: not found`)
-      return
     }
+  }
 
-    // Query parquet file directly
-    const sql = `
-      SELECT
-        epoch_ms("Date") AS ts_ms,
-        "Open"  AS open,
-        "High"  AS high,
-        "Low"   AS low,
-        "Close" AS close,
-        "Adj Close" AS adjClose
-      FROM read_parquet('${fileForDuckdb}')
-      WHERE "Open" IS NOT NULL AND "High" IS NOT NULL AND "Low" IS NOT NULL AND "Close" IS NOT NULL
-      ORDER BY "Date" DESC
-      LIMIT ${limit};
-    `
+  if (validTickers.length === 0) {
+    res.json({ success: true, results: {}, errors })
+    return
+  }
 
-    try {
-      const rows = await new Promise((resolve, reject) => {
-        conn.all(sql, (err, rows) => {
-          if (err) reject(err)
-          else resolve(rows)
+  const startTime = Date.now()
+  const now = Date.now()
+
+  // Check server cache first, separate cached from uncached tickers
+  const tickersToFetch = []
+  for (const ticker of validTickers) {
+    const cached = serverTickerCache.get(ticker)
+    if (cached && cached.limit >= limit && now - cached.timestamp < SERVER_CACHE_TTL) {
+      // Serve from cache (slice if needed)
+      results[ticker] = limit < cached.data.length ? cached.data.slice(-limit) : cached.data
+    } else {
+      tickersToFetch.push(ticker)
+    }
+  }
+
+  const cachedCount = validTickers.length - tickersToFetch.length
+
+  if (tickersToFetch.length > 0) {
+    // Process uncached tickers in parallel using connection pool
+    const promises = tickersToFetch.map(async (ticker, i) => {
+      const pooledConn = connectionPool[i % POOL_SIZE]
+      const parquetPath = path.join(PARQUET_DIR, `${ticker}.parquet`)
+      const fileForDuckdb = parquetPath.replace(/\\/g, '/').replace(/'/g, "''")
+      const sql = `
+        SELECT
+          epoch_ms("Date") AS ts_ms,
+          "Open"  AS open,
+          "High"  AS high,
+          "Low"   AS low,
+          "Close" AS close,
+          "Adj Close" AS adjClose
+        FROM read_parquet('${fileForDuckdb}')
+        WHERE "Open" IS NOT NULL AND "High" IS NOT NULL AND "Low" IS NOT NULL AND "Close" IS NOT NULL
+        ORDER BY "Date" DESC
+        LIMIT ${limit}
+      `
+      try {
+        const rows = await new Promise((resolve, reject) => {
+          pooledConn.all(sql, (err, rows) => {
+            if (err) reject(err)
+            else resolve(rows)
+          })
         })
-      })
-
-      if (!rows || rows.length === 0) {
-        errors.push(`${ticker}: no data`)
-        return
+        if (rows && rows.length > 0) {
+          const data = rows.slice().reverse().map((r) => ({
+            time: Math.floor(Number(r.ts_ms) / 1000),
+            open: Number(r.open),
+            high: Number(r.high),
+            low: Number(r.low),
+            close: Number(r.close),
+            adjClose: Number(r.adjClose),
+          }))
+          results[ticker] = data
+          // Store in server cache
+          serverTickerCache.set(ticker, { data, limit, timestamp: now })
+        } else {
+          errors.push(`${ticker}: no data`)
+        }
+      } catch (e) {
+        errors.push(`${ticker}: ${e.message}`)
       }
+    })
 
-      const ordered = rows.slice().reverse()
-      results[ticker] = ordered.map((r) => ({
-        time: Math.floor(Number(r.ts_ms) / 1000),
-        open: Number(r.open),
-        high: Number(r.high),
-        low: Number(r.low),
-        close: Number(r.close),
-        adjClose: Number(r.adjClose),
-      }))
-    } catch (err) {
-      errors.push(`${ticker}: ${err.message}`)
-    }
-  }))
+    await Promise.all(promises)
+  }
+
+  const fetchedCount = tickersToFetch.length
+  console.log(`[Batch] Fetched ${Object.keys(results).length} tickers (${cachedCount} cached, ${fetchedCount} queried) in ${Date.now() - startTime}ms`)
 
   res.json({
     success: true,
@@ -2584,6 +2628,7 @@ app.post('/api/bots/:id/run-backtest', async (req, res) => {
       equityCurve: result.equityCurve,
       benchmarkCurve: result.benchmarkCurve,
       allocations: result.allocations,
+      compression: result.compression,
     })
   } catch (e) {
     console.error('[Backtest] Error:', e)
@@ -3073,6 +3118,356 @@ app.get('/api/bots/:id/metrics', async (req, res) => {
       metrics: bot.metrics || null,
     })
   } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// ============================================================================
+// Portfolio Correlation API Endpoints
+// ============================================================================
+
+// Helper: Compute Pearson correlation between two arrays
+function pearsonCorrelation(x, y) {
+  if (x.length !== y.length || x.length < 2) return 0
+  const n = x.length
+  const meanX = x.reduce((a, b) => a + b, 0) / n
+  const meanY = y.reduce((a, b) => a + b, 0) / n
+  let num = 0, denomX = 0, denomY = 0
+  for (let i = 0; i < n; i++) {
+    const dx = x[i] - meanX
+    const dy = y[i] - meanY
+    num += dx * dy
+    denomX += dx * dx
+    denomY += dy * dy
+  }
+  if (denomX === 0 || denomY === 0) return 0
+  return num / Math.sqrt(denomX * denomY)
+}
+
+// Helper: Get daily returns for a bot (runs backtest if needed)
+async function getBotDailyReturns(botId, period = 'full') {
+  const bot = await database.getBotById(botId, true)
+  if (!bot) return null
+
+  const mode = bot.backtestMode || 'CC'
+  const costBps = bot.backtestCostBps ?? 5
+  const payloadHash = backtestCache.hashPayload(bot.payload, { mode, costBps })
+  const dataDate = await getLatestTickerDataDate()
+
+  // Check cache first
+  const cached = backtestCache.getCachedBacktest(botId, payloadHash, dataDate)
+  let dailyReturns, equityCurve
+
+  if (cached && cached.dailyReturns) {
+    dailyReturns = cached.dailyReturns
+    equityCurve = cached.equityCurve
+  } else {
+    // Run backtest to get daily returns
+    const result = await runBacktest(bot.payload, { mode, costBps })
+    dailyReturns = result.dailyReturns
+    equityCurve = result.equityCurve
+
+    // Cache the result
+    backtestCache.setCachedBacktest(botId, payloadHash, dataDate, {
+      metrics: result.metrics,
+      equityCurve: result.equityCurve,
+      benchmarkCurve: result.benchmarkCurve,
+      allocations: result.allocations,
+      dailyReturns: result.dailyReturns,
+    })
+  }
+
+  if (!dailyReturns || dailyReturns.length < 10) return null
+
+  // Filter by period
+  if (period !== 'full' && equityCurve && equityCurve.length > 0) {
+    const now = new Date()
+    let cutoffDate
+    if (period === '1y') cutoffDate = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate())
+    else if (period === '3y') cutoffDate = new Date(now.getFullYear() - 3, now.getMonth(), now.getDate())
+    else if (period === '5y') cutoffDate = new Date(now.getFullYear() - 5, now.getMonth(), now.getDate())
+
+    if (cutoffDate) {
+      const cutoffTime = cutoffDate.getTime()
+      let startIdx = 0
+      for (let i = 0; i < equityCurve.length; i++) {
+        const d = new Date(equityCurve[i].date)
+        if (d.getTime() >= cutoffTime) {
+          startIdx = i
+          break
+        }
+      }
+      if (startIdx > 0 && startIdx < dailyReturns.length) {
+        dailyReturns = dailyReturns.slice(startIdx)
+      }
+    }
+  }
+
+  return { dailyReturns, metrics: bot.metrics }
+}
+
+// POST /api/correlation/optimize - Compute optimal portfolio weights
+app.post('/api/correlation/optimize', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const { botIds, metric = 'correlation', period = 'full', maxWeight = 0.4 } = req.body
+
+    if (!botIds || botIds.length < 2) {
+      return res.status(400).json({ error: 'Need at least 2 bots for optimization' })
+    }
+
+    // Get daily returns for all bots
+    const botReturns = []
+    const validBotIds = []
+    const botMetrics = []
+
+    for (const botId of botIds) {
+      const data = await getBotDailyReturns(botId, period)
+      if (data && data.dailyReturns.length >= 50) {
+        botReturns.push(data.dailyReturns)
+        validBotIds.push(botId)
+        botMetrics.push(data.metrics || {})
+      }
+    }
+
+    if (validBotIds.length < 2) {
+      return res.status(400).json({ error: 'Not enough bots with sufficient data' })
+    }
+
+    // Find common date range (align returns by length from end)
+    const minLen = Math.min(...botReturns.map(r => r.length))
+    const alignedReturns = botReturns.map(r => r.slice(r.length - minLen))
+
+    // Compute correlation matrix
+    const n = alignedReturns.length
+    const correlationMatrix = []
+    for (let i = 0; i < n; i++) {
+      const row = []
+      for (let j = 0; j < n; j++) {
+        row.push(pearsonCorrelation(alignedReturns[i], alignedReturns[j]))
+      }
+      correlationMatrix.push(row)
+    }
+
+    // Compute covariance matrix
+    const means = alignedReturns.map(r => r.reduce((a, b) => a + b, 0) / r.length)
+    const covMatrix = []
+    for (let i = 0; i < n; i++) {
+      const row = []
+      for (let j = 0; j < n; j++) {
+        let cov = 0
+        for (let k = 0; k < minLen; k++) {
+          cov += (alignedReturns[i][k] - means[i]) * (alignedReturns[j][k] - means[j])
+        }
+        row.push(cov / (minLen - 1))
+      }
+      covMatrix.push(row)
+    }
+
+    // Simple optimization: use inverse-variance or equal weights with constraints
+    let weights = new Array(n).fill(1 / n) // Start with equal weights
+
+    if (metric === 'volatility') {
+      // Inverse variance weighting
+      const variances = covMatrix.map((row, i) => row[i])
+      const invVar = variances.map(v => v > 0 ? 1 / v : 0)
+      const sumInvVar = invVar.reduce((a, b) => a + b, 0)
+      if (sumInvVar > 0) {
+        weights = invVar.map(v => v / sumInvVar)
+      }
+    } else if (metric === 'sharpe') {
+      // Weight by Sharpe ratio (with min volatility consideration)
+      const sharpes = botMetrics.map(m => m?.sharpeRatio ?? m?.sharpe ?? 0)
+      const posSharpes = sharpes.map(s => Math.max(0.01, s))
+      const sumSharpe = posSharpes.reduce((a, b) => a + b, 0)
+      if (sumSharpe > 0) {
+        weights = posSharpes.map(s => s / sumSharpe)
+      }
+    } else if (metric === 'correlation') {
+      // Minimize average correlation: weight inversely by avg correlation with others
+      const avgCorr = correlationMatrix.map((row, i) => {
+        const others = row.filter((_, j) => j !== i)
+        return others.reduce((a, b) => a + Math.abs(b), 0) / others.length
+      })
+      const invCorr = avgCorr.map(c => 1 / (0.1 + c)) // Add 0.1 to avoid division by near-zero
+      const sumInvCorr = invCorr.reduce((a, b) => a + b, 0)
+      weights = invCorr.map(c => c / sumInvCorr)
+    } else if (metric === 'beta') {
+      // Weight inversely by beta (from cached metrics)
+      const betas = botMetrics.map(m => Math.abs(m?.beta ?? 1))
+      const invBeta = betas.map(b => 1 / Math.max(0.1, b))
+      const sumInvBeta = invBeta.reduce((a, b) => a + b, 0)
+      if (sumInvBeta > 0) {
+        weights = invBeta.map(b => b / sumInvBeta)
+      }
+    }
+
+    // Apply max weight constraint
+    const cappedMaxWeight = Math.min(1, Math.max(0.1, maxWeight))
+    let iterations = 0
+    while (iterations < 100) {
+      let excess = 0
+      let belowCapCount = 0
+      for (let i = 0; i < weights.length; i++) {
+        if (weights[i] > cappedMaxWeight) {
+          excess += weights[i] - cappedMaxWeight
+          weights[i] = cappedMaxWeight
+        } else {
+          belowCapCount++
+        }
+      }
+      if (excess < 0.0001 || belowCapCount === 0) break
+      const redistribute = excess / belowCapCount
+      for (let i = 0; i < weights.length; i++) {
+        if (weights[i] < cappedMaxWeight) {
+          weights[i] += redistribute
+        }
+      }
+      iterations++
+    }
+
+    // Normalize weights to sum to 1
+    const sumWeights = weights.reduce((a, b) => a + b, 0)
+    weights = weights.map(w => w / sumWeights)
+
+    // Compute portfolio metrics
+    const portfolioReturns = []
+    for (let k = 0; k < minLen; k++) {
+      let ret = 0
+      for (let i = 0; i < n; i++) {
+        ret += weights[i] * alignedReturns[i][k]
+      }
+      portfolioReturns.push(ret)
+    }
+
+    const avgReturn = portfolioReturns.reduce((a, b) => a + b, 0) / portfolioReturns.length
+    const variance = portfolioReturns.reduce((s, r) => s + (r - avgReturn) ** 2, 0) / (portfolioReturns.length - 1)
+    const volatility = Math.sqrt(variance) * Math.sqrt(252)
+    const cagr = avgReturn * 252
+    const sharpe = volatility > 0 ? cagr / volatility : 0
+
+    // Max drawdown
+    let peak = 1, maxDd = 0
+    let equity = 1
+    for (const r of portfolioReturns) {
+      equity *= (1 + r)
+      if (equity > peak) peak = equity
+      const dd = (peak - equity) / peak
+      if (dd > maxDd) maxDd = dd
+    }
+
+    // Portfolio beta (vs SPY)
+    let beta = 0
+    try {
+      const spyReturns = await getTickerReturns('SPY')
+      if (spyReturns && spyReturns.length > 0) {
+        const spyAligned = spyReturns.slice(spyReturns.length - Math.min(minLen, spyReturns.length))
+        const portAligned = portfolioReturns.slice(portfolioReturns.length - spyAligned.length)
+        beta = computeBeta(portAligned, spyAligned)
+      }
+    } catch (e) { /* ignore */ }
+
+    res.json({
+      validBotIds,
+      weights,
+      correlationMatrix,
+      portfolioMetrics: {
+        cagr,
+        volatility,
+        sharpe,
+        maxDrawdown: maxDd,
+        beta
+      }
+    })
+  } catch (e) {
+    console.error('[Correlation Optimize] Error:', e)
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// POST /api/correlation/recommend - Get bot recommendations based on portfolio diversification
+app.post('/api/correlation/recommend', async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const { currentBotIds = [], candidateBotIds, metric = 'correlation', period = 'full', limit = 3 } = req.body
+
+    if (!candidateBotIds || candidateBotIds.length === 0) {
+      return res.json({ recommendations: [] })
+    }
+
+    // Get returns for current portfolio bots
+    const currentReturns = []
+    for (const botId of currentBotIds) {
+      const data = await getBotDailyReturns(botId, period)
+      if (data && data.dailyReturns.length >= 50) {
+        currentReturns.push(data.dailyReturns)
+      }
+    }
+
+    // Score each candidate
+    const scores = []
+    for (const candId of candidateBotIds) {
+      try {
+        const candData = await getBotDailyReturns(candId, period)
+        if (!candData || candData.dailyReturns.length < 50) continue
+
+        let score = 0
+        let avgCorr = 0
+
+        if (currentReturns.length === 0) {
+          // No current bots - just score by metrics
+          const m = candData.metrics || {}
+          if (metric === 'sharpe') score = m.sharpeRatio ?? m.sharpe ?? 0
+          else if (metric === 'volatility') score = -(m.volatility ?? 1) // Lower is better
+          else if (metric === 'beta') score = -Math.abs(m.beta ?? 1) // Closer to 0 is better
+          else score = 1 // correlation - any bot is fine when empty
+          avgCorr = 0
+        } else {
+          // Compute correlation with each current bot
+          const correlations = []
+          for (const currRet of currentReturns) {
+            const minLen = Math.min(currRet.length, candData.dailyReturns.length)
+            const aligned1 = currRet.slice(currRet.length - minLen)
+            const aligned2 = candData.dailyReturns.slice(candData.dailyReturns.length - minLen)
+            const corr = pearsonCorrelation(aligned1, aligned2)
+            correlations.push(corr)
+          }
+
+          avgCorr = correlations.reduce((a, b) => a + b, 0) / correlations.length
+
+          if (metric === 'correlation') {
+            score = -avgCorr // Lower correlation is better (negative score means less correlated)
+          } else if (metric === 'volatility') {
+            score = -(candData.metrics?.volatility ?? 1) - avgCorr * 0.5
+          } else if (metric === 'beta') {
+            score = -Math.abs(candData.metrics?.beta ?? 1) - avgCorr * 0.5
+          } else if (metric === 'sharpe') {
+            const sharpe = candData.metrics?.sharpeRatio ?? candData.metrics?.sharpe ?? 0
+            score = sharpe - avgCorr * 0.3 // Balance sharpe with low correlation
+          }
+        }
+
+        scores.push({
+          botId: candId,
+          score,
+          correlation: avgCorr,
+          metrics: {
+            cagr: candData.metrics?.cagr,
+            sharpe: candData.metrics?.sharpeRatio ?? candData.metrics?.sharpe
+          }
+        })
+      } catch (e) {
+        // Skip this candidate
+      }
+    }
+
+    // Sort by score (higher is better) and take top N
+    scores.sort((a, b) => b.score - a.score)
+    const recommendations = scores.slice(0, limit)
+
+    res.json({ recommendations })
+  } catch (e) {
+    console.error('[Correlation Recommend] Error:', e)
     res.status(500).json({ error: String(e?.message || e) })
   }
 })
