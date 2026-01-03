@@ -651,6 +651,57 @@ const parseIncantation = (
     }
   }
 
+  // EnterExit: Entry/Exit pattern - enters a position when condition is met, exits when exit condition triggers
+  // Maps to Atlas 'altexit' node kind
+  if (incType === 'EnterExit') {
+    const enterCondition = node.enter_condition as Record<string, unknown> | undefined
+    const exitCondition = node.exit_condition as Record<string, unknown> | undefined
+    const enterInc = node.enter_incantation as Record<string, unknown> | undefined
+    const exitInc = node.exit_incantation as Record<string, unknown> | undefined
+
+    // Parse entry and exit conditions
+    const entryConditions = enterCondition ? parseCondition(enterCondition, idGen) : [{
+      id: idGen.condId(),
+      type: 'if' as const,
+      metric: 'Relative Strength Index' as MetricChoice,
+      window: 14,
+      ticker: 'SPY' as PositionChoice,
+      comparator: 'gt' as ComparatorChoice,
+      threshold: 50,
+      expanded: false,
+    }]
+
+    const exitConditions = exitCondition ? parseCondition(exitCondition, idGen) : [{
+      id: idGen.condId(),
+      type: 'if' as const,
+      metric: 'Relative Strength Index' as MetricChoice,
+      window: 14,
+      ticker: 'SPY' as PositionChoice,
+      comparator: 'lt' as ComparatorChoice,
+      threshold: 50,
+      expanded: false,
+    }]
+
+    const thenBranch = enterInc ? parseIncantation(enterInc, idGen) : null
+    const elseBranch = exitInc ? parseIncantation(exitInc, idGen) : null
+
+    return {
+      id: idGen.nodeId(),
+      kind: 'altExit',
+      title: (node.name as string) || 'Enter/Exit',
+      collapsed: true,
+      weighting: 'equal',
+      weightingThen: 'equal',
+      weightingElse: 'equal',
+      entryConditions: entryConditions,
+      exitConditions: exitConditions,
+      children: {
+        then: thenBranch ? [thenBranch] : [null],
+        else: elseBranch ? [elseBranch] : [null],
+      },
+    }
+  }
+
   console.warn(`[ImportWorker] Unknown incantation_type: ${incType}`)
   return null
 }

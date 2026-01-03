@@ -1147,6 +1147,9 @@ const emptyCache = () => ({
   // FRD-021: Branch equity curves cache (for subspell support)
   // Key: nodeId, Value: { equity: Float64Array, returns: Float64Array }
   branchEquity: new Map(),
+  // AltExit state cache - tracks whether each altExit node is "in" or "out"
+  // Key: nodeId, Value: boolean (true = in position, false = out/exit)
+  altExitState: new Map(),
 })
 
 const getCachedSeries = (cache, kind, ticker, period, compute) => {
@@ -2487,6 +2490,30 @@ function collectMaxLookback(node) {
     maxLookback = Math.max(maxLookback, getIndicatorLookback(node.scaleMetric, node.scaleWindow || 0))
   }
 
+  // Check altExit nodes (entry and exit conditions)
+  if (node.entryConditions) {
+    for (const cond of node.entryConditions) {
+      const forDaysOffset = Math.max(0, (cond.forDays || 1) - 1)
+      maxLookback = Math.max(maxLookback, getIndicatorLookback(cond.metric, cond.window || 0) + forDaysOffset)
+      if (cond.expanded) {
+        const rightMetric = cond.rightMetric ?? cond.metric
+        const rightWindow = cond.rightWindow ?? cond.window
+        maxLookback = Math.max(maxLookback, getIndicatorLookback(rightMetric, rightWindow || 0) + forDaysOffset)
+      }
+    }
+  }
+  if (node.exitConditions) {
+    for (const cond of node.exitConditions) {
+      const forDaysOffset = Math.max(0, (cond.forDays || 1) - 1)
+      maxLookback = Math.max(maxLookback, getIndicatorLookback(cond.metric, cond.window || 0) + forDaysOffset)
+      if (cond.expanded) {
+        const rightMetric = cond.rightMetric ?? cond.metric
+        const rightWindow = cond.rightWindow ?? cond.window
+        maxLookback = Math.max(maxLookback, getIndicatorLookback(rightMetric, rightWindow || 0) + forDaysOffset)
+      }
+    }
+  }
+
   // Recursively check children
   const children = node.children || {}
   for (const slot of Object.keys(children)) {
@@ -2615,6 +2642,43 @@ function evaluateNode(ctx, node) {
     }
 
     return alloc
+  }
+
+  // AltExit nodes: Entry/Exit pattern with stateful tracking
+  // - Entry condition true AND not in position → enter (allocate to 'then' branch)
+  // - Exit condition true AND in position → exit (allocate to 'else' branch)
+  // - Otherwise hold current state
+  if (node.kind === 'altExit') {
+    const entryConditions = node.entryConditions || []
+    const exitConditions = node.exitConditions || []
+
+    // Get current state from cache (default: out of position)
+    const nodeId = node.id
+    let inPosition = ctx.cache.altExitState.get(nodeId) ?? false
+
+    // Evaluate entry conditions
+    const entrySignal = evaluateConditions(ctx, entryConditions, node.conditionLogic || 'and')
+
+    // Evaluate exit conditions
+    const exitSignal = evaluateConditions(ctx, exitConditions, node.exitConditionLogic || 'and')
+
+    // State machine:
+    // If out and entry triggers → enter
+    // If in and exit triggers → exit
+    // Otherwise → hold current state
+    if (!inPosition && entrySignal === true) {
+      inPosition = true
+    } else if (inPosition && exitSignal === true) {
+      inPosition = false
+    }
+
+    // Update state in cache for next bar
+    ctx.cache.altExitState.set(nodeId, inPosition)
+
+    // Allocate to appropriate branch
+    const branch = inPosition ? 'then' : 'else'
+    const children = (node.children?.[branch] || []).filter(Boolean)
+    return evaluateChildren(ctx, node, branch, children)
   }
 
   if (node.kind === 'numbered') {
