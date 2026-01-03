@@ -1102,7 +1102,7 @@ const emptyCache = () => ({
   macd: new Map(),
   ppo: new Map(),
   trendClarity: new Map(),
-  ultimateSmoother: new Map(),
+  ultSmooth: new Map(),
   // New Moving Averages
   hma: new Map(),
   wma: new Map(),
@@ -1772,8 +1772,8 @@ function simulateBranchEquity(ctx, branchNode) {
   // Start with $1 equity
   let currentEquity = 1.0
 
-  // Use same lookback as main evaluation
-  const lookback = Math.max(50, collectMaxLookback(branchNode))
+  // Use same lookback as main evaluation (no hardcoded minimum)
+  const lookback = collectMaxLookback(branchNode)
   const startIndex = ctx.decisionPrice === 'open' ? (lookback > 0 ? lookback + 1 : 0) : lookback
 
   // Fill initial values
@@ -2901,8 +2901,26 @@ const collectIndicatorTickers = (node) => {
 
     // Scaling nodes - collect scale ticker
     if (n.kind === 'scaling') {
-      // FRD-021: Skip branch references - they're computed from child equity, not external tickers
-      if (n.scaleTicker && !n.scaleTicker.startsWith('branch:')) {
+      // FRD-021: Handle branch references - when scaleTicker is 'branch:from' or 'branch:to',
+      // we need to include the POSITION tickers from that branch because branch equity
+      // simulation requires their price data for date intersection
+      if (n.scaleTicker && n.scaleTicker.startsWith('branch:')) {
+        const branchName = n.scaleTicker.slice(7) // Remove 'branch:' prefix
+        const slotMap = { 'from': 'then', 'to': 'else' }
+        const slotName = slotMap[branchName]
+        if (slotName) {
+          const branchChildren = n.children?.[slotName] || []
+          for (const child of branchChildren) {
+            if (child) {
+              // Add ALL tickers from the branch (including positions) since they affect equity
+              const branchTickers = collectAllTickers(child)
+              for (const t of branchTickers) {
+                if (t !== 'Empty') tickers.add(t)
+              }
+            }
+          }
+        }
+      } else if (n.scaleTicker) {
         addTickerWithComponents(tickers, n.scaleTicker)
       }
       addConditionTickers(n.conditions)
@@ -3157,8 +3175,9 @@ export async function runBacktest(payload, options = {}) {
   const decisionPrice = backtestMode === 'CC' || backtestMode === 'CO' ? 'close' : 'open'
 
   const allocationsAt = Array.from({ length: db.dates.length }, () => ({}))
-  // Calculate lookback based on indicators used (momentum indicators need 252 days)
-  const lookback = Math.max(50, collectMaxLookback(node))
+  // Calculate lookback based on indicators used
+  // No hardcoded minimum - only use actual indicator windows from the strategy
+  const lookback = collectMaxLookback(node)
   // Start evaluation from the later of: lookback period OR first valid position data
   const startEvalIndex = Math.max(
     decisionPrice === 'open' ? (lookback > 0 ? lookback + 1 : 0) : lookback,

@@ -56,6 +56,11 @@ interface FlowNode {
   scaleFrom?: number
   scaleTo?: number
   numbered?: NumberedConfig
+  // AltExit node properties
+  entryConditions?: ConditionLine[]
+  exitConditions?: ConditionLine[]
+  conditionLogic?: 'and' | 'or'
+  exitConditionLogic?: 'and' | 'or'
 }
 
 const SLOT_ORDER: Record<BlockKind, SlotId[]> = {

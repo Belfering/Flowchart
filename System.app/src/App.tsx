@@ -1794,6 +1794,8 @@ type FlowNode = {
   // Alt Exit node properties
   entryConditions?: ConditionLine[]
   exitConditions?: ConditionLine[]
+  conditionLogic?: 'and' | 'or'
+  exitConditionLogic?: 'and' | 'or'
   // Scaling node properties
   scaleMetric?: MetricChoice
   scaleWindow?: number
