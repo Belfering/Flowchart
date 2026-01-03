@@ -4,6 +4,55 @@ All notable changes to Atlas Engine are documented here.
 
 ---
 
+## [1.5.0] - 2026-01-03
+
+### Added
+- OAuth Login - Sign in with Google, Discord, or GitHub (no invite code required for OAuth users)
+- Branch Equity References (Subspells) - Scaling nodes can now reference child branch equity curves as indicator sources
+  - Enables strategies like "Scale from 1x to 6x based on 60d Volatility of the From branch"
+  - Imported from QuantMage as `Subspell "From"` / `Subspell "To"` references
+  - Full backtest engine support with branch equity simulation and caching
+- 4 new Fragility Fingerprints in Robustness tab:
+  - Backtest Length: flags strategies with <5 years of data
+  - Turnover Risk: flags high-frequency trading (>50% daily turnover)
+  - Position Concentration: flags under-diversified strategies (<3 holdings)
+  - Drawdown Recovery: flags slow recovery from max drawdown (>2 years)
+- Fragility Fingerprints now displayed in 2x4 grid layout (8 total indicators)
+- Separate sync timestamps for yFinance and Tiingo data sources in Admin tab
+- Background data preloading on login - all tickers cached automatically
+- Separate Atlas database for main_admin exclusive bots
+- Trading Control Panel (Admin) - Alpaca paper trading integration
+  - Save encrypted broker credentials (AES-256-GCM)
+  - Test connection to verify API keys and view account status
+  - Dry Run simulation - evaluates fund slot bots to get current-day allocations
+  - Merges multi-bot allocations weighted by investment amounts
+  - Shows position breakdown with live Alpaca prices and limit prices
+  - Displays calculated shares, values, and allocation percentages
+
+### Changed
+- Last Sync card now shows two columns: yFinance status and Tiingo status
+
+---
+
+## [1.4.0] - 2026-01-02
+
+### Added
+- Find/Replace instance count - shows number of ticker instances found, updates with filter checkboxes
+- Replace button now shows count: "Replace (5)" when instances are found
+
+### Performance
+- Tree Compression Engine - optimizes strategy trees before backtest evaluation
+  - Gate chain merging: nested if/else with same outcome merged into OR conditions
+  - Empty branch pruning: removes branches leading only to Empty positions
+  - Single-child collapse: removes unnecessary wrapper nodes
+  - Pre-computed ticker locations: O(1) lookup instead of tree traversal per bar
+
+### Fixed
+- Tiingo download progress bar now updates correctly (was stuck at 0%)
+  - Added stdout line buffering to handle JSON fragmentation across buffer chunks
+
+---
+
 ## [1.3.0] - 2026-01-01
 
 ### Added

@@ -81,6 +81,22 @@ const createIdGenerator = () => {
   }
 }
 
+// FRD-021: Detect and parse QuantMage subspell references
+// Subspells appear as ticker_symbol values like 'Subspell "From"', 'Subspell "Enter"', etc.
+const isSubspellReference = (tickerSymbol: string | undefined): boolean => {
+  return typeof tickerSymbol === 'string' && tickerSymbol.startsWith('Subspell "')
+}
+
+// Parse subspell reference into Atlas branch format
+// 'Subspell "From"' -> 'branch:from', 'Subspell "Enter"' -> 'branch:enter', etc.
+const parseSubspellReference = (tickerSymbol: string): string => {
+  const match = tickerSymbol.match(/^Subspell "(\w+)"$/)
+  if (match) {
+    return `branch:${match[1].toLowerCase()}`
+  }
+  return tickerSymbol // Return as-is if doesn't match pattern
+}
+
 // Map QuantMage indicator types to Atlas metric names
 const mapIndicator = (type: string): MetricChoice => {
   const mapping: Record<string, MetricChoice> = {
@@ -123,12 +139,18 @@ const parseCondition = (
     const type = cond.type as string
     const forDays = (cond.for_days as number) || 1
 
+    // FRD-021: Handle subspell references in ticker fields
+    const lhTicker = cond.lh_ticker_symbol as string | undefined
+    const parsedLhTicker = isSubspellReference(lhTicker)
+      ? parseSubspellReference(lhTicker!)
+      : (lhTicker || 'SPY')
+
     const base: ConditionLine = {
       id: idGen.condId(),
       type: 'if',
       metric: lhIndicator ? mapIndicator(lhIndicator.type) : 'Relative Strength Index',
       window: lhIndicator?.window || 14,
-      ticker: (cond.lh_ticker_symbol as string) || 'SPY',
+      ticker: parsedLhTicker,
       comparator: (cond.greater_than as boolean) ? 'gt' : 'lt',
       threshold: (cond.rh_value as number) ?? 50,
       expanded: false,
@@ -137,7 +159,11 @@ const parseCondition = (
 
     if ((type === 'IndicatorAndIndicator' || type === 'BothIndicators') && rhIndicator) {
       base.expanded = true
-      base.rightTicker = (cond.rh_ticker_symbol as string) || 'SPY'
+      // FRD-021: Handle subspell references in right ticker field
+      const rhTicker = cond.rh_ticker_symbol as string | undefined
+      base.rightTicker = isSubspellReference(rhTicker)
+        ? parseSubspellReference(rhTicker!)
+        : (rhTicker || 'SPY')
       base.rightMetric = mapIndicator(rhIndicator.type)
       base.rightWindow = rhIndicator.window || 14
     }
@@ -580,11 +606,16 @@ const parseIncantation = (
 
   if (incType === 'Mixed') {
     const indicator = node.indicator as { type: string; window: number } | undefined
-    const tickerSymbol = (node.ticker_symbol as string) || 'SPY'
+    const rawTickerSymbol = (node.ticker_symbol as string) || 'SPY'
     const fromValue = (node.from_value as number) || 0
     const toValue = (node.to_value as number) || 100
     const fromInc = node.from_incantation as Record<string, unknown> | undefined
     const toInc = node.to_incantation as Record<string, unknown> | undefined
+
+    // FRD-021: Handle subspell references (e.g., 'Subspell "From"' -> 'branch:from')
+    const tickerSymbol = isSubspellReference(rawTickerSymbol)
+      ? parseSubspellReference(rawTickerSymbol)
+      : rawTickerSymbol
 
     const thenBranch = fromInc ? parseIncantation(fromInc, idGen) : null
     const elseBranch = toInc ? parseIncantation(toInc, idGen) : null

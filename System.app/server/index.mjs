@@ -12,6 +12,7 @@ import { validateDisplayName } from './utils/profanity-filter.mjs'
 import { seedAdminUser } from './seed-admin.mjs'
 import * as scheduler from './scheduler.mjs'
 import { authenticate, requireAdmin, requireSuperAdmin, requireMainAdmin, isSuperAdmin, isMainAdmin, hasAdminAccess, hasEngineerAccess, canChangeUserRole } from './middleware/auth.mjs'
+import * as atlasDb from './db/atlas-db.mjs'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -1158,6 +1159,129 @@ app.get('/api/candles/:ticker', async (req, res) => {
 const serverTickerCache = new Map()  // ticker -> { data, timestamp }
 const SERVER_CACHE_TTL = 30 * 60 * 1000  // 30 minutes
 
+// ============================================================================
+// BACKGROUND CACHE PRELOADING
+// Preloads all tickers into serverTickerCache for fast subsequent requests
+// ============================================================================
+let preloadInProgress = false
+const PRELOAD_BATCH_SIZE = parseInt(process.env.PRELOAD_BATCH_SIZE || '50', 10)
+const PRELOAD_BATCH_DELAY = parseInt(process.env.PRELOAD_BATCH_DELAY || '100', 10)
+const PRELOAD_LIMIT = 1500  // Standard candle limit for preloading
+
+async function preloadAllTickersIntoCache() {
+  if (preloadInProgress) {
+    console.log('[Preload] Already in progress, skipping')
+    return { skipped: true, reason: 'already_in_progress' }
+  }
+
+  preloadInProgress = true
+  const startTime = Date.now()
+
+  try {
+    const allTickers = await listParquetTickers()
+    const now = Date.now()
+
+    // Filter out tickers already in cache
+    const tickersToPreload = allTickers.filter(ticker => {
+      const cached = serverTickerCache.get(ticker)
+      return !cached || cached.limit < PRELOAD_LIMIT || now - cached.timestamp >= SERVER_CACHE_TTL
+    })
+
+    console.log(`[Preload] Starting: ${tickersToPreload.length} tickers to preload (${allTickers.length - tickersToPreload.length} already cached)`)
+
+    if (tickersToPreload.length === 0) {
+      preloadInProgress = false
+      return { success: true, preloaded: 0, alreadyCached: allTickers.length }
+    }
+
+    let preloaded = 0
+    let failed = 0
+
+    // Process in batches to avoid overwhelming the connection pool
+    for (let i = 0; i < tickersToPreload.length; i += PRELOAD_BATCH_SIZE) {
+      const batch = tickersToPreload.slice(i, i + PRELOAD_BATCH_SIZE)
+
+      const promises = batch.map(async (ticker, idx) => {
+        const pooledConn = connectionPool[idx % POOL_SIZE]
+        const parquetPath = path.join(PARQUET_DIR, `${ticker}.parquet`)
+        const fileForDuckdb = parquetPath.replace(/\\/g, '/').replace(/'/g, "''")
+
+        const sql = `
+          SELECT
+            epoch_ms("Date") AS ts_ms,
+            "Open"  AS open,
+            "High"  AS high,
+            "Low"   AS low,
+            "Close" AS close,
+            "Adj Close" AS adjClose
+          FROM read_parquet('${fileForDuckdb}')
+          WHERE "Open" IS NOT NULL AND "High" IS NOT NULL AND "Low" IS NOT NULL AND "Close" IS NOT NULL
+          ORDER BY "Date" DESC
+          LIMIT ${PRELOAD_LIMIT}
+        `
+
+        try {
+          const rows = await new Promise((resolve, reject) => {
+            pooledConn.all(sql, (err, rows) => {
+              if (err) reject(err)
+              else resolve(rows)
+            })
+          })
+
+          if (rows && rows.length > 0) {
+            const data = rows.slice().reverse().map((r) => ({
+              time: Math.floor(Number(r.ts_ms) / 1000),
+              open: Number(r.open),
+              high: Number(r.high),
+              low: Number(r.low),
+              close: Number(r.close),
+              adjClose: Number(r.adjClose),
+            }))
+            serverTickerCache.set(ticker, { data, limit: PRELOAD_LIMIT, timestamp: Date.now() })
+            return { success: true }
+          }
+          return { success: false }
+        } catch (e) {
+          return { success: false, error: e.message }
+        }
+      })
+
+      const results = await Promise.all(promises)
+      preloaded += results.filter(r => r.success).length
+      failed += results.filter(r => !r.success).length
+
+      // Small delay between batches to prevent overloading
+      if (i + PRELOAD_BATCH_SIZE < tickersToPreload.length) {
+        await new Promise(r => setTimeout(r, PRELOAD_BATCH_DELAY))
+      }
+
+      // Log progress every 200 tickers
+      if ((i + PRELOAD_BATCH_SIZE) % 200 < PRELOAD_BATCH_SIZE) {
+        console.log(`[Preload] Progress: ${Math.min(i + PRELOAD_BATCH_SIZE, tickersToPreload.length)}/${tickersToPreload.length}`)
+      }
+    }
+
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(2)
+    console.log(`[Preload] Complete: ${preloaded} preloaded, ${failed} failed in ${elapsed}s`)
+
+    preloadInProgress = false
+    return { success: true, preloaded, failed, elapsed: parseFloat(elapsed) }
+  } catch (err) {
+    console.error('[Preload] Error:', err.message)
+    preloadInProgress = false
+    return { success: false, error: err.message }
+  }
+}
+
+// Internal endpoint to trigger cache preload (called from auth routes)
+app.post('/api/internal/preload-cache', async (req, res) => {
+  // Fire and forget - start preload in background
+  preloadAllTickersIntoCache().catch(err => {
+    console.error('[Preload] Background error:', err.message)
+  })
+  res.json({ started: true })
+})
+
 // POST /api/candles/batch - Fetch multiple tickers from parquet files efficiently
 app.post('/api/candles/batch', async (req, res) => {
   const { tickers, limit: reqLimit = 1500 } = req.body
@@ -1852,11 +1976,15 @@ import * as backtestCache from './db/cache.mjs'
 import authRoutes from './routes/auth.mjs'
 import passwordResetRoutes from './routes/password-reset.mjs'
 import adminInviteRoutes from './routes/admin-invites.mjs'
+import oauthRoutes from './routes/oauth.mjs'
+import liveRoutes from './routes/live.mjs'
 
 // Register auth routes
 app.use('/api/auth', authRoutes)
 app.use('/api/auth', passwordResetRoutes)
+app.use('/api/oauth', oauthRoutes)
 app.use('/api/admin/invites', adminInviteRoutes)
+app.use('/api/admin', liveRoutes)
 
 // Initialize database on startup
 let dbInitialized = false
@@ -2134,6 +2262,131 @@ app.get('/api/nexus/top/sharpe', async (req, res) => {
     const limit = parseInt(req.query.limit) || 10
     const bots = await database.getTopNexusBotsBySharpe(limit)
     res.json({ bots })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// ============================================================================
+// Atlas Bot Endpoints - MAIN ADMIN ONLY
+// These bots are completely hidden from engineers and regular users
+// ============================================================================
+
+// GET /api/atlas/bots - List all Atlas bots (main_admin only)
+app.get('/api/atlas/bots', authenticate, requireMainAdmin, async (req, res) => {
+  try {
+    const bots = atlasDb.getAtlasBots()
+    res.json({ bots })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// GET /api/atlas/bots/:id - Get a single Atlas bot with payload (main_admin only)
+app.get('/api/atlas/bots/:id', authenticate, requireMainAdmin, async (req, res) => {
+  try {
+    const bot = atlasDb.getAtlasBotById(req.params.id)
+    if (!bot) {
+      return res.status(404).json({ error: 'Atlas bot not found' })
+    }
+    res.json({ bot })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// POST /api/atlas/bots - Create a new Atlas bot (main_admin only)
+app.post('/api/atlas/bots', authenticate, requireMainAdmin, async (req, res) => {
+  try {
+    const { name, description, payload, visibility, fundSlot, tags } = req.body
+
+    if (!name) {
+      return res.status(400).json({ error: 'Bot name is required' })
+    }
+    if (!payload) {
+      return res.status(400).json({ error: 'Bot payload is required' })
+    }
+
+    const bot = atlasDb.createAtlasBot({
+      ownerId: req.user.sub,
+      name,
+      description,
+      payload,
+      visibility: visibility || 'private',
+      fundSlot,
+      tags: tags || [],
+    })
+
+    res.status(201).json({ bot })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// PUT /api/atlas/bots/:id - Update an Atlas bot (main_admin only)
+app.put('/api/atlas/bots/:id', authenticate, requireMainAdmin, async (req, res) => {
+  try {
+    const existingBot = atlasDb.getAtlasBotById(req.params.id)
+    if (!existingBot) {
+      return res.status(404).json({ error: 'Atlas bot not found' })
+    }
+
+    const { name, description, payload, visibility, fundSlot, tags } = req.body
+
+    const bot = atlasDb.updateAtlasBot(req.params.id, {
+      name,
+      description,
+      payload,
+      visibility,
+      fundSlot,
+      tags,
+    })
+
+    res.json({ bot })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// DELETE /api/atlas/bots/:id - Soft delete an Atlas bot (main_admin only)
+app.delete('/api/atlas/bots/:id', authenticate, requireMainAdmin, async (req, res) => {
+  try {
+    const existingBot = atlasDb.getAtlasBotById(req.params.id)
+    if (!existingBot) {
+      return res.status(404).json({ error: 'Atlas bot not found' })
+    }
+
+    atlasDb.deleteAtlasBot(req.params.id)
+    res.json({ deleted: true })
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
+// PUT /api/atlas/bots/:id/metrics - Update Atlas bot metrics (main_admin only)
+app.put('/api/atlas/bots/:id/metrics', authenticate, requireMainAdmin, async (req, res) => {
+  try {
+    const existingBot = atlasDb.getAtlasBotById(req.params.id)
+    if (!existingBot) {
+      return res.status(404).json({ error: 'Atlas bot not found' })
+    }
+
+    const { cagr, maxDrawdown, calmarRatio, sharpeRatio, sortinoRatio, treynorRatio, volatility, winRate, tradingDays } = req.body
+
+    atlasDb.updateAtlasBotMetrics(req.params.id, {
+      cagr,
+      maxDrawdown,
+      calmarRatio,
+      sharpeRatio,
+      sortinoRatio,
+      treynorRatio,
+      volatility,
+      winRate,
+      tradingDays,
+    })
+
+    const bot = atlasDb.getAtlasBotById(req.params.id)
+    res.json({ bot })
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) })
   }
@@ -2798,6 +3051,9 @@ app.post('/api/bots/:id/sanity-report', async (req, res) => {
       blockSize: req.body.blockSize || 7,
       shards: req.body.shards || 10,
       seed: req.body.seed || 42,
+      avgTurnover: backtestResult.avgTurnover,
+      avgHoldings: backtestResult.avgHoldings,
+      equityCurve: backtestResult.equityCurve,
     }, spyReturns)
 
     // Compute strategy beta vs each benchmark ticker with proper date alignment
@@ -2907,6 +3163,9 @@ app.post('/api/sanity-report', async (req, res) => {
       blockSize: req.body.blockSize || 7,
       shards: req.body.shards || 10,
       seed: req.body.seed || 42,
+      avgTurnover: backtestResult.avgTurnover,
+      avgHoldings: backtestResult.avgHoldings,
+      equityCurve: backtestResult.equityCurve,
     }, spyReturns)
 
     // Compute strategy beta vs each benchmark ticker
@@ -3615,7 +3874,11 @@ app.post('/api/admin/cache/prewarm', async (req, res) => {
                 }
               }
 
-              const report = generateSanityReport(result.dailyReturns, {}, spyReturns)
+              const report = generateSanityReport(result.dailyReturns, {
+                avgTurnover: result.avgTurnover,
+                avgHoldings: result.avgHoldings,
+                equityCurve: result.equityCurve,
+              }, spyReturns)
 
               // Compute strategy beta vs each benchmark ticker
               const benchmarkTickers = ['VTI', 'SPY', 'QQQ', 'DIA', 'DBC', 'DBO', 'GLD', 'BND', 'TLT', 'GBTC']

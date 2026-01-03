@@ -1245,6 +1245,26 @@ function TickerDatalist({ id, options }: { id: string; options: string[] }) {
 // Popular tickers to show when modal opens (before typing)
 const POPULAR_TICKERS = ['SPY', 'QQQ', 'IWM', 'DIA', 'VTI', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'TSLA', 'META', 'BRK-B', 'UNH', 'JPM', 'GLD', 'TLT', 'BND', 'VNQ', 'Empty']
 
+type TickerModalMode = 'tickers' | 'ratios' | 'branches'
+
+// Common ratio tickers used in QuantMage strategies
+const COMMON_RATIO_TICKERS = [
+  'SPY/AGG', 'SPY/RSP', 'SPY/VIG', 'SPY/XLP', 'SPY/XLU', 'SPY/XLV', 'SPY/XLY',
+  'QQQ/AGG', 'QQQ/QQQE', 'QQQ/XLU',
+  'QQQE/AGG', 'RSP/AGG',
+]
+
+// Branch equity options for scaling/indicator nodes
+const BRANCH_OPTIONS = [
+  { value: 'branch:from', label: 'From Branch', description: 'Equity curve of the "From" child', nodeKinds: ['scaling'] },
+  { value: 'branch:to', label: 'To Branch', description: 'Equity curve of the "To" child', nodeKinds: ['scaling'] },
+  { value: 'branch:then', label: 'Then Branch', description: 'Equity curve of the "Then" child', nodeKinds: ['indicator'] },
+  { value: 'branch:else', label: 'Else Branch', description: 'Equity curve of the "Else" child', nodeKinds: ['indicator'] },
+  { value: 'branch:enter', label: 'Enter Branch', description: 'Equity curve of the "Enter" child', nodeKinds: ['altExit'] },
+  { value: 'branch:exit', label: 'Exit Branch', description: 'Equity curve of the "Exit" child', nodeKinds: ['altExit'] },
+  { value: 'branch:children', label: 'Children', description: 'Sort/rank children by their equity metrics', nodeKinds: ['function'] },
+]
+
 function TickerSearchModal({
   open,
   onClose,
@@ -1252,6 +1272,8 @@ function TickerSearchModal({
   tickerOptions,
   tickerMetadata,
   restrictToTickers,
+  allowedModes = ['tickers'],
+  nodeKind,
 }: {
   open: boolean
   onClose: () => void
@@ -1259,22 +1281,30 @@ function TickerSearchModal({
   tickerOptions: string[]
   tickerMetadata: Map<string, { name?: string; assetType?: string; exchange?: string }>
   restrictToTickers?: string[]
+  allowedModes?: TickerModalMode[]
+  nodeKind?: BlockKind // Parent node type for contextual branch filtering
 }) {
   const [search, setSearch] = useState('')
   const [includeETFs, setIncludeETFs] = useState(true)
   const [includeStocks, setIncludeStocks] = useState(true)
+  const [mode, setMode] = useState<TickerModalMode>('tickers')
+  const [ratioLeft, setRatioLeft] = useState('')
+  const [ratioRight, setRatioRight] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
 
   // Determine base ticker list (restricted or full)
   const baseTickers = restrictToTickers || tickerOptions
 
-  // Auto-focus on open and reset search
+  // Auto-focus on open and reset state
   useEffect(() => {
     if (open) {
       setTimeout(() => inputRef.current?.focus(), 50)
       setSearch('')
+      setMode(allowedModes[0] || 'tickers')
+      setRatioLeft('')
+      setRatioRight('')
     }
-  }, [open])
+  }, [open, allowedModes])
 
   // Close on ESC
   useEffect(() => {
@@ -1345,74 +1375,180 @@ function TickerSearchModal({
       <div className="relative bg-surface border border-border rounded-lg shadow-2xl w-[500px] max-h-[70vh] flex flex-col">
         {/* Header with search */}
         <div className="p-4 border-b border-border">
-          <input
-            ref={inputRef}
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search ticker or company name..."
-            className="w-full px-3 py-2 border border-border rounded bg-card text-sm"
-          />
+          {mode === 'tickers' && (
+            <input
+              ref={inputRef}
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search ticker or company name..."
+              className="w-full px-3 py-2 border border-border rounded bg-card text-sm"
+            />
+          )}
 
-          {/* Filter checkboxes */}
-          <div className="flex gap-4 mt-3">
-            <label className="flex items-center gap-2 text-sm cursor-pointer">
+          {mode === 'ratios' && (
+            <div className="flex items-center gap-2">
               <input
-                type="checkbox"
-                checked={includeETFs}
-                onChange={(e) => setIncludeETFs(e.target.checked)}
+                ref={inputRef}
+                type="text"
+                value={ratioLeft}
+                onChange={(e) => setRatioLeft(e.target.value.toUpperCase())}
+                placeholder="SPY"
+                className="flex-1 px-3 py-2 border border-border rounded bg-card text-sm font-mono text-center"
               />
-              Include ETFs
-            </label>
-            <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <span className="text-xl font-bold text-muted-foreground">/</span>
               <input
-                type="checkbox"
-                checked={includeStocks}
-                onChange={(e) => setIncludeStocks(e.target.checked)}
+                type="text"
+                value={ratioRight}
+                onChange={(e) => setRatioRight(e.target.value.toUpperCase())}
+                placeholder="AGG"
+                className="flex-1 px-3 py-2 border border-border rounded bg-card text-sm font-mono text-center"
               />
-              Include Stocks
-            </label>
+              <Button
+                size="sm"
+                disabled={!ratioLeft || !ratioRight}
+                onClick={() => {
+                  if (ratioLeft && ratioRight) {
+                    onSelect(`${ratioLeft}/${ratioRight}`)
+                    onClose()
+                  }
+                }}
+              >
+                Use
+              </Button>
+            </div>
+          )}
+
+          {mode === 'branches' && (
+            <div className="text-sm text-muted-foreground">
+              Select a branch equity curve to use as an indicator source
+            </div>
+          )}
+
+          {/* Filter row - checkboxes + mode dropdown */}
+          <div className="flex items-center gap-4 mt-3">
+            {mode === 'tickers' && (
+              <>
+                <label className="flex items-center gap-2 text-sm cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={includeETFs}
+                    onChange={(e) => setIncludeETFs(e.target.checked)}
+                  />
+                  Include ETFs
+                </label>
+                <label className="flex items-center gap-2 text-sm cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={includeStocks}
+                    onChange={(e) => setIncludeStocks(e.target.checked)}
+                  />
+                  Include Stocks
+                </label>
+              </>
+            )}
+            {/* Mode dropdown - only show if multiple modes allowed */}
+            {allowedModes.length > 1 && (
+              <select
+                value={mode}
+                onChange={(e) => setMode(e.target.value as TickerModalMode)}
+                className="ml-auto px-2 py-1 border border-border rounded bg-card text-sm"
+              >
+                {allowedModes.includes('tickers') && <option value="tickers">Tickers</option>}
+                {allowedModes.includes('ratios') && <option value="ratios">Ratios</option>}
+                {allowedModes.includes('branches') && <option value="branches">Branches</option>}
+              </select>
+            )}
           </div>
         </div>
 
         {/* Results list */}
         <div className="flex-1 overflow-y-auto">
-          {filteredResults.map(ticker => {
-            const meta = tickerMetadata.get(ticker.toUpperCase())
-            return (
-              <div
-                key={ticker}
-                className="px-4 py-2 hover:bg-muted/50 cursor-pointer flex items-center justify-between border-b border-border/50"
-                onClick={() => { onSelect(ticker); onClose() }}
-              >
-                <div className="flex items-center gap-2 flex-1 min-w-0">
-                  <span className="font-mono font-bold shrink-0 w-16">{ticker}</span>
-                  <span className="text-muted-foreground text-sm truncate flex-1">
-                    {ticker === 'Empty'
-                      ? 'No position'
-                      : (meta?.name || <span className="italic text-muted-foreground/60">Metadata Unavailable</span>)}
-                  </span>
-                  <span className="text-xs text-muted-foreground shrink-0">
-                    {ticker === 'Empty'
-                      ? ''
-                      : (meta?.exchange || <span className="italic text-muted-foreground/60">Exchange Unavailable</span>)}
+          {/* Tickers mode */}
+          {mode === 'tickers' && (
+            <>
+              {filteredResults.map(ticker => {
+                const meta = tickerMetadata.get(ticker.toUpperCase())
+                return (
+                  <div
+                    key={ticker}
+                    className="px-4 py-2 hover:bg-muted/50 cursor-pointer flex items-center justify-between border-b border-border/50"
+                    onClick={() => { onSelect(ticker); onClose() }}
+                  >
+                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                      <span className="font-mono font-bold shrink-0 w-16">{ticker}</span>
+                      <span className="text-muted-foreground text-sm truncate flex-1">
+                        {ticker === 'Empty'
+                          ? 'No position'
+                          : (meta?.name || <span className="italic text-muted-foreground/60">Metadata Unavailable</span>)}
+                      </span>
+                      <span className="text-xs text-muted-foreground shrink-0">
+                        {ticker === 'Empty'
+                          ? ''
+                          : (meta?.exchange || <span className="italic text-muted-foreground/60">Exchange Unavailable</span>)}
+                      </span>
+                    </div>
+                    {meta?.assetType && (
+                      <span className={cn(
+                        'px-1.5 py-0.5 rounded text-xs shrink-0 ml-2',
+                        meta.assetType === 'ETF' ? 'bg-blue-500/20 text-blue-400' : 'bg-green-500/20 text-green-400'
+                      )}>
+                        {meta.assetType}
+                      </span>
+                    )}
+                  </div>
+                )
+              })}
+              {filteredResults.length === 0 && (
+                <div className="px-4 py-8 text-center text-muted-foreground">
+                  No tickers found
+                </div>
+              )}
+            </>
+          )}
+
+          {/* Ratios mode */}
+          {mode === 'ratios' && (
+            <>
+              <div className="px-4 py-2 text-xs text-muted-foreground border-b border-border">
+                Common ratios - click to use, or enter custom above
+              </div>
+              {COMMON_RATIO_TICKERS.map(ratio => (
+                <div
+                  key={ratio}
+                  className="px-4 py-2 hover:bg-muted/50 cursor-pointer flex items-center justify-between border-b border-border/50"
+                  onClick={() => { onSelect(ratio); onClose() }}
+                >
+                  <span className="font-mono font-bold">{ratio}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {ratio.split('/').join(' vs ')}
                   </span>
                 </div>
-                {meta?.assetType && (
-                  <span className={cn(
-                    'px-1.5 py-0.5 rounded text-xs shrink-0 ml-2',
-                    meta.assetType === 'ETF' ? 'bg-blue-500/20 text-blue-400' : 'bg-green-500/20 text-green-400'
-                  )}>
-                    {meta.assetType}
-                  </span>
-                )}
-              </div>
-            )
-          })}
-          {filteredResults.length === 0 && (
-            <div className="px-4 py-8 text-center text-muted-foreground">
-              No tickers found
-            </div>
+              ))}
+            </>
+          )}
+
+          {/* Branches mode */}
+          {mode === 'branches' && (
+            <>
+              {BRANCH_OPTIONS
+                .filter(branch => !nodeKind || branch.nodeKinds.includes(nodeKind))
+                .map(branch => (
+                <div
+                  key={branch.value}
+                  className="px-4 py-3 hover:bg-muted/50 cursor-pointer border-b border-border/50"
+                  onClick={() => { onSelect(branch.value); onClose() }}
+                >
+                  <div className="font-bold text-purple-400">{branch.label}</div>
+                  <div className="text-xs text-muted-foreground mt-0.5">{branch.description}</div>
+                </div>
+              ))}
+              {nodeKind && BRANCH_OPTIONS.filter(b => b.nodeKinds.includes(nodeKind)).length === 0 && (
+                <div className="px-4 py-8 text-center text-muted-foreground">
+                  No branch options available for this node type
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -1711,11 +1847,22 @@ const detectImportFormat = (data: unknown): ImportFormat => {
     return 'composer'
   }
 
-  // Check if it's a wrapped format (e.g., { payload: FlowNode })
-  if (obj.payload && typeof obj.payload === 'object') {
-    const payload = obj.payload as Record<string, unknown>
-    if (typeof payload.kind === 'string') return 'atlas'
-    if (typeof payload.step === 'string') return 'composer'
+  // Check if it's a wrapped format (e.g., { payload: FlowNode } or { payload: "stringified JSON" })
+  if (obj.payload) {
+    // Handle stringified payload (from database exports)
+    if (typeof obj.payload === 'string') {
+      try {
+        const parsed = JSON.parse(obj.payload) as Record<string, unknown>
+        if (typeof parsed.kind === 'string') return 'atlas'
+        if (typeof parsed.step === 'string') return 'composer'
+      } catch { /* not valid JSON string */ }
+    }
+    // Handle object payload
+    if (typeof obj.payload === 'object') {
+      const payload = obj.payload as Record<string, unknown>
+      if (typeof payload.kind === 'string') return 'atlas'
+      if (typeof payload.step === 'string') return 'composer'
+    }
   }
 
   // QuantMage format: has incantation field with incantation_type
@@ -2035,6 +2182,63 @@ const createQuantMageIdGenerator = () => {
   }
 }
 
+// FRD-021: Detect and parse QuantMage subspell references
+// Subspells appear as ticker_symbol values like 'Subspell "From"', 'Subspell "Enter"', etc.
+const isSubspellReference = (tickerSymbol: string | undefined): boolean => {
+  return typeof tickerSymbol === 'string' && tickerSymbol.startsWith('Subspell "')
+}
+
+// Parse subspell reference into Atlas branch format
+// 'Subspell "From"' -> 'branch:from', 'Subspell "Enter"' -> 'branch:enter', etc.
+const parseSubspellReference = (tickerSymbol: string): string => {
+  const match = tickerSymbol.match(/^Subspell "(\w+)"$/)
+  if (match) {
+    return `branch:${match[1].toLowerCase()}`
+  }
+  return tickerSymbol // Return as-is if doesn't match pattern
+}
+
+// FRD-021: Check if a string is a branch reference (e.g., 'branch:from')
+const isBranchReference = (value: string | undefined): boolean => {
+  return typeof value === 'string' && value.startsWith('branch:')
+}
+
+// FRD-021: Recursively scan a tree for branch references
+// Returns array of branch refs found (e.g., ['branch:from', 'branch:then'])
+const findBranchReferences = (node: FlowNode): string[] => {
+  const refs: string[] = []
+
+  // Check scaling node indicatorTicker
+  if (node.kind === 'scaling' && isBranchReference(node.scaleTicker)) {
+    refs.push(node.scaleTicker!)
+  }
+
+  // Check conditions for branch references in tickers
+  if (node.conditions) {
+    for (const cond of node.conditions) {
+      if (isBranchReference(cond.ticker)) {
+        refs.push(cond.ticker)
+      }
+      if (cond.rightTicker && isBranchReference(cond.rightTicker)) {
+        refs.push(cond.rightTicker)
+      }
+    }
+  }
+
+  // Recursively check children
+  for (const slotChildren of Object.values(node.children)) {
+    if (Array.isArray(slotChildren)) {
+      for (const child of slotChildren) {
+        if (child) {
+          refs.push(...findBranchReferences(child))
+        }
+      }
+    }
+  }
+
+  return refs
+}
+
 // Parse a QuantMage condition into Atlas ConditionLine(s)
 const parseQuantMageCondition = (
   condition: Record<string, unknown>,
@@ -2049,12 +2253,18 @@ const parseQuantMageCondition = (
     const greaterThan = condition.greater_than as boolean
     const forDays = (condition.for_days as number) || 1
 
+    // FRD-021: Handle subspell references in ticker fields
+    const lhTicker = condition.lh_ticker_symbol as string | undefined
+    const parsedLhTicker = isSubspellReference(lhTicker)
+      ? parseSubspellReference(lhTicker!)
+      : (lhTicker || 'SPY')
+
     const cond: ConditionLine = {
       id: idGen.condId(),
       type: 'if',
       metric: lhIndicator ? mapQuantMageIndicator(lhIndicator.type) : 'Relative Strength Index',
       window: lhIndicator?.window || 14,
-      ticker: (condition.lh_ticker_symbol as PositionChoice) || 'SPY',
+      ticker: parsedLhTicker as PositionChoice,
       comparator: greaterThan ? 'gt' : 'lt',
       threshold: 0,
       expanded: false,
@@ -2070,7 +2280,11 @@ const parseQuantMageCondition = (
       cond.expanded = true
       cond.rightMetric = rhIndicator ? mapQuantMageIndicator(rhIndicator.type) : 'Relative Strength Index'
       cond.rightWindow = rhIndicator?.window || 14
-      cond.rightTicker = (condition.rh_ticker_symbol as PositionChoice) || 'SPY'
+      // FRD-021: Handle subspell references in right ticker field
+      const rhTicker = condition.rh_ticker_symbol as string | undefined
+      cond.rightTicker = (isSubspellReference(rhTicker)
+        ? parseSubspellReference(rhTicker!)
+        : (rhTicker || 'SPY')) as PositionChoice
     }
 
     return [cond]
@@ -2277,11 +2491,16 @@ const parseQuantMageIncantation = (
   // Mixed -> Scaling
   if (incType === 'Mixed') {
     const indicator = node.indicator as { type: string; window: number } | undefined
-    const tickerSymbol = (node.ticker_symbol as string) || 'SPY'
+    const rawTickerSymbol = (node.ticker_symbol as string) || 'SPY'
     const fromValue = (node.from_value as number) || 0
     const toValue = (node.to_value as number) || 100
     const fromInc = node.from_incantation as Record<string, unknown> | undefined
     const toInc = node.to_incantation as Record<string, unknown> | undefined
+
+    // FRD-021: Handle subspell references (e.g., 'Subspell "From"' -> 'branch:from')
+    const tickerSymbol = isSubspellReference(rawTickerSymbol)
+      ? parseSubspellReference(rawTickerSymbol)
+      : rawTickerSymbol
 
     const thenBranch = fromInc ? parseQuantMageIncantation(fromInc, idGen) : null
     const elseBranch = toInc ? parseQuantMageIncantation(toInc, idGen) : null
@@ -2905,6 +3124,10 @@ type SanityReportFragility = {
   profitConcentration: { level: string; top5DaysPct: number; top10DaysPct: number; detail: string }
   smoothnessScore: { level: string; actualMaxDD: number; shuffledP50: number; ratio: number; detail: string }
   thinningFragility: { level: string; originalCagr: number; medianThinnedCagr: number; cagrDrop: number; detail: string }
+  backtestLength?: { level: string; years: number; tradingDays: number; detail: string }
+  turnoverRisk?: { level: string; avgTurnover: number; detail: string }
+  concentrationRisk?: { level: string; avgHoldings: number; detail: string }
+  drawdownRecovery?: { level: string; recoveryDays: number; recoveryYears: number; detail: string }
 }
 type SanityReport = {
   original: { cagr: number; maxDD: number; tradingDays: number }
@@ -4482,9 +4705,10 @@ function AdminPanel({
   const [tiingoKeySaving, setTiingoKeySaving] = useState(false)
 
   // Sync Schedule state (for simplified admin panel)
+  type SyncInfo = { date: string; status: string; syncedCount?: number; tickerCount?: number; timestamp?: string; source?: string } | null
   const [syncSchedule, setSyncSchedule] = useState<{
     config: { enabled: boolean; updateTime: string; timezone: string; batchSize?: number; sleepSeconds?: number; tiingoSleepSeconds?: number }
-    lastSync: { date: string; status: string; syncedCount?: number; tickerCount?: number; timestamp?: string } | null
+    lastSync: { yfinance: SyncInfo; tiingo: SyncInfo } | SyncInfo
     status: { isRunning: boolean; schedulerActive: boolean; currentJob?: { pid: number | null; syncedCount: number; tickerCount: number; startedAt: number; phase?: string; source?: string } }
   } | null>(null)
   const [syncKilling, setSyncKilling] = useState(false)
@@ -5523,18 +5747,54 @@ function AdminPanel({
               </div>
             </div>
 
-            {/* Last Updated Card */}
+            {/* Last Updated Cards - yFinance and Tiingo */}
             <div className="p-4 rounded-lg bg-muted">
-              <div className="text-xs text-muted-foreground uppercase tracking-wide mb-1">Last Sync</div>
-              <div className="text-lg font-bold">
-                {syncSchedule?.lastSync?.date ?? registryStats?.lastSync ?? 'Never'}
-              </div>
-              <div className="text-xs text-muted-foreground mt-1">
-                {syncSchedule?.lastSync?.status === 'success' && syncSchedule?.lastSync?.syncedCount != null
-                  ? `${syncSchedule.lastSync.syncedCount.toLocaleString()} tickers updated`
-                  : syncSchedule?.lastSync?.status === 'error'
-                  ? 'Last sync failed'
-                  : 'No recent sync'}
+              <div className="text-xs text-muted-foreground uppercase tracking-wide mb-2">Last Sync</div>
+              <div className="grid grid-cols-2 gap-3">
+                {/* yFinance */}
+                <div>
+                  <div className="text-[10px] text-muted-foreground uppercase tracking-wide">yFinance</div>
+                  <div className="text-sm font-bold">
+                    {(syncSchedule?.lastSync && 'yfinance' in syncSchedule.lastSync
+                      ? syncSchedule.lastSync.yfinance?.date
+                      : (syncSchedule?.lastSync as SyncInfo)?.date) ?? 'Never'}
+                  </div>
+                  <div className="text-[10px] text-muted-foreground">
+                    {(() => {
+                      const info = syncSchedule?.lastSync && 'yfinance' in syncSchedule.lastSync
+                        ? syncSchedule.lastSync.yfinance
+                        : (syncSchedule?.lastSync as SyncInfo)
+                      if (info?.status === 'success' && info?.syncedCount != null) {
+                        return `${info.syncedCount.toLocaleString()} updated`
+                      }
+                      if (info?.status === 'error') return 'Failed'
+                      if (info?.status === 'skipped') return 'Skipped'
+                      return 'No data'
+                    })()}
+                  </div>
+                </div>
+                {/* Tiingo */}
+                <div>
+                  <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Tiingo</div>
+                  <div className="text-sm font-bold">
+                    {(syncSchedule?.lastSync && 'tiingo' in syncSchedule.lastSync
+                      ? syncSchedule.lastSync.tiingo?.date
+                      : null) ?? 'Never'}
+                  </div>
+                  <div className="text-[10px] text-muted-foreground">
+                    {(() => {
+                      const info = syncSchedule?.lastSync && 'tiingo' in syncSchedule.lastSync
+                        ? syncSchedule.lastSync.tiingo
+                        : null
+                      if (info?.status === 'success' && info?.syncedCount != null) {
+                        return `${info.syncedCount.toLocaleString()} updated`
+                      }
+                      if (info?.status === 'error') return 'Failed'
+                      if (info?.status === 'skipped') return 'Skipped'
+                      return 'No data'
+                    })()}
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -8453,7 +8713,7 @@ type CardProps = {
   enabledOverlays?: Set<string>
   onToggleOverlay?: (key: string) => void
   // Ticker search modal
-  openTickerModal?: (onSelect: (ticker: string) => void, restrictTo?: string[]) => void
+  openTickerModal?: (onSelect: (ticker: string) => void, restrictTo?: string[], modes?: TickerModalMode[], nodeKind?: BlockKind) => void
 }
 
 // Check if all descendants of a node are collapsed
@@ -8954,6 +9214,7 @@ const NodeCard = ({
     total: number,
     itemId?: string,
     allowDeleteFirst?: boolean,
+    ownerKind?: BlockKind,
   ) => {
     const prefix = cond.type === 'and' ? 'And if the ' : cond.type === 'or' ? 'Or if the ' : 'If the '
     const isSingleLineItem = total === 1
@@ -8979,8 +9240,11 @@ const NodeCard = ({
           />
           {' of '}
           <button
-            className="h-8 px-2 mx-1 border border-border rounded bg-card text-sm font-mono hover:bg-muted/50"
-            onClick={() => openTickerModal?.((ticker) => onUpdateCondition(ownerId, cond.id, { ticker: ticker as PositionChoice }, itemId))}
+            className={cn(
+              'h-8 px-2 mx-1 border border-border rounded bg-card text-sm font-mono hover:bg-muted/50',
+              cond.ticker?.includes('/') && 'text-amber-400'
+            )}
+            onClick={() => openTickerModal?.((ticker) => onUpdateCondition(ownerId, cond.id, { ticker: ticker as PositionChoice }, itemId), undefined, ['tickers', 'ratios', 'branches'], ownerKind)}
           >
             {cond.ticker}
           </button>{' '}
@@ -9025,8 +9289,11 @@ const NodeCard = ({
               />{' '}
               of{' '}
               <button
-                className="h-8 px-2 mx-1 border border-border rounded bg-card text-sm font-mono hover:bg-muted/50"
-                onClick={() => openTickerModal?.((ticker) => onUpdateCondition(ownerId, cond.id, { rightTicker: ticker as PositionChoice }, itemId))}
+                className={cn(
+                  'h-8 px-2 mx-1 border border-border rounded bg-card text-sm font-mono hover:bg-muted/50',
+                  cond.rightTicker?.includes('/') && 'text-amber-400'
+                )}
+                onClick={() => openTickerModal?.((ticker) => onUpdateCondition(ownerId, cond.id, { rightTicker: ticker as PositionChoice }, itemId), undefined, ['tickers', 'ratios', 'branches'], ownerKind)}
               >
                 {cond.rightTicker ?? 'SPY'}
               </button>{' '}
@@ -9303,8 +9570,11 @@ const NodeCard = ({
                         />
                         {' of '}
                         <button
-                          className="h-8 px-2 mx-1 border border-border rounded bg-card text-sm font-mono hover:bg-muted/50"
-                          onClick={() => openTickerModal?.((ticker) => onUpdateCondition(node.id, cond.id, { ticker: ticker as PositionChoice }))}
+                          className={cn(
+                            'h-8 px-2 mx-1 border border-border rounded bg-card text-sm font-mono hover:bg-muted/50',
+                            cond.ticker?.includes('/') && 'text-amber-400'
+                          )}
+                          onClick={() => openTickerModal?.((ticker) => onUpdateCondition(node.id, cond.id, { ticker: ticker as PositionChoice }), undefined, ['tickers', 'ratios', 'branches'], node.kind)}
                         >
                           {cond.ticker}
                         </button>{' '}
@@ -9351,8 +9621,11 @@ const NodeCard = ({
                             />{' '}
                             of{' '}
                             <button
-                              className="h-8 px-2 mx-1 border border-border rounded bg-card text-sm font-mono hover:bg-muted/50"
-                              onClick={() => openTickerModal?.((ticker) => onUpdateCondition(node.id, cond.id, { rightTicker: ticker as PositionChoice }))}
+                              className={cn(
+                                'h-8 px-2 mx-1 border border-border rounded bg-card text-sm font-mono hover:bg-muted/50',
+                                cond.rightTicker?.includes('/') && 'text-amber-400'
+                              )}
+                              onClick={() => openTickerModal?.((ticker) => onUpdateCondition(node.id, cond.id, { rightTicker: ticker as PositionChoice }), undefined, ['tickers', 'ratios', 'branches'], node.kind)}
                             >
                               {cond.rightTicker ?? 'SPY'}
                             </button>{' '}
@@ -9558,7 +9831,7 @@ const NodeCard = ({
                           <div className="indent with-line" style={{ width: 2 * 14 }} />
                           <div className="condition-bubble">
                             {item.conditions.map((cond, condIdx) =>
-                              renderConditionRow(node.id, cond, condIdx, item.conditions.length, item.id, idx > 0),
+                              renderConditionRow(node.id, cond, condIdx, item.conditions.length, item.id, idx > 0, node.kind),
                             )}
                           </div>
                         </div>
@@ -9660,7 +9933,7 @@ const NodeCard = ({
                       <div className="indent with-line" style={{ width: 2 * 14 }} />
                       <div className="condition-bubble">
                         {item.conditions.map((cond, condIdx) =>
-                          renderConditionRow(node.id, cond, condIdx, item.conditions.length, item.id, idx > 0),
+                          renderConditionRow(node.id, cond, condIdx, item.conditions.length, item.id, idx > 0, node.kind),
                         )}
                       </div>
                     </div>
@@ -9839,8 +10112,11 @@ const NodeCard = ({
                           />
                           {' of '}
                           <button
-                            className="h-8 px-2 mx-1 border border-border rounded bg-card text-sm font-mono hover:bg-muted/50"
-                            onClick={() => openTickerModal?.((ticker) => onUpdateEntryCondition(node.id, cond.id, { ticker: ticker as PositionChoice }))}
+                            className={cn(
+                              'h-8 px-2 mx-1 border border-border rounded bg-card text-sm font-mono hover:bg-muted/50',
+                              cond.ticker?.includes('/') && 'text-amber-400'
+                            )}
+                            onClick={() => openTickerModal?.((ticker) => onUpdateEntryCondition(node.id, cond.id, { ticker: ticker as PositionChoice }), undefined, ['tickers', 'ratios', 'branches'], node.kind)}
                           >
                             {cond.ticker}
                           </button>{' '}
@@ -9882,8 +10158,11 @@ const NodeCard = ({
                               />{' '}
                               of{' '}
                               <button
-                                className="h-8 px-2 mx-1 border border-border rounded bg-card text-sm font-mono hover:bg-muted/50"
-                                onClick={() => openTickerModal?.((ticker) => onUpdateEntryCondition(node.id, cond.id, { rightTicker: ticker as PositionChoice }))}
+                                className={cn(
+                                  'h-8 px-2 mx-1 border border-border rounded bg-card text-sm font-mono hover:bg-muted/50',
+                                  cond.rightTicker?.includes('/') && 'text-amber-400'
+                                )}
+                                onClick={() => openTickerModal?.((ticker) => onUpdateEntryCondition(node.id, cond.id, { rightTicker: ticker as PositionChoice }), undefined, ['tickers', 'ratios', 'branches'], node.kind)}
                               >
                                 {cond.rightTicker ?? 'SPY'}
                               </button>{' '}
@@ -10003,8 +10282,11 @@ const NodeCard = ({
                           />
                           {' of '}
                           <button
-                            className="h-8 px-2 mx-1 border border-border rounded bg-card text-sm font-mono hover:bg-muted/50"
-                            onClick={() => openTickerModal?.((ticker) => onUpdateExitCondition(node.id, cond.id, { ticker: ticker as PositionChoice }))}
+                            className={cn(
+                              'h-8 px-2 mx-1 border border-border rounded bg-card text-sm font-mono hover:bg-muted/50',
+                              cond.ticker?.includes('/') && 'text-amber-400'
+                            )}
+                            onClick={() => openTickerModal?.((ticker) => onUpdateExitCondition(node.id, cond.id, { ticker: ticker as PositionChoice }), undefined, ['tickers', 'ratios', 'branches'], node.kind)}
                           >
                             {cond.ticker}
                           </button>{' '}
@@ -10046,8 +10328,11 @@ const NodeCard = ({
                               />{' '}
                               of{' '}
                               <button
-                                className="h-8 px-2 mx-1 border border-border rounded bg-card text-sm font-mono hover:bg-muted/50"
-                                onClick={() => openTickerModal?.((ticker) => onUpdateExitCondition(node.id, cond.id, { rightTicker: ticker as PositionChoice }))}
+                                className={cn(
+                                  'h-8 px-2 mx-1 border border-border rounded bg-card text-sm font-mono hover:bg-muted/50',
+                                  cond.rightTicker?.includes('/') && 'text-amber-400'
+                                )}
+                                onClick={() => openTickerModal?.((ticker) => onUpdateExitCondition(node.id, cond.id, { rightTicker: ticker as PositionChoice }), undefined, ['tickers', 'ratios', 'branches'], node.kind)}
                               >
                                 {cond.rightTicker ?? 'SPY'}
                               </button>{' '}
@@ -10178,12 +10463,31 @@ const NodeCard = ({
                             className="h-7 px-1.5 mx-1"
                           />
                           {' of '}
-                          <button
-                            className="h-7 px-2 mx-1 border border-border rounded bg-card text-sm font-mono hover:bg-muted/50"
-                            onClick={() => openTickerModal?.((ticker) => onUpdateScaling(node.id, { scaleTicker: ticker }))}
-                          >
-                            {node.scaleTicker ?? 'SPY'}
-                          </button>
+                          {(() => {
+                            const scaleTicker = node.scaleTicker ?? 'SPY'
+                            const isBranch = scaleTicker.startsWith('branch:')
+                            const isRatio = scaleTicker.includes('/')
+                            // Format display based on type
+                            const displayValue = isBranch
+                              ? scaleTicker.replace('branch:', '').replace(/^(\w)/, (m) => m.toUpperCase()) + ' Branch'
+                              : scaleTicker
+                            const displayClass = isBranch ? 'text-purple-400' : isRatio ? 'text-amber-400' : ''
+                            return (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className={cn('h-7 px-2 mx-1 font-mono', displayClass)}
+                                onClick={() => openTickerModal?.(
+                                  (ticker) => onUpdateScaling(node.id, { scaleTicker: ticker }),
+                                  undefined,
+                                  ['tickers', 'ratios', 'branches'],
+                                  node.kind
+                                )}
+                              >
+                                {displayValue}
+                              </Button>
+                            )
+                          })()}
                         </Badge>
                         {' '}From below{' '}
                         <Input
@@ -10650,7 +10954,8 @@ const downloadAllocationsCsv = (result: BacktestResult) => {
     const flat: Array<string | number> = [row.date]
     for (let i = 0; i < maxPairs; i++) {
       const e = sorted[i]
-      flat.push(e ? e.ticker : '', e ? e.weight : '')
+      // Display weights as percentages (e.g., 65.83% instead of 0.6583)
+      flat.push(e ? e.ticker : '', e ? `${(e.weight * 100).toFixed(2)}%` : '')
     }
     lines.push(flat.map(csvEscape).join(','))
   }
@@ -11145,10 +11450,11 @@ const collectIndicatorTickers = (root: FlowNode, callMap: Map<string, CallChain>
 
   const collectFromCondition = (cond: ConditionLine) => {
     const ticker = normalizeChoice(cond.ticker)
-    if (ticker !== 'Empty') addTicker(ticker)
+    // FRD-021: Skip branch references - they're computed from child equity, not external tickers
+    if (ticker !== 'Empty' && !ticker.startsWith('branch:')) addTicker(ticker)
     if (cond.expanded) {
       const rt = normalizeChoice(cond.rightTicker ?? '')
-      if (rt !== 'Empty') addTicker(rt)
+      if (rt !== 'Empty' && !rt.startsWith('branch:')) addTicker(rt)
     }
   }
 
@@ -11185,7 +11491,8 @@ const collectIndicatorTickers = (root: FlowNode, callMap: Map<string, CallChain>
     // Scaling nodes have a scale ticker
     if (node.kind === 'scaling') {
       const scaleTicker = normalizeChoice(node.scaleTicker ?? 'SPY')
-      if (scaleTicker !== 'Empty') addTicker(scaleTicker)
+      // FRD-021: Skip branch references - they're computed from child equity, not external tickers
+      if (scaleTicker !== 'Empty' && !scaleTicker.startsWith('branch:')) addTicker(scaleTicker)
     }
 
     // Function nodes sort by a metric on their children (the children are usually positions)
@@ -13111,7 +13418,7 @@ type BacktesterPanelProps = {
   canUndo?: boolean
   canRedo?: boolean
   // Ticker modal
-  openTickerModal?: (onSelect: (ticker: string) => void) => void
+  openTickerModal?: (onSelect: (ticker: string) => void, restrictTo?: string[], modes?: TickerModalMode[], nodeKind?: BlockKind) => void
 }
 
 function BacktesterPanel({
@@ -13927,15 +14234,15 @@ function BacktesterPanel({
             {(() => {
               const sanityState = modelSanityReport ?? { status: 'idle' as const }
               const getLevelColor = (level: string) => {
-                if (level === 'Low') return 'text-success'
-                if (level === 'Medium') return 'text-warning'
-                if (level === 'High' || level === 'Fragile') return 'text-danger'
+                if (level === 'Low' || level === 'Good' || level === 'Robust' || level === 'Normal') return 'text-success'
+                if (level === 'Medium' || level === 'Moderate' || level === 'Caution' || level === 'Slightly Suspicious') return 'text-warning'
+                if (level === 'High' || level === 'High Risk' || level === 'Fragile' || level === 'Suspicious') return 'text-danger'
                 return 'text-muted'
               }
               const getLevelIcon = (level: string) => {
-                if (level === 'Low') return '🟢'
-                if (level === 'Medium') return '🟡'
-                if (level === 'High' || level === 'Fragile') return '🔴'
+                if (level === 'Low' || level === 'Good' || level === 'Robust' || level === 'Normal') return '🟢'
+                if (level === 'Medium' || level === 'Moderate' || level === 'Caution' || level === 'Slightly Suspicious') return '🟡'
+                if (level === 'High' || level === 'High Risk' || level === 'Fragile' || level === 'Suspicious') return '🔴'
                 return '⚪'
               }
               const formatPctVal = (v: number) => Number.isFinite(v) ? `${(v * 100).toFixed(1)}%` : '--'
@@ -13997,20 +14304,24 @@ function BacktesterPanel({
                             )}
                           </div>
 
-                          {/* Fragility Table (Condensed) */}
+                          {/* Fragility Table (2x4 Grid) */}
                           <div>
                             <div className="text-xs font-bold mb-1.5 text-center">Fragility Fingerprints</div>
-                            <div className="space-y-1">
+                            <div className="grid grid-cols-2 gap-x-3 gap-y-1">
                               {[
+                                { name: 'History', data: sanityState.report.fragility.backtestLength, tooltip: 'Length of backtest data. <5yr = high risk, 5-15yr = caution, >15yr = good.' },
+                                { name: 'Turnover', data: sanityState.report.fragility.turnoverRisk, tooltip: 'Average daily turnover. >50% = high cost, 20-50% = moderate, <20% = reasonable.' },
+                                { name: 'Holdings', data: sanityState.report.fragility.concentrationRisk, tooltip: 'Average positions held. <3 = concentrated, 3-5 = moderate, >5 = diversified.' },
+                                { name: 'Recovery', data: sanityState.report.fragility.drawdownRecovery, tooltip: 'Time to recover from max drawdown. >2yr = high risk, 1-2yr = caution, <1yr = good.' },
                                 { name: 'Sub-Period', data: sanityState.report.fragility.subPeriodStability, tooltip: 'Consistency of returns across different time periods. Low = stable across all periods.' },
                                 { name: 'Profit Conc.', data: sanityState.report.fragility.profitConcentration, tooltip: 'How concentrated profits are in a few big days. Low = profits spread evenly.' },
                                 { name: 'Smoothness', data: sanityState.report.fragility.smoothnessScore, tooltip: 'How smooth the equity curve is. Normal = acceptable volatility in growth.' },
                                 { name: 'Thinning', data: sanityState.report.fragility.thinningFragility, tooltip: 'Sensitivity to removing random trades. Robust = performance holds when trades removed.' },
-                              ].map(({ name, data, tooltip }) => (
-                                <div key={name} className="flex items-center gap-2 text-xs" title={tooltip}>
-                                  <span className="w-20 truncate text-muted cursor-help">{name}</span>
-                                  <span className={cn("w-16", getLevelColor(data.level))}>
-                                    {getLevelIcon(data.level)} {data.level}
+                              ].filter(({ data }) => data != null).map(({ name, data, tooltip }) => (
+                                <div key={name} className="flex items-center gap-1.5 text-xs" title={tooltip}>
+                                  <span className="w-16 truncate text-muted cursor-help">{name}</span>
+                                  <span className={cn("flex-1 truncate", getLevelColor(data!.level))}>
+                                    {getLevelIcon(data!.level)} {data!.level}
                                   </span>
                                 </div>
                               ))}
@@ -15056,6 +15367,8 @@ function App() {
   const [tickerModalOpen, setTickerModalOpen] = useState(false)
   const [tickerModalCallback, setTickerModalCallback] = useState<((ticker: string) => void) | null>(null)
   const [tickerModalRestriction, setTickerModalRestriction] = useState<string[] | undefined>(undefined)
+  const [tickerModalModes, setTickerModalModes] = useState<TickerModalMode[]>(['tickers'])
+  const [tickerModalNodeKind, setTickerModalNodeKind] = useState<BlockKind | undefined>(undefined)
   const [displayNameInput, setDisplayNameInput] = useState<string>('')
   const [displayNameSaving, setDisplayNameSaving] = useState(false)
   const [displayNameError, setDisplayNameError] = useState<string | null>(null)
@@ -16462,9 +16775,11 @@ function App() {
   }, [userId])
 
   // Open ticker search modal
-  const openTickerModal = useCallback((onSelect: (ticker: string) => void, restrictTo?: string[]) => {
+  const openTickerModal = useCallback((onSelect: (ticker: string) => void, restrictTo?: string[], modes?: TickerModalMode[], nodeKind?: BlockKind) => {
     setTickerModalCallback(() => onSelect)
     setTickerModalRestriction(restrictTo)
+    setTickerModalModes(modes || ['tickers'])
+    setTickerModalNodeKind(nodeKind)
     setTickerModalOpen(true)
   }, [])
 
@@ -17395,6 +17710,16 @@ function App() {
             if (isFlowNodeLike(v)) return v
             if (v && typeof v === 'object') {
               const o = v as { payload?: unknown; root?: unknown; name?: unknown }
+              // Handle stringified payload (from database exports)
+              if (typeof o.payload === 'string') {
+                try {
+                  const parsedPayload = JSON.parse(o.payload) as unknown
+                  if (isFlowNodeLike(parsedPayload)) {
+                    const name = typeof o.name === 'string' ? o.name.trim() : ''
+                    return name ? { ...parsedPayload, title: name } : parsedPayload
+                  }
+                } catch { /* not valid JSON */ }
+              }
               if (isFlowNodeLike(o.payload)) {
                 const name = typeof o.name === 'string' ? o.name.trim() : ''
                 return name ? { ...o.payload, title: name } : o.payload
@@ -17441,6 +17766,13 @@ function App() {
         setCopiedNodeId(null)
         setIsImporting(false)
         console.log(`[Import] Successfully imported ${format} format as: ${ensured.title}`)
+
+        // FRD-021: Log branch references (subspells) for debugging
+        const branchRefs = findBranchReferences(ensured)
+        if (branchRefs.length > 0) {
+          const uniqueRefs = [...new Set(branchRefs)]
+          console.log(`[Import] Branch references found:`, uniqueRefs)
+        }
       } catch (err) {
         setIsImporting(false)
         console.error('[Import] Error:', err)
@@ -18021,6 +18353,8 @@ function App() {
         tickerOptions={tickerOptions}
         tickerMetadata={tickerMetadata}
         restrictToTickers={tickerModalRestriction}
+        allowedModes={tickerModalModes}
+        nodeKind={tickerModalNodeKind}
       />
       <main className="flex-1 overflow-hidden min-h-0">
         {tab === 'Model' ? (
@@ -20088,15 +20422,15 @@ function App() {
                                 {(() => {
                                   const sanityState = sanityReports[b.id] ?? { status: 'idle' as const }
                                   const getLevelColor = (level: string) => {
-                                    if (level === 'Low') return 'text-success'
-                                    if (level === 'Medium') return 'text-warning'
-                                    if (level === 'High' || level === 'Fragile') return 'text-danger'
+                                    if (level === 'Low' || level === 'Good' || level === 'Robust' || level === 'Normal') return 'text-success'
+                                    if (level === 'Medium' || level === 'Moderate' || level === 'Caution' || level === 'Slightly Suspicious') return 'text-warning'
+                                    if (level === 'High' || level === 'High Risk' || level === 'Fragile' || level === 'Suspicious') return 'text-danger'
                                     return 'text-muted'
                                   }
                                   const getLevelIcon = (level: string) => {
-                                    if (level === 'Low') return '🟢'
-                                    if (level === 'Medium') return '🟡'
-                                    if (level === 'High' || level === 'Fragile') return '🔴'
+                                    if (level === 'Low' || level === 'Good' || level === 'Robust' || level === 'Normal') return '🟢'
+                                    if (level === 'Medium' || level === 'Moderate' || level === 'Caution' || level === 'Slightly Suspicious') return '🟡'
+                                    if (level === 'High' || level === 'High Risk' || level === 'Fragile' || level === 'Suspicious') return '🔴'
                                     return '⚪'
                                   }
                                   const formatPctVal = (v: number) => Number.isFinite(v) ? `${(v * 100).toFixed(1)}%` : '--'
@@ -20159,20 +20493,24 @@ function App() {
                                                 )}
                                               </div>
 
-                                              {/* Fragility Table (Condensed) */}
+                                              {/* Fragility Table (2x4 Grid) */}
                                               <div>
                                                 <div className="text-xs font-bold mb-1.5 text-center">Fragility Fingerprints</div>
-                                                <div className="space-y-1">
+                                                <div className="grid grid-cols-2 gap-x-3 gap-y-1">
                                                   {[
+                                                    { name: 'History', data: sanityState.report.fragility.backtestLength, tooltip: 'Length of backtest data. <5yr = high risk, 5-15yr = caution, >15yr = good.' },
+                                                    { name: 'Turnover', data: sanityState.report.fragility.turnoverRisk, tooltip: 'Average daily turnover. >50% = high cost, 20-50% = moderate, <20% = reasonable.' },
+                                                    { name: 'Holdings', data: sanityState.report.fragility.concentrationRisk, tooltip: 'Average positions held. <3 = concentrated, 3-5 = moderate, >5 = diversified.' },
+                                                    { name: 'Recovery', data: sanityState.report.fragility.drawdownRecovery, tooltip: 'Time to recover from max drawdown. >2yr = high risk, 1-2yr = caution, <1yr = good.' },
                                                     { name: 'Sub-Period', data: sanityState.report.fragility.subPeriodStability, tooltip: 'Consistency of returns across different time periods. Low = stable across all periods.' },
                                                     { name: 'Profit Conc.', data: sanityState.report.fragility.profitConcentration, tooltip: 'How concentrated profits are in a few big days. Low = profits spread evenly.' },
                                                     { name: 'Smoothness', data: sanityState.report.fragility.smoothnessScore, tooltip: 'How smooth the equity curve is. Normal = acceptable volatility in growth.' },
                                                     { name: 'Thinning', data: sanityState.report.fragility.thinningFragility, tooltip: 'Sensitivity to removing random trades. Robust = performance holds when trades removed.' },
-                                                  ].map(({ name, data, tooltip }) => (
-                                                    <div key={name} className="flex items-center gap-2 text-xs" title={tooltip}>
-                                                      <span className="w-20 truncate text-muted cursor-help">{name}</span>
-                                                      <span className={cn("w-16", getLevelColor(data.level))}>
-                                                        {getLevelIcon(data.level)} {data.level}
+                                                  ].filter(({ data }) => data != null).map(({ name, data, tooltip }) => (
+                                                    <div key={name} className="flex items-center gap-1.5 text-xs" title={tooltip}>
+                                                      <span className="w-16 truncate text-muted cursor-help">{name}</span>
+                                                      <span className={cn("flex-1 truncate", getLevelColor(data!.level))}>
+                                                        {getLevelIcon(data!.level)} {data!.level}
                                                       </span>
                                                     </div>
                                                   ))}
@@ -22504,15 +22842,15 @@ function App() {
                                       {(() => {
                                         const sanityState = sanityReports[b.id] ?? { status: 'idle' as const }
                                         const getLevelColor = (level: string) => {
-                                          if (level === 'Low') return 'text-success'
-                                          if (level === 'Medium') return 'text-warning'
-                                          if (level === 'High' || level === 'Fragile') return 'text-danger'
+                                          if (level === 'Low' || level === 'Good' || level === 'Robust' || level === 'Normal') return 'text-success'
+                                          if (level === 'Medium' || level === 'Moderate' || level === 'Caution' || level === 'Slightly Suspicious') return 'text-warning'
+                                          if (level === 'High' || level === 'High Risk' || level === 'Fragile' || level === 'Suspicious') return 'text-danger'
                                           return 'text-muted'
                                         }
                                         const getLevelIcon = (level: string) => {
-                                          if (level === 'Low') return '🟢'
-                                          if (level === 'Medium') return '🟡'
-                                          if (level === 'High' || level === 'Fragile') return '🔴'
+                                          if (level === 'Low' || level === 'Good' || level === 'Robust' || level === 'Normal') return '🟢'
+                                          if (level === 'Medium' || level === 'Moderate' || level === 'Caution' || level === 'Slightly Suspicious') return '🟡'
+                                          if (level === 'High' || level === 'High Risk' || level === 'Fragile' || level === 'Suspicious') return '🔴'
                                           return '⚪'
                                         }
                                         const formatPctVal = (v: number) => Number.isFinite(v) ? `${(v * 100).toFixed(1)}%` : '--'
@@ -22575,20 +22913,24 @@ function App() {
                                                       )}
                                                     </div>
 
-                                                    {/* Fragility Table (Condensed) */}
+                                                    {/* Fragility Table (2x4 Grid) */}
                                                     <div>
                                                       <div className="text-xs font-bold mb-1.5 text-center">Fragility Fingerprints</div>
-                                                      <div className="space-y-1">
+                                                      <div className="grid grid-cols-2 gap-x-3 gap-y-1">
                                                         {[
+                                                          { name: 'History', data: sanityState.report.fragility.backtestLength, tooltip: 'Length of backtest data. <5yr = high risk, 5-15yr = caution, >15yr = good.' },
+                                                          { name: 'Turnover', data: sanityState.report.fragility.turnoverRisk, tooltip: 'Average daily turnover. >50% = high cost, 20-50% = moderate, <20% = reasonable.' },
+                                                          { name: 'Holdings', data: sanityState.report.fragility.concentrationRisk, tooltip: 'Average positions held. <3 = concentrated, 3-5 = moderate, >5 = diversified.' },
+                                                          { name: 'Recovery', data: sanityState.report.fragility.drawdownRecovery, tooltip: 'Time to recover from max drawdown. >2yr = high risk, 1-2yr = caution, <1yr = good.' },
                                                           { name: 'Sub-Period', data: sanityState.report.fragility.subPeriodStability, tooltip: 'Consistency of returns across different time periods. Low = stable across all periods.' },
                                                           { name: 'Profit Conc.', data: sanityState.report.fragility.profitConcentration, tooltip: 'How concentrated profits are in a few big days. Low = profits spread evenly.' },
                                                           { name: 'Smoothness', data: sanityState.report.fragility.smoothnessScore, tooltip: 'How smooth the equity curve is. Normal = acceptable volatility in growth.' },
                                                           { name: 'Thinning', data: sanityState.report.fragility.thinningFragility, tooltip: 'Sensitivity to removing random trades. Robust = performance holds when trades removed.' },
-                                                        ].map(({ name, data, tooltip }) => (
-                                                          <div key={name} className="flex items-center gap-2 text-xs" title={tooltip}>
-                                                            <span className="w-20 truncate text-muted cursor-help">{name}</span>
-                                                            <span className={cn("w-16", getLevelColor(data.level))}>
-                                                              {getLevelIcon(data.level)} {data.level}
+                                                        ].filter(({ data }) => data != null).map(({ name, data, tooltip }) => (
+                                                          <div key={name} className="flex items-center gap-1.5 text-xs" title={tooltip}>
+                                                            <span className="w-16 truncate text-muted cursor-help">{name}</span>
+                                                            <span className={cn("flex-1 truncate", getLevelColor(data!.level))}>
+                                                              {getLevelIcon(data!.level)} {data!.level}
                                                             </span>
                                                           </div>
                                                         ))}
