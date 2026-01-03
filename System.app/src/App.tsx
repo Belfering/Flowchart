@@ -16942,9 +16942,36 @@ function App() {
 
   const handleRunBacktest = useCallback(async () => {
     updateActiveBotBacktest({ status: 'running', focusNodeId: null, result: null, errors: [] })
+    // Reset robustness report when starting new backtest
+    setModelSanityReport({ status: 'idle' })
     try {
       const { result } = await runBacktestForNode(current)
       updateActiveBotBacktest({ result, status: 'done' })
+      // Auto-run robustness analysis after successful backtest (fire and forget)
+      const savedBotId = activeBot?.savedBotId
+      setModelSanityReport({ status: 'loading' })
+      const payload = JSON.stringify(ensureSlots(cloneNode(current)))
+      const robustnessUrl = savedBotId
+        ? `${API_BASE}/bots/${savedBotId}/sanity-report`
+        : `${API_BASE}/sanity-report`
+      const robustnessBody = savedBotId
+        ? JSON.stringify({ mode: backtestMode, costBps: backtestCostBps })
+        : JSON.stringify({ payload, mode: backtestMode, costBps: backtestCostBps })
+      fetch(robustnessUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: robustnessBody,
+      }).then(async (res) => {
+        if (res.ok) {
+          const data = await res.json() as { success: boolean; report: SanityReport; cached: boolean }
+          setModelSanityReport({ status: 'done', report: data.report })
+        } else {
+          const errorData = await res.json().catch(() => ({ error: 'Server sanity report failed' }))
+          setModelSanityReport({ status: 'error', error: errorData.error || 'Failed to generate sanity report' })
+        }
+      }).catch((err) => {
+        setModelSanityReport({ status: 'error', error: String((err as Error)?.message || err) })
+      })
     } catch (e) {
       if (isValidationError(e)) {
         updateActiveBotBacktest({ errors: e.errors, status: 'error' })
@@ -16954,7 +16981,7 @@ function App() {
         updateActiveBotBacktest({ errors: [{ nodeId: current.id, field: 'backtest', message: friendly }], status: 'error' })
       }
     }
-  }, [current, runBacktestForNode, updateActiveBotBacktest])
+  }, [current, runBacktestForNode, updateActiveBotBacktest, activeBot?.savedBotId, backtestMode, backtestCostBps])
   const handleNewBot = () => {
     const bot = createBotSession('Algo Name Here')
     setBots((prev) => [...prev, bot])

@@ -27,6 +27,7 @@ const safeIsoDate = (ts) => {
   }
 }
 
+// DuckDB connection pool for concurrent query handling
 const duckDbPromise = new Promise((resolve, reject) => {
   const db = new duckdb.Database(':memory:')
   db.all('SELECT 1', (err) => {
@@ -34,6 +35,23 @@ const duckDbPromise = new Promise((resolve, reject) => {
     else resolve(db)
   })
 })
+
+// Query queue to serialize DuckDB access (prevents concurrency corruption)
+let queryQueue = Promise.resolve()
+
+function runQuery(sql) {
+  return new Promise((resolve, reject) => {
+    queryQueue = queryQueue.then(async () => {
+      const db = await duckDbPromise
+      return new Promise((res, rej) => {
+        db.all(sql, (err, rows) => {
+          if (err) rej(err)
+          else res(rows)
+        })
+      })
+    }).then(resolve).catch(reject)
+  })
+}
 
 // Minimum backtest start date: 1993-01-01 (filters out older, rarely-used data)
 const BACKTEST_START_DATE = new Date(1993, 0, 1)
@@ -69,43 +87,34 @@ async function initTickerCache() {
 
 // Internal function without cache check (used for initial loading)
 async function fetchOhlcSeriesUncached(ticker, limit = 20000) {
-  const db = await duckDbPromise
   const filePath = path.join(PARQUET_DIR, `${ticker}.parquet`)
+  const sql = `
+    SELECT
+      epoch(Date) AS time,
+      Open AS open,
+      High AS high,
+      Low AS low,
+      Close AS close,
+      "Adj Close" AS adjClose,
+      Volume AS volume
+    FROM read_parquet('${filePath.replace(/\\/g, '/')}')
+    WHERE epoch(Date) >= ${BACKTEST_START_EPOCH}
+    ORDER BY Date DESC
+    LIMIT ${limit}
+  `
 
-  return new Promise((resolve, reject) => {
-    const sql = `
-      SELECT
-        epoch(Date) AS time,
-        Open AS open,
-        High AS high,
-        Low AS low,
-        Close AS close,
-        "Adj Close" AS adjClose,
-        Volume AS volume
-      FROM read_parquet('${filePath.replace(/\\/g, '/')}')
-      WHERE epoch(Date) >= ${BACKTEST_START_EPOCH}
-      ORDER BY Date DESC
-      LIMIT ${limit}
-    `
-    db.all(sql, (err, rows) => {
-      if (err) {
-        reject(err)
-        return
-      }
-      const sorted = rows
-        .map(r => ({
-          time: Number(r.time),
-          open: r.open == null ? null : Number(r.open),
-          high: r.high == null ? null : Number(r.high),
-          low: r.low == null ? null : Number(r.low),
-          close: r.close == null ? null : Number(r.close),
-          adjClose: r.adjClose == null ? null : Number(r.adjClose),
-          volume: r.volume == null ? null : Number(r.volume),
-        }))
-        .sort((a, b) => a.time - b.time)
-      resolve(sorted)
-    })
-  })
+  const rows = await runQuery(sql)
+  return rows
+    .map(r => ({
+      time: Number(r.time),
+      open: r.open == null ? null : Number(r.open),
+      high: r.high == null ? null : Number(r.high),
+      low: r.low == null ? null : Number(r.low),
+      close: r.close == null ? null : Number(r.close),
+      adjClose: r.adjClose == null ? null : Number(r.adjClose),
+      volume: r.volume == null ? null : Number(r.volume),
+    }))
+    .sort((a, b) => a.time - b.time)
 }
 
 async function fetchOhlcSeries(ticker, limit = 20000) {
@@ -1103,6 +1112,7 @@ const emptyCache = () => ({
   ppo: new Map(),
   trendClarity: new Map(),
   ultimateSmoother: new Map(),
+  ultSmooth: new Map(),
   // New Moving Averages
   hma: new Map(),
   wma: new Map(),
@@ -1721,15 +1731,15 @@ const metricAt = (ctx, ticker, metric, window, parentNode = null) => {
 // FRD-021: BRANCH EQUITY SIMULATION (Subspell Support)
 // ============================================
 
-// Check if a ticker reference is a branch reference (e.g., 'branch:from')
+// Check if a ticker reference is a branch reference (e.g., 'branch:from' or 'BRANCH:FROM')
 const isBranchRef = (ticker) => {
-  return typeof ticker === 'string' && ticker.startsWith('branch:')
+  return typeof ticker === 'string' && ticker.toUpperCase().startsWith('BRANCH:')
 }
 
-// Parse branch reference to get branch name ('branch:from' -> 'from')
+// Parse branch reference to get branch name ('branch:from' -> 'from', 'BRANCH:FROM' -> 'from')
 const parseBranchRef = (ticker) => {
   if (!isBranchRef(ticker)) return null
-  return ticker.slice(7) // Remove 'branch:' prefix
+  return ticker.slice(7).toLowerCase() // Remove 'branch:' or 'BRANCH:' prefix, normalize to lowercase
 }
 
 // Get the child node for a branch reference from the parent node
@@ -1779,6 +1789,9 @@ function simulateBranchEquity(ctx, branchNode) {
     returns[i] = 0.0
   }
 
+  // Create persistent state for altExit nodes across all days in this simulation
+  const altExitState = {}
+
   // Simulate daily returns
   for (let i = startIndex; i < numDates; i++) {
     const indicatorIndex = ctx.decisionPrice === 'open' ? i - 1 : i
@@ -1793,6 +1806,7 @@ function simulateBranchEquity(ctx, branchNode) {
       decisionPrice: ctx.decisionPrice,
       warnings: [],
       tickerLocations: ctx.tickerLocations,
+      altExitState, // Persist Enter/Exit state across days
       // Note: No branchParentNode - subspells are evaluated independently
     }
 
@@ -2462,15 +2476,30 @@ function collectMaxLookback(node) {
   if (!node) return 0
   let maxLookback = 0
 
+  // Helper to process a conditions array
+  const processConditions = (conditions) => {
+    for (const cond of conditions || []) {
+      const forDaysOffset = Math.max(0, (cond.forDays || 1) - 1)
+      maxLookback = Math.max(maxLookback, getIndicatorLookback(cond.metric, cond.window || 0) + forDaysOffset)
+      if (cond.expanded) {
+        const rightMetric = cond.rightMetric ?? cond.metric
+        const rightWindow = cond.rightWindow ?? cond.window
+        maxLookback = Math.max(maxLookback, getIndicatorLookback(rightMetric, rightWindow || 0) + forDaysOffset)
+      }
+    }
+  }
+
   // Check conditions on indicator/numbered/scaling nodes
-  const conditions = node.conditions || []
-  for (const cond of conditions) {
-    const forDaysOffset = Math.max(0, (cond.forDays || 1) - 1)
-    maxLookback = Math.max(maxLookback, getIndicatorLookback(cond.metric, cond.window || 0) + forDaysOffset)
-    if (cond.expanded) {
-      const rightMetric = cond.rightMetric ?? cond.metric
-      const rightWindow = cond.rightWindow ?? cond.window
-      maxLookback = Math.max(maxLookback, getIndicatorLookback(rightMetric, rightWindow || 0) + forDaysOffset)
+  processConditions(node.conditions)
+
+  // Check entry/exit conditions on altExit nodes
+  processConditions(node.entryConditions)
+  processConditions(node.exitConditions)
+
+  // Check numbered node items
+  if (node.numbered?.items) {
+    for (const item of node.numbered.items) {
+      processConditions(item.conditions)
     }
   }
 
@@ -2581,6 +2610,13 @@ function evaluateNode(ctx, node) {
     const scaleFrom = Number(node.scaleFrom ?? 0)
     const scaleTo = Number(node.scaleTo ?? 100)
 
+    // DEBUG: Log branch reference resolution
+    if (isBranchRef(scaleTicker)) {
+      const branchName = parseBranchRef(scaleTicker)
+      const branchNode = getBranchChildNode(node, branchName)
+      console.log(`[Scaling] Branch ref: ${scaleTicker} -> ${branchName}, branchNode: ${branchNode ? branchNode.kind : 'null'}, children.then: ${node.children?.then?.length || 0}`)
+    }
+
     // FRD-021: Pass the scaling node as parent for branch reference resolution
     const val = metricAt(ctx, scaleTicker, scaleMetric, scaleWindow, node)
 
@@ -2615,6 +2651,47 @@ function evaluateNode(ctx, node) {
     }
 
     return alloc
+  }
+
+  if (node.kind === 'altExit') {
+    // Enter/Exit node: stateful node that tracks whether we're "entered" or "exited"
+    // Entry conditions determine when to enter (go to then branch)
+    // Exit conditions determine when to exit (go to else branch)
+    // State persists across days via ctx.altExitState
+
+    const entryConditions = node.entryConditions || []
+    const exitConditions = node.exitConditions || []
+
+    // Initialize state tracking if not present
+    if (!ctx.altExitState) ctx.altExitState = {}
+    const nodeId = node.id || 'unknown'
+    const isEntered = ctx.altExitState[nodeId] ?? false
+
+    // Evaluate conditions
+    const entryLogic = node.entryConditionLogic || 'and'
+    const exitLogic = node.exitConditionLogic || 'and'
+
+    const entryMet = entryConditions.length > 0 ? evaluateConditions(ctx, entryConditions, entryLogic) : false
+    const exitMet = exitConditions.length > 0 ? evaluateConditions(ctx, exitConditions, exitLogic) : false
+
+    // State machine:
+    // - If not entered and entry conditions met → enter (then branch)
+    // - If entered and exit conditions met → exit (else branch)
+    // - Otherwise maintain current state
+    let newState = isEntered
+    if (!isEntered && entryMet === true) {
+      newState = true // Enter
+    } else if (isEntered && exitMet === true) {
+      newState = false // Exit
+    }
+
+    // Update state
+    ctx.altExitState[nodeId] = newState
+
+    // Choose branch based on current state
+    const branch = newState ? 'then' : 'else'
+    const children = (node.children?.[branch] || []).filter(Boolean)
+    return evaluateChildren(ctx, node, branch, children)
   }
 
   if (node.kind === 'numbered') {
@@ -2811,10 +2888,10 @@ const collectIndicatorTickers = (node) => {
   const addConditionTickers = (conditions) => {
     for (const cond of conditions || []) {
       // FRD-021: Skip branch references - they're computed from child equity, not external tickers
-      if (cond.ticker && !cond.ticker.startsWith('branch:')) {
+      if (cond.ticker && !isBranchRef(cond.ticker)) {
         addTickerWithComponents(tickers, cond.ticker)
       }
-      if (cond.rightTicker && !cond.rightTicker.startsWith('branch:')) {
+      if (cond.rightTicker && !isBranchRef(cond.rightTicker)) {
         addTickerWithComponents(tickers, cond.rightTicker)
       }
     }
@@ -2838,7 +2915,7 @@ const collectIndicatorTickers = (node) => {
     // Scaling nodes - collect scale ticker
     if (n.kind === 'scaling') {
       // FRD-021: Skip branch references - they're computed from child equity, not external tickers
-      if (n.scaleTicker && !n.scaleTicker.startsWith('branch:')) {
+      if (n.scaleTicker && !isBranchRef(n.scaleTicker)) {
         addTickerWithComponents(tickers, n.scaleTicker)
       }
       addConditionTickers(n.conditions)
@@ -2870,10 +2947,10 @@ const collectAllTickers = (node) => {
   const addConditionTickers = (conditions) => {
     for (const cond of conditions || []) {
       // FRD-021: Skip branch references - they're computed from child equity, not external tickers
-      if (cond.ticker && !cond.ticker.startsWith('branch:')) {
+      if (cond.ticker && !isBranchRef(cond.ticker)) {
         addTickerWithComponents(tickers, cond.ticker)
       }
-      if (cond.rightTicker && !cond.rightTicker.startsWith('branch:')) {
+      if (cond.rightTicker && !isBranchRef(cond.rightTicker)) {
         addTickerWithComponents(tickers, cond.rightTicker)
       }
     }
@@ -2904,7 +2981,7 @@ const collectAllTickers = (node) => {
     // Scaling nodes - collect scale ticker
     if (n.kind === 'scaling') {
       // FRD-021: Skip branch references - they're computed from child equity, not external tickers
-      if (n.scaleTicker && !n.scaleTicker.startsWith('branch:')) {
+      if (n.scaleTicker && !isBranchRef(n.scaleTicker)) {
         addTickerWithComponents(tickers, n.scaleTicker)
       }
       // Also check conditions array (used in UI display)
@@ -3101,6 +3178,9 @@ export async function runBacktest(payload, options = {}) {
     firstValidPosIndex
   )
 
+  // Persistent state for altExit (Enter/Exit) nodes across all days
+  const altExitState = {}
+
   for (let i = startEvalIndex; i < db.dates.length; i++) {
     const indicatorIndex = decisionPrice === 'open' ? i - 1 : i
     const ctx = {
@@ -3111,6 +3191,7 @@ export async function runBacktest(payload, options = {}) {
       decisionPrice,
       warnings: [],
       tickerLocations, // Pre-computed ticker locations for O(1) lookup
+      altExitState, // Persist Enter/Exit state across days
     }
     allocationsAt[i] = evaluateNode(ctx, node)
   }

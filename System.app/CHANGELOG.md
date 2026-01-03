@@ -12,7 +12,13 @@ All notable changes to Atlas Engine are documented here.
   - `buildPriceDb` now populates `db.high` and `db.low` for all tickers
   - Enables proper Aroon calculation for QuantMage Enter/Exit strategies
 - Suppressed duplicate warnings for altExit conditions in `tracePositionContributions`
-  - Both `evaluateNode` and `tracePositionContributions` now suppress warnings for altExit conditions
+- Drawdown Recovery fingerprint now correctly measures time to recover from MAX drawdown
+  - Previously measured longest time in any drawdown, now tracks recovery from the deepest drawdown
+  - Shows max DD percentage and actual recovery time
+- Fixed missing `ultSmooth` cache key causing "Cannot read properties of undefined" error
+
+### Changed
+- Robustness analysis now auto-runs after every backtest (no separate button click needed)
 
 ---
 

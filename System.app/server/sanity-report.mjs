@@ -858,6 +858,7 @@ function computeConcentrationRisk(avgHoldings) {
 
 /**
  * Compute drawdown recovery time fingerprint
+ * Based on how long it took to recover from the MAXIMUM drawdown
  * Red: >2 years to recover, Yellow: 1-2 years, Green: <1 year
  * @param {number[]} equity - Equity curve array
  */
@@ -867,75 +868,82 @@ function computeDrawdownRecovery(equity) {
       level: 'Insufficient Data',
       recoveryDays: 0,
       recoveryYears: 0,
+      maxDd: 0,
       detail: 'Need more trading days for analysis'
     }
   }
 
-  // Track the longest drawdown period (peak to new peak)
-  // A "drawdown period" is time spent below a previous high
+  // First pass: find the maximum drawdown and where it occurred
   let peak = equity[0]
   let peakIdx = 0
-  let longestDrawdownDays = 0
-  let currentDrawdownStart = 0
-  let inDrawdown = false
-  let maxDdValue = 0
+  let maxDd = 0  // Most negative drawdown value
+  let maxDdIdx = 0  // Index where max drawdown occurred
+  let maxDdPeakIdx = 0  // Index of the peak before max drawdown
 
   for (let i = 0; i < equity.length; i++) {
-    if (equity[i] >= peak) {
-      // New high - close any current drawdown
-      if (inDrawdown) {
-        const drawdownDays = i - currentDrawdownStart
-        if (drawdownDays > longestDrawdownDays) {
-          longestDrawdownDays = drawdownDays
-        }
-        inDrawdown = false
-      }
+    if (equity[i] > peak) {
       peak = equity[i]
       peakIdx = i
-    } else {
-      // Below peak - we're in a drawdown
-      if (!inDrawdown) {
-        inDrawdown = true
-        currentDrawdownStart = peakIdx
-      }
-      const dd = (equity[i] - peak) / peak
-      if (dd < maxDdValue) {
-        maxDdValue = dd
-      }
+    }
+    const dd = (equity[i] - peak) / peak  // Negative value
+    if (dd < maxDd) {
+      maxDd = dd
+      maxDdIdx = i
+      maxDdPeakIdx = peakIdx
     }
   }
 
-  // If still in drawdown at end, count it
+  // Second pass: find when equity recovered to the peak level that preceded max drawdown
+  const peakToRecover = equity[maxDdPeakIdx]
+  let recoveryIdx = null
+  for (let i = maxDdIdx + 1; i < equity.length; i++) {
+    if (equity[i] >= peakToRecover) {
+      recoveryIdx = i
+      break
+    }
+  }
+
+  // Calculate recovery time
+  let recoveryDays = 0
   let stillInDrawdown = false
-  if (inDrawdown) {
-    const currentDrawdownDays = equity.length - currentDrawdownStart
-    if (currentDrawdownDays > longestDrawdownDays) {
-      longestDrawdownDays = currentDrawdownDays
-      stillInDrawdown = true
-    }
+
+  if (recoveryIdx !== null) {
+    // Recovered: count days from max DD trough to recovery
+    recoveryDays = recoveryIdx - maxDdIdx
+  } else {
+    // Still in drawdown: count days from max DD trough to end
+    recoveryDays = equity.length - maxDdIdx
+    stillInDrawdown = true
   }
 
-  const recoveryDays = longestDrawdownDays
-  const recoveryYears = recoveryDays / 252
+  // Total underwater time is from peak to recovery (or end if not recovered)
+  const totalUnderwaterDays = recoveryIdx !== null
+    ? recoveryIdx - maxDdPeakIdx
+    : equity.length - maxDdPeakIdx
+
+  const recoveryYears = totalUnderwaterDays / 252
 
   let level = 'Good'
-  if (recoveryYears > 2) {
+  if (stillInDrawdown || recoveryYears > 2) {
     level = 'High Risk'
   } else if (recoveryYears > 1) {
     level = 'Caution'
   }
 
+  const maxDdPct = Math.abs(maxDd * 100).toFixed(0)
+
   return {
     level,
-    recoveryDays,
+    recoveryDays: totalUnderwaterDays,
     recoveryYears: Math.round(recoveryYears * 10) / 10,
+    maxDd: Math.round(maxDd * 1000) / 10, // As percentage
     detail: stillInDrawdown
-      ? `Currently ${recoveryYears.toFixed(1)}yr in drawdown (${(maxDdValue * 100).toFixed(0)}%)`
+      ? `Max DD ${maxDdPct}% - still recovering after ${recoveryYears.toFixed(1)} years`
       : recoveryYears > 2
-      ? `Longest drawdown: ${recoveryYears.toFixed(1)} years`
+      ? `Max DD ${maxDdPct}% took ${recoveryYears.toFixed(1)} years to recover`
       : recoveryYears > 1
-      ? `Longest drawdown: ${recoveryYears.toFixed(1)} years - moderate`
-      : `Longest drawdown: ${(recoveryDays / 21).toFixed(0)} months - quick recovery`
+      ? `Max DD ${maxDdPct}% recovered in ${recoveryYears.toFixed(1)} years`
+      : `Max DD ${maxDdPct}% recovered in ${Math.round(totalUnderwaterDays / 21)} months`
   }
 }
 
