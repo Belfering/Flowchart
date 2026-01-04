@@ -1274,6 +1274,7 @@ function TickerSearchModal({
   restrictToTickers,
   allowedModes = ['tickers'],
   nodeKind,
+  initialValue,
 }: {
   open: boolean
   onClose: () => void
@@ -1283,6 +1284,7 @@ function TickerSearchModal({
   restrictToTickers?: string[]
   allowedModes?: TickerModalMode[]
   nodeKind?: BlockKind // Parent node type for contextual branch filtering
+  initialValue?: string // Current ticker value to pre-populate (e.g., "JNK/XLP" for ratios)
 }) {
   const [search, setSearch] = useState('')
   const [includeETFs, setIncludeETFs] = useState(true)
@@ -1290,21 +1292,36 @@ function TickerSearchModal({
   const [mode, setMode] = useState<TickerModalMode>('tickers')
   const [ratioLeft, setRatioLeft] = useState('')
   const [ratioRight, setRatioRight] = useState('')
+  const [ratioPickerTarget, setRatioPickerTarget] = useState<'left' | 'right' | null>(null) // Which ratio field is being picked
   const inputRef = useRef<HTMLInputElement>(null)
 
   // Determine base ticker list (restricted or full)
   const baseTickers = restrictToTickers || tickerOptions
 
-  // Auto-focus on open and reset state
+  // Auto-focus on open and detect initial mode based on current value
   useEffect(() => {
     if (open) {
       setTimeout(() => inputRef.current?.focus(), 50)
       setSearch('')
-      setMode(allowedModes[0] || 'tickers')
-      setRatioLeft('')
-      setRatioRight('')
+      setRatioPickerTarget(null)
+
+      // Check if initialValue is a ratio ticker (e.g., "JNK/XLP")
+      const ratio = initialValue ? parseRatioTicker(initialValue) : null
+      if (ratio && allowedModes.includes('ratios')) {
+        setMode('ratios')
+        setRatioLeft(ratio.numerator)
+        setRatioRight(ratio.denominator)
+      } else if (initialValue?.toUpperCase().startsWith('BRANCH:') && allowedModes.includes('branches')) {
+        setMode('branches')
+        setRatioLeft('')
+        setRatioRight('')
+      } else {
+        setMode(allowedModes[0] || 'tickers')
+        setRatioLeft('')
+        setRatioRight('')
+      }
     }
-  }, [open, allowedModes])
+  }, [open, allowedModes, initialValue])
 
   // Close on ESC
   useEffect(() => {
@@ -1386,24 +1403,31 @@ function TickerSearchModal({
             />
           )}
 
-          {mode === 'ratios' && (
+          {mode === 'ratios' && !ratioPickerTarget && (
             <div className="flex items-center gap-2">
-              <input
-                ref={inputRef}
-                type="text"
-                value={ratioLeft}
-                onChange={(e) => setRatioLeft(e.target.value.toUpperCase())}
-                placeholder="SPY"
-                className="flex-1 px-3 py-2 border border-border rounded bg-card text-sm font-mono text-center"
-              />
+              <button
+                type="button"
+                onClick={() => {
+                  setRatioPickerTarget('left')
+                  setSearch('')
+                  setTimeout(() => inputRef.current?.focus(), 50)
+                }}
+                className="flex-1 px-3 py-2 border border-border rounded bg-card text-sm font-mono text-center hover:bg-muted/50 cursor-pointer"
+              >
+                {ratioLeft || <span className="text-muted-foreground">SPY</span>}
+              </button>
               <span className="text-xl font-bold text-muted-foreground">/</span>
-              <input
-                type="text"
-                value={ratioRight}
-                onChange={(e) => setRatioRight(e.target.value.toUpperCase())}
-                placeholder="AGG"
-                className="flex-1 px-3 py-2 border border-border rounded bg-card text-sm font-mono text-center"
-              />
+              <button
+                type="button"
+                onClick={() => {
+                  setRatioPickerTarget('right')
+                  setSearch('')
+                  setTimeout(() => inputRef.current?.focus(), 50)
+                }}
+                className="flex-1 px-3 py-2 border border-border rounded bg-card text-sm font-mono text-center hover:bg-muted/50 cursor-pointer"
+              >
+                {ratioRight || <span className="text-muted-foreground">AGG</span>}
+              </button>
               <Button
                 size="sm"
                 disabled={!ratioLeft || !ratioRight}
@@ -1419,6 +1443,30 @@ function TickerSearchModal({
             </div>
           )}
 
+          {/* Ratio picker sub-mode: show ticker search to pick left or right ticker */}
+          {mode === 'ratios' && ratioPickerTarget && (
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setRatioPickerTarget(null)}
+                className="px-2 py-1 text-sm text-muted-foreground hover:text-foreground"
+              >
+                ← Back
+              </button>
+              <span className="text-sm text-muted-foreground">
+                Select {ratioPickerTarget === 'left' ? 'numerator' : 'denominator'} ticker
+              </span>
+              <input
+                ref={inputRef}
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search ticker..."
+                className="flex-1 px-3 py-2 border border-border rounded bg-card text-sm"
+              />
+            </div>
+          )}
+
           {mode === 'branches' && (
             <div className="text-sm text-muted-foreground">
               Select a branch equity curve to use as an indicator source
@@ -1427,7 +1475,7 @@ function TickerSearchModal({
 
           {/* Filter row - checkboxes + mode dropdown */}
           <div className="flex items-center gap-4 mt-3">
-            {mode === 'tickers' && (
+            {(mode === 'tickers' || (mode === 'ratios' && ratioPickerTarget)) && (
               <>
                 <label className="flex items-center gap-2 text-sm cursor-pointer">
                   <input
@@ -1447,8 +1495,8 @@ function TickerSearchModal({
                 </label>
               </>
             )}
-            {/* Mode dropdown - only show if multiple modes allowed */}
-            {allowedModes.length > 1 && (
+            {/* Mode dropdown - only show if multiple modes allowed and not in ratio picker sub-mode */}
+            {allowedModes.length > 1 && !ratioPickerTarget && (
               <select
                 value={mode}
                 onChange={(e) => setMode(e.target.value as TickerModalMode)}
@@ -1507,11 +1555,11 @@ function TickerSearchModal({
             </>
           )}
 
-          {/* Ratios mode */}
-          {mode === 'ratios' && (
+          {/* Ratios mode - common ratios list (only when not picking a ticker) */}
+          {mode === 'ratios' && !ratioPickerTarget && (
             <>
               <div className="px-4 py-2 text-xs text-muted-foreground border-b border-border">
-                Common ratios - click to use, or enter custom above
+                Common ratios - click to use, or click ticker boxes above to search
               </div>
               {COMMON_RATIO_TICKERS.map(ratio => (
                 <div
@@ -1525,6 +1573,53 @@ function TickerSearchModal({
                   </span>
                 </div>
               ))}
+            </>
+          )}
+
+          {/* Ratios mode - ticker picker (when selecting left or right ticker) */}
+          {mode === 'ratios' && ratioPickerTarget && (
+            <>
+              {filteredResults.filter(t => t !== 'Empty').map(ticker => {
+                const meta = tickerMetadata.get(ticker.toUpperCase())
+                return (
+                  <div
+                    key={ticker}
+                    className="px-4 py-2 hover:bg-muted/50 cursor-pointer flex items-center justify-between border-b border-border/50"
+                    onClick={() => {
+                      if (ratioPickerTarget === 'left') {
+                        setRatioLeft(ticker)
+                      } else {
+                        setRatioRight(ticker)
+                      }
+                      setRatioPickerTarget(null)
+                      setSearch('')
+                    }}
+                  >
+                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                      <span className="font-mono font-bold shrink-0 w-16">{ticker}</span>
+                      <span className="text-muted-foreground text-sm truncate flex-1">
+                        {meta?.name || <span className="italic text-muted-foreground/60">Metadata Unavailable</span>}
+                      </span>
+                      <span className="text-xs text-muted-foreground shrink-0">
+                        {meta?.exchange || <span className="italic text-muted-foreground/60"></span>}
+                      </span>
+                    </div>
+                    {meta?.assetType && (
+                      <span className={cn(
+                        'px-1.5 py-0.5 rounded text-xs shrink-0 ml-2',
+                        meta.assetType === 'ETF' ? 'bg-blue-500/20 text-blue-400' : 'bg-green-500/20 text-green-400'
+                      )}>
+                        {meta.assetType}
+                      </span>
+                    )}
+                  </div>
+                )
+              })}
+              {filteredResults.filter(t => t !== 'Empty').length === 0 && (
+                <div className="px-4 py-8 text-center text-muted-foreground">
+                  No tickers found
+                </div>
+              )}
             </>
           )}
 
@@ -2140,31 +2235,34 @@ const parseComposerSymphony = (data: Record<string, unknown>): FlowNode => {
 // ============================================
 
 // Map QuantMage indicator types to Atlas MetricChoice
+// Note: QM exports use inconsistent casing (e.g., 'Sma12Momentum' vs 'SMA12Momentum')
+// so we normalize to lowercase for the lookup
 const mapQuantMageIndicator = (type: string): MetricChoice => {
   const mapping: Record<string, MetricChoice> = {
-    'CurrentPrice': 'Current Price',
-    'MovingAverage': 'Simple Moving Average',
-    'ExponentialMovingAverage': 'Exponential Moving Average',
-    'RelativeStrengthIndex': 'Relative Strength Index',
-    'CumulativeReturn': 'Cumulative Return',
-    'Volatility': 'Standard Deviation',
-    'MaxDrawdown': 'Max Drawdown',
+    'currentprice': 'Current Price',
+    'movingaverage': 'Simple Moving Average',
+    'exponentialmovingaverage': 'Exponential Moving Average',
+    'relativestrengthi': 'Relative Strength Index',
+    'relativestrengthindex': 'Relative Strength Index',
+    'cumulativereturn': 'Cumulative Return',
+    'volatility': 'Standard Deviation',
+    'maxdrawdown': 'Max Drawdown',
     // Momentum indicators
-    '13612wMomentum': 'Momentum (Weighted)',
-    '13612uMomentum': 'Momentum (Unweighted)',
-    'SMA12Momentum': 'Momentum (12-Month SMA)',
+    '13612wmomentum': 'Momentum (Weighted)',
+    '13612umomentum': 'Momentum (Unweighted)',
+    'sma12momentum': 'Momentum (12-Month SMA)',
     // Additional indicators
-    'UltimateSmoother': 'Ultimate Smoother',
-    'Drawdown': 'Drawdown',
-    'AroonUp': 'Aroon Up',
-    'AroonDown': 'Aroon Down',
-    'Aroon': 'Aroon Oscillator',
-    'MACD': 'MACD Histogram',
-    'PPO': 'PPO Histogram',
-    'TrendClarity': 'Trend Clarity',
-    'MovingAverageReturn': 'SMA of Returns',
+    'ultimatesmoother': 'Ultimate Smoother',
+    'drawdown': 'Drawdown',
+    'aroonup': 'Aroon Up',
+    'aroondown': 'Aroon Down',
+    'aroon': 'Aroon Oscillator',
+    'macd': 'MACD Histogram',
+    'ppo': 'PPO Histogram',
+    'trendclarity': 'Trend Clarity',
+    'movingaveragereturn': 'SMA of Returns',
   }
-  return mapping[type] || 'Relative Strength Index'
+  return mapping[type.toLowerCase()] || 'Relative Strength Index'
 }
 
 // Async helper: yields to main thread to keep UI responsive during heavy processing
@@ -8917,7 +9015,7 @@ type CardProps = {
   enabledOverlays?: Set<string>
   onToggleOverlay?: (key: string) => void
   // Ticker search modal
-  openTickerModal?: (onSelect: (ticker: string) => void, restrictTo?: string[], modes?: TickerModalMode[], nodeKind?: BlockKind) => void
+  openTickerModal?: (onSelect: (ticker: string) => void, restrictTo?: string[], modes?: TickerModalMode[], nodeKind?: BlockKind, initialValue?: string) => void
 }
 
 // Check if all descendants of a node are collapsed
@@ -9448,7 +9546,7 @@ const NodeCard = ({
               'h-8 px-2 mx-1 border border-border rounded bg-card text-sm font-mono hover:bg-muted/50',
               cond.ticker?.includes('/') && 'text-amber-400'
             )}
-            onClick={() => openTickerModal?.((ticker) => onUpdateCondition(ownerId, cond.id, { ticker: ticker as PositionChoice }, itemId), undefined, ['tickers', 'ratios', 'branches'], ownerKind)}
+            onClick={() => openTickerModal?.((ticker) => onUpdateCondition(ownerId, cond.id, { ticker: ticker as PositionChoice }, itemId), undefined, ['tickers', 'ratios', 'branches'], ownerKind, cond.ticker)}
           >
             {cond.ticker}
           </button>{' '}
@@ -9497,7 +9595,7 @@ const NodeCard = ({
                   'h-8 px-2 mx-1 border border-border rounded bg-card text-sm font-mono hover:bg-muted/50',
                   cond.rightTicker?.includes('/') && 'text-amber-400'
                 )}
-                onClick={() => openTickerModal?.((ticker) => onUpdateCondition(ownerId, cond.id, { rightTicker: ticker as PositionChoice }, itemId), undefined, ['tickers', 'ratios', 'branches'], ownerKind)}
+                onClick={() => openTickerModal?.((ticker) => onUpdateCondition(ownerId, cond.id, { rightTicker: ticker as PositionChoice }, itemId), undefined, ['tickers', 'ratios', 'branches'], ownerKind, cond.rightTicker)}
               >
                 {cond.rightTicker ?? 'SPY'}
               </button>{' '}
@@ -9778,7 +9876,7 @@ const NodeCard = ({
                             'h-8 px-2 mx-1 border border-border rounded bg-card text-sm font-mono hover:bg-muted/50',
                             cond.ticker?.includes('/') && 'text-amber-400'
                           )}
-                          onClick={() => openTickerModal?.((ticker) => onUpdateCondition(node.id, cond.id, { ticker: ticker as PositionChoice }), undefined, ['tickers', 'ratios', 'branches'], node.kind)}
+                          onClick={() => openTickerModal?.((ticker) => onUpdateCondition(node.id, cond.id, { ticker: ticker as PositionChoice }), undefined, ['tickers', 'ratios', 'branches'], node.kind, cond.ticker)}
                         >
                           {cond.ticker}
                         </button>{' '}
@@ -9829,7 +9927,7 @@ const NodeCard = ({
                                 'h-8 px-2 mx-1 border border-border rounded bg-card text-sm font-mono hover:bg-muted/50',
                                 cond.rightTicker?.includes('/') && 'text-amber-400'
                               )}
-                              onClick={() => openTickerModal?.((ticker) => onUpdateCondition(node.id, cond.id, { rightTicker: ticker as PositionChoice }), undefined, ['tickers', 'ratios', 'branches'], node.kind)}
+                              onClick={() => openTickerModal?.((ticker) => onUpdateCondition(node.id, cond.id, { rightTicker: ticker as PositionChoice }), undefined, ['tickers', 'ratios', 'branches'], node.kind, cond.rightTicker)}
                             >
                               {cond.rightTicker ?? 'SPY'}
                             </button>{' '}
@@ -10320,7 +10418,7 @@ const NodeCard = ({
                               'h-8 px-2 mx-1 border border-border rounded bg-card text-sm font-mono hover:bg-muted/50',
                               cond.ticker?.includes('/') && 'text-amber-400'
                             )}
-                            onClick={() => openTickerModal?.((ticker) => onUpdateEntryCondition(node.id, cond.id, { ticker: ticker as PositionChoice }), undefined, ['tickers', 'ratios', 'branches'], node.kind)}
+                            onClick={() => openTickerModal?.((ticker) => onUpdateEntryCondition(node.id, cond.id, { ticker: ticker as PositionChoice }), undefined, ['tickers', 'ratios', 'branches'], node.kind, cond.ticker)}
                           >
                             {cond.ticker}
                           </button>{' '}
@@ -10366,7 +10464,7 @@ const NodeCard = ({
                                   'h-8 px-2 mx-1 border border-border rounded bg-card text-sm font-mono hover:bg-muted/50',
                                   cond.rightTicker?.includes('/') && 'text-amber-400'
                                 )}
-                                onClick={() => openTickerModal?.((ticker) => onUpdateEntryCondition(node.id, cond.id, { rightTicker: ticker as PositionChoice }), undefined, ['tickers', 'ratios', 'branches'], node.kind)}
+                                onClick={() => openTickerModal?.((ticker) => onUpdateEntryCondition(node.id, cond.id, { rightTicker: ticker as PositionChoice }), undefined, ['tickers', 'ratios', 'branches'], node.kind, cond.rightTicker)}
                               >
                                 {cond.rightTicker ?? 'SPY'}
                               </button>{' '}
@@ -10490,7 +10588,7 @@ const NodeCard = ({
                               'h-8 px-2 mx-1 border border-border rounded bg-card text-sm font-mono hover:bg-muted/50',
                               cond.ticker?.includes('/') && 'text-amber-400'
                             )}
-                            onClick={() => openTickerModal?.((ticker) => onUpdateExitCondition(node.id, cond.id, { ticker: ticker as PositionChoice }), undefined, ['tickers', 'ratios', 'branches'], node.kind)}
+                            onClick={() => openTickerModal?.((ticker) => onUpdateExitCondition(node.id, cond.id, { ticker: ticker as PositionChoice }), undefined, ['tickers', 'ratios', 'branches'], node.kind, cond.ticker)}
                           >
                             {cond.ticker}
                           </button>{' '}
@@ -10536,7 +10634,7 @@ const NodeCard = ({
                                   'h-8 px-2 mx-1 border border-border rounded bg-card text-sm font-mono hover:bg-muted/50',
                                   cond.rightTicker?.includes('/') && 'text-amber-400'
                                 )}
-                                onClick={() => openTickerModal?.((ticker) => onUpdateExitCondition(node.id, cond.id, { rightTicker: ticker as PositionChoice }), undefined, ['tickers', 'ratios', 'branches'], node.kind)}
+                                onClick={() => openTickerModal?.((ticker) => onUpdateExitCondition(node.id, cond.id, { rightTicker: ticker as PositionChoice }), undefined, ['tickers', 'ratios', 'branches'], node.kind, cond.rightTicker)}
                               >
                                 {cond.rightTicker ?? 'SPY'}
                               </button>{' '}
@@ -12284,6 +12382,13 @@ const metricAtIndex = (ctx: EvalCtx, ticker: string, metric: MetricChoice, windo
   if (metric === 'Current Price') {
     // For CC/CO modes (decisionPrice='close'), use adjClose to match indicator calculations
     // For OO/OC modes (decisionPrice='open'), use open price
+    // For ratio tickers (e.g., JNK/XLP), use getCachedCloseArray which computes the ratio
+    const ratio = parseRatioTicker(t)
+    if (ratio) {
+      // Ratio ticker - use cached close array which computes numerator/denominator
+      const closes = getCachedCloseArray(ctx.cache, ctx.db, t)
+      return closes[index] ?? null
+    }
     const arr = ctx.decisionPrice === 'open' ? ctx.db.open[t] : (ctx.db.adjClose[t] || ctx.db.close[t])
     const v = arr?.[index]
     return v == null ? null : v
@@ -12399,6 +12504,13 @@ const metricAt = (ctx: EvalCtx, ticker: string, metric: MetricChoice, window: nu
   if (metric === 'Current Price') {
     // For CC/CO modes (decisionPrice='close'), use adjClose to match indicator calculations
     // For OO/OC modes (decisionPrice='open'), use open price
+    // For ratio tickers (e.g., JNK/XLP), use getCachedCloseArray which computes the ratio
+    const ratio = parseRatioTicker(t)
+    if (ratio) {
+      // Ratio ticker - use cached close array which computes numerator/denominator
+      const closes = getCachedCloseArray(ctx.cache, ctx.db, t)
+      return closes[ctx.decisionIndex] ?? null
+    }
     const arr = ctx.decisionPrice === 'open' ? ctx.db.open[t] : (ctx.db.adjClose[t] || ctx.db.close[t])
     const v = arr?.[ctx.decisionIndex]
     return v == null ? null : v
@@ -13669,7 +13781,7 @@ type BacktesterPanelProps = {
   canUndo?: boolean
   canRedo?: boolean
   // Ticker modal
-  openTickerModal?: (onSelect: (ticker: string) => void, restrictTo?: string[], modes?: TickerModalMode[], nodeKind?: BlockKind) => void
+  openTickerModal?: (onSelect: (ticker: string) => void, restrictTo?: string[], modes?: TickerModalMode[], nodeKind?: BlockKind, initialValue?: string) => void
 }
 
 function BacktesterPanel({
@@ -15620,6 +15732,7 @@ function App() {
   const [tickerModalRestriction, setTickerModalRestriction] = useState<string[] | undefined>(undefined)
   const [tickerModalModes, setTickerModalModes] = useState<TickerModalMode[]>(['tickers'])
   const [tickerModalNodeKind, setTickerModalNodeKind] = useState<BlockKind | undefined>(undefined)
+  const [tickerModalInitialValue, setTickerModalInitialValue] = useState<string | undefined>(undefined)
   const [displayNameInput, setDisplayNameInput] = useState<string>('')
   const [displayNameSaving, setDisplayNameSaving] = useState(false)
   const [displayNameError, setDisplayNameError] = useState<string | null>(null)
@@ -16945,12 +17058,22 @@ function App() {
   )
 
   const handleRunBacktest = useCallback(async () => {
-    updateActiveBotBacktest({ status: 'running', focusNodeId: null, result: null, errors: [] })
+    // Capture the bot ID at the start so we update the correct bot even if user switches tabs
+    const targetBotId = activeBotId
+    const updateBotBacktest = (update: Partial<BotBacktestState>) => {
+      setBots((prev) =>
+        prev.map((b) =>
+          b.id === targetBotId ? { ...b, backtest: { ...b.backtest, ...update } } : b,
+        ),
+      )
+    }
+    updateBotBacktest({ status: 'running', focusNodeId: null, result: null, errors: [] })
     // Reset robustness report when starting new backtest
     setModelSanityReport({ status: 'idle' })
     try {
       const { result } = await runBacktestForNode(current)
-      updateActiveBotBacktest({ result, status: 'done' })
+      console.log(`[Backtest] Updating bot ${targetBotId} with result:`, result ? 'has result' : 'no result')
+      updateBotBacktest({ result, status: 'done' })
       // Auto-run robustness analysis after successful backtest (fire and forget)
       const savedBotId = activeBot?.savedBotId
       setModelSanityReport({ status: 'loading' })
@@ -16978,14 +17101,14 @@ function App() {
       })
     } catch (e) {
       if (isValidationError(e)) {
-        updateActiveBotBacktest({ errors: e.errors, status: 'error' })
+        updateBotBacktest({ errors: e.errors, status: 'error' })
       } else {
         const msg = String((e as Error)?.message || e)
         const friendly = msg.includes('Failed to fetch') ? `${msg}. Is the backend running? (npm run api)` : msg
-        updateActiveBotBacktest({ errors: [{ nodeId: current.id, field: 'backtest', message: friendly }], status: 'error' })
+        updateBotBacktest({ errors: [{ nodeId: current.id, field: 'backtest', message: friendly }], status: 'error' })
       }
     }
-  }, [current, runBacktestForNode, updateActiveBotBacktest, activeBot?.savedBotId, backtestMode, backtestCostBps])
+  }, [current, runBacktestForNode, activeBotId, activeBot?.savedBotId, backtestMode, backtestCostBps])
   const handleNewBot = () => {
     const bot = createBotSession('Algo Name Here')
     setBots((prev) => [...prev, bot])
@@ -17053,11 +17176,12 @@ function App() {
   }, [userId])
 
   // Open ticker search modal
-  const openTickerModal = useCallback((onSelect: (ticker: string) => void, restrictTo?: string[], modes?: TickerModalMode[], nodeKind?: BlockKind) => {
+  const openTickerModal = useCallback((onSelect: (ticker: string) => void, restrictTo?: string[], modes?: TickerModalMode[], nodeKind?: BlockKind, initialValue?: string) => {
     setTickerModalCallback(() => onSelect)
     setTickerModalRestriction(restrictTo)
     setTickerModalModes(modes || ['tickers'])
     setTickerModalNodeKind(nodeKind)
+    setTickerModalInitialValue(initialValue)
     setTickerModalOpen(true)
   }, [])
 
@@ -18633,6 +18757,7 @@ function App() {
         restrictToTickers={tickerModalRestriction}
         allowedModes={tickerModalModes}
         nodeKind={tickerModalNodeKind}
+        initialValue={tickerModalInitialValue}
       />
       <main className="flex-1 overflow-hidden min-h-0">
         {tab === 'Model' ? (

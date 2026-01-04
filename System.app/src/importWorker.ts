@@ -98,32 +98,35 @@ const parseSubspellReference = (tickerSymbol: string): string => {
 }
 
 // Map QuantMage indicator types to Atlas metric names
+// Note: QM exports use inconsistent casing (e.g., 'Sma12Momentum' vs 'SMA12Momentum')
+// so we normalize to lowercase for the lookup
 const mapIndicator = (type: string): MetricChoice => {
   const mapping: Record<string, MetricChoice> = {
-    'CurrentPrice': 'Current Price',
-    'MovingAverage': 'Simple Moving Average',
-    'SimpleMovingAverage': 'Simple Moving Average',
-    'ExponentialMovingAverage': 'Exponential Moving Average',
-    'RelativeStrengthIndex': 'Relative Strength Index',
-    'CumulativeReturn': 'Cumulative Return',
-    'Volatility': 'Standard Deviation',
-    'MaxDrawdown': 'Max Drawdown',
+    'currentprice': 'Current Price',
+    'movingaverage': 'Simple Moving Average',
+    'simplemovingaverage': 'Simple Moving Average',
+    'exponentialmovingaverage': 'Exponential Moving Average',
+    'relativestrengthi': 'Relative Strength Index',
+    'relativestrengthindex': 'Relative Strength Index',
+    'cumulativereturn': 'Cumulative Return',
+    'volatility': 'Standard Deviation',
+    'maxdrawdown': 'Max Drawdown',
     // Momentum indicators
-    '13612wMomentum': 'Momentum (Weighted)',
-    '13612uMomentum': 'Momentum (Unweighted)',
-    'SMA12Momentum': 'Momentum (12-Month SMA)',
+    '13612wmomentum': 'Momentum (Weighted)',
+    '13612umomentum': 'Momentum (Unweighted)',
+    'sma12momentum': 'Momentum (12-Month SMA)',
     // Additional indicators
-    'UltimateSmoother': 'Ultimate Smoother',
-    'Drawdown': 'Drawdown',
-    'AroonUp': 'Aroon Up',
-    'AroonDown': 'Aroon Down',
-    'Aroon': 'Aroon Oscillator',
-    'MACD': 'MACD Histogram',
-    'PPO': 'PPO Histogram',
-    'TrendClarity': 'Trend Clarity',
-    'MovingAverageReturn': 'SMA of Returns',
+    'ultimatesmoother': 'Ultimate Smoother',
+    'drawdown': 'Drawdown',
+    'aroonup': 'Aroon Up',
+    'aroondown': 'Aroon Down',
+    'aroon': 'Aroon Oscillator',
+    'macd': 'MACD Histogram',
+    'ppo': 'PPO Histogram',
+    'trendclarity': 'Trend Clarity',
+    'movingaveragereturn': 'SMA of Returns',
   }
-  return mapping[type] || 'Relative Strength Index'
+  return mapping[type.toLowerCase()] || 'Relative Strength Index'
 }
 
 // Parse QuantMage condition
