@@ -473,6 +473,83 @@ const loadDeviceThemeMode = (): ThemeMode => {
 // ============================================================================
 const API_BASE = '/api'
 
+// Token refresh helper - automatically refreshes access token when expired
+let isRefreshing = false
+let refreshSubscribers: Array<(token: string) => void> = []
+
+const subscribeTokenRefresh = (cb: (token: string) => void) => {
+  refreshSubscribers.push(cb)
+}
+
+const onRefreshed = (token: string) => {
+  refreshSubscribers.forEach((cb) => cb(token))
+  refreshSubscribers = []
+}
+
+const refreshAccessToken = async (): Promise<string | null> => {
+  const refreshToken = localStorage.getItem('refreshToken') || sessionStorage.getItem('refreshToken')
+  if (!refreshToken) return null
+
+  try {
+    const res = await fetch(`${API_BASE}/auth/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refreshToken }),
+    })
+    if (!res.ok) return null
+    const data = await res.json()
+    const newToken = data.accessToken
+    // Store in same location as original
+    if (localStorage.getItem('refreshToken')) {
+      localStorage.setItem('accessToken', newToken)
+    } else {
+      sessionStorage.setItem('accessToken', newToken)
+    }
+    return newToken
+  } catch {
+    return null
+  }
+}
+
+// Authenticated fetch wrapper that auto-refreshes tokens on 401
+const authFetch = async (url: string, options: RequestInit = {}): Promise<Response> => {
+  const getToken = () => localStorage.getItem('accessToken') || sessionStorage.getItem('accessToken')
+  let token = getToken()
+
+  const makeRequest = (accessToken: string | null) => {
+    const headers = new Headers(options.headers || {})
+    if (accessToken) {
+      headers.set('Authorization', `Bearer ${accessToken}`)
+    }
+    return fetch(url, { ...options, headers })
+  }
+
+  let response = await makeRequest(token)
+
+  // If 401, try to refresh the token
+  if (response.status === 401) {
+    if (!isRefreshing) {
+      isRefreshing = true
+      const newToken = await refreshAccessToken()
+      isRefreshing = false
+
+      if (newToken) {
+        onRefreshed(newToken)
+        // Retry the original request with new token
+        response = await makeRequest(newToken)
+      }
+    } else {
+      // Wait for the refresh to complete
+      const newToken = await new Promise<string>((resolve) => {
+        subscribeTokenRefresh((token) => resolve(token))
+      })
+      response = await makeRequest(newToken)
+    }
+  }
+
+  return response
+}
+
 // API type for Nexus bots (no payload for IP protection)
 type NexusBotFromApi = {
   id: string
@@ -4972,9 +5049,7 @@ function AdminPanel({
 
       // Fetch sync schedule status
       try {
-        const schedRes = await fetch('/api/admin/sync-schedule', {
-          headers: { 'Authorization': `Bearer ${getAuthToken()}` }
-        })
+        const schedRes = await authFetch('/api/admin/sync-schedule')
         if (schedRes.ok && !cancelled) {
           setSyncSchedule(await schedRes.json())
         }
@@ -5000,9 +5075,7 @@ function AdminPanel({
     // Poll sync status every 2 seconds for faster UI updates during downloads
     const pollInterval = setInterval(async () => {
       try {
-        const schedRes = await fetch('/api/admin/sync-schedule', {
-          headers: { 'Authorization': `Bearer ${getAuthToken()}` }
-        })
+        const schedRes = await authFetch('/api/admin/sync-schedule')
         if (schedRes.ok) {
           const data = await schedRes.json()
           setSyncSchedule(data)
@@ -5995,17 +6068,14 @@ function AdminPanel({
                     if (!confirm('Are you sure you want to stop the current download?')) return
                     setSyncKilling(true)
                     try {
-                      const res = await fetch('/api/admin/sync-schedule/kill', {
+                      const res = await authFetch('/api/admin/sync-schedule/kill', {
                         method: 'POST',
-                        headers: { 'Authorization': `Bearer ${getAuthToken()}` }
                       })
                       const data = await res.json()
                       if (res.ok) {
                         setRegistryMsg(`Job stopped: ${data.message}`)
                         // Refresh status
-                        const schedRes = await fetch('/api/admin/sync-schedule', {
-                          headers: { 'Authorization': `Bearer ${getAuthToken()}` }
-                        })
+                        const schedRes = await authFetch('/api/admin/sync-schedule')
                         if (schedRes.ok) setSyncSchedule(await schedRes.json())
                       } else {
                         setRegistryMsg(`Error: ${data.error}`)
@@ -6118,15 +6188,12 @@ function AdminPanel({
                   if (!confirm('Stop the running yFinance download?')) return
                   setRegistryMsg('Stopping download...')
                   try {
-                    const res = await fetch('/api/admin/sync-schedule/kill', {
+                    const res = await authFetch('/api/admin/sync-schedule/kill', {
                       method: 'POST',
-                      headers: { 'Authorization': `Bearer ${getAuthToken()}` }
                     })
                     const data = await res.json()
                     setRegistryMsg(data.message || 'Download stopped')
-                    const schedRes = await fetch('/api/admin/sync-schedule', {
-                      headers: { 'Authorization': `Bearer ${getAuthToken()}` }
-                    })
+                    const schedRes = await authFetch('/api/admin/sync-schedule')
                     if (schedRes.ok) setSyncSchedule(await schedRes.json())
                   } catch (e) {
                     setRegistryMsg(`Error: ${e}`)
@@ -6138,20 +6205,17 @@ function AdminPanel({
                 if (!confirm(`Download/update ${parquetTickers.length.toLocaleString()} tickers from yFinance?`)) return
                 setRegistryMsg('Starting yFinance download...')
                 try {
-                  const res = await fetch('/api/admin/sync-schedule/run-now', {
+                  const res = await authFetch('/api/admin/sync-schedule/run-now', {
                     method: 'POST',
                     headers: {
                       'Content-Type': 'application/json',
-                      'Authorization': `Bearer ${getAuthToken()}`
                     },
                     body: JSON.stringify({ source: 'yfinance', tickers: parquetTickers })
                   })
                   const data = await res.json()
                   if (res.ok) {
                     setRegistryMsg(data.message || 'yFinance download started')
-                    const schedRes = await fetch('/api/admin/sync-schedule', {
-                      headers: { 'Authorization': `Bearer ${getAuthToken()}` }
-                    })
+                    const schedRes = await authFetch('/api/admin/sync-schedule')
                     if (schedRes.ok) setSyncSchedule(await schedRes.json())
                   } else {
                     setRegistryMsg(`Error: ${data.error}`)
@@ -6178,15 +6242,12 @@ function AdminPanel({
                   if (!confirm('Stop the running Tiingo download?')) return
                   setRegistryMsg('Stopping download...')
                   try {
-                    const res = await fetch('/api/admin/sync-schedule/kill', {
+                    const res = await authFetch('/api/admin/sync-schedule/kill', {
                       method: 'POST',
-                      headers: { 'Authorization': `Bearer ${getAuthToken()}` }
                     })
                     const data = await res.json()
                     setRegistryMsg(data.message || 'Download stopped')
-                    const schedRes = await fetch('/api/admin/sync-schedule', {
-                      headers: { 'Authorization': `Bearer ${getAuthToken()}` }
-                    })
+                    const schedRes = await authFetch('/api/admin/sync-schedule')
                     if (schedRes.ok) setSyncSchedule(await schedRes.json())
                   } catch (e) {
                     setRegistryMsg(`Error: ${e}`)
@@ -6198,20 +6259,17 @@ function AdminPanel({
                 if (!confirm(`Download missing data and metadata from Tiingo for ${parquetTickers.length.toLocaleString()} tickers?`)) return
                 setRegistryMsg('Starting Tiingo download (fills gaps + metadata)...')
                 try {
-                  const res = await fetch('/api/admin/sync-schedule/run-now', {
+                  const res = await authFetch('/api/admin/sync-schedule/run-now', {
                     method: 'POST',
                     headers: {
                       'Content-Type': 'application/json',
-                      'Authorization': `Bearer ${getAuthToken()}`
                     },
                     body: JSON.stringify({ source: 'tiingo', tickers: parquetTickers, fillGaps: true })
                   })
                   const data = await res.json()
                   if (res.ok) {
                     setRegistryMsg(data.message || 'Tiingo download started')
-                    const schedRes = await fetch('/api/admin/sync-schedule', {
-                      headers: { 'Authorization': `Bearer ${getAuthToken()}` }
-                    })
+                    const schedRes = await authFetch('/api/admin/sync-schedule')
                     if (schedRes.ok) setSyncSchedule(await schedRes.json())
                   } else {
                     setRegistryMsg(`Error: ${data.error}`)
@@ -6235,9 +6293,7 @@ function AdminPanel({
               onClick={async () => {
                 const [statsRes, schedRes, parquetRes] = await Promise.all([
                   fetch('/api/tickers/registry/stats'),
-                  fetch('/api/admin/sync-schedule', {
-                    headers: { 'Authorization': `Bearer ${getAuthToken()}` }
-                  }),
+                  authFetch('/api/admin/sync-schedule'),
                   fetch('/api/parquet-tickers')
                 ])
                 if (statsRes.ok) setRegistryStats(await statsRes.json())
@@ -6265,18 +6321,15 @@ function AdminPanel({
                 onChange={async (e) => {
                   const val = Math.max(1, Math.min(500, parseInt(e.target.value) || 100))
                   try {
-                    const res = await fetch('/api/admin/sync-schedule', {
+                    const res = await authFetch('/api/admin/sync-schedule', {
                       method: 'PUT',
                       headers: {
                         'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${getAuthToken()}`
                       },
                       body: JSON.stringify({ batchSize: val })
                     })
                     if (res.ok) {
-                      const schedRes = await fetch('/api/admin/sync-schedule', {
-                        headers: { 'Authorization': `Bearer ${getAuthToken()}` }
-                      })
+                      const schedRes = await authFetch('/api/admin/sync-schedule')
                       if (schedRes.ok) setSyncSchedule(await schedRes.json())
                     }
                   } catch {
@@ -6297,18 +6350,15 @@ function AdminPanel({
                 onChange={async (e) => {
                   const val = Math.max(0, Math.min(60, parseFloat(e.target.value) || 2))
                   try {
-                    const res = await fetch('/api/admin/sync-schedule', {
+                    const res = await authFetch('/api/admin/sync-schedule', {
                       method: 'PUT',
                       headers: {
                         'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${getAuthToken()}`
                       },
                       body: JSON.stringify({ sleepSeconds: val })
                     })
                     if (res.ok) {
-                      const schedRes = await fetch('/api/admin/sync-schedule', {
-                        headers: { 'Authorization': `Bearer ${getAuthToken()}` }
-                      })
+                      const schedRes = await authFetch('/api/admin/sync-schedule')
                       if (schedRes.ok) setSyncSchedule(await schedRes.json())
                     }
                   } catch {
@@ -6331,18 +6381,15 @@ function AdminPanel({
                 onChange={async (e) => {
                   const val = Math.max(0, Math.min(10, parseFloat(e.target.value) || 0.2))
                   try {
-                    const res = await fetch('/api/admin/sync-schedule', {
+                    const res = await authFetch('/api/admin/sync-schedule', {
                       method: 'PUT',
                       headers: {
                         'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${getAuthToken()}`
                       },
                       body: JSON.stringify({ tiingoSleepSeconds: val })
                     })
                     if (res.ok) {
-                      const schedRes = await fetch('/api/admin/sync-schedule', {
-                        headers: { 'Authorization': `Bearer ${getAuthToken()}` }
-                      })
+                      const schedRes = await authFetch('/api/admin/sync-schedule')
                       if (schedRes.ok) setSyncSchedule(await schedRes.json())
                     }
                   } catch {
@@ -6366,18 +6413,15 @@ function AdminPanel({
                   checked={syncSchedule?.config?.enabled ?? true}
                   onChange={async (e) => {
                     try {
-                      const res = await fetch('/api/admin/sync-schedule', {
+                      const res = await authFetch('/api/admin/sync-schedule', {
                         method: 'PUT',
                         headers: {
                           'Content-Type': 'application/json',
-                          'Authorization': `Bearer ${getAuthToken()}`
                         },
                         body: JSON.stringify({ enabled: e.target.checked })
                       })
                       if (res.ok) {
-                        const schedRes = await fetch('/api/admin/sync-schedule', {
-                          headers: { 'Authorization': `Bearer ${getAuthToken()}` }
-                        })
+                        const schedRes = await authFetch('/api/admin/sync-schedule')
                         if (schedRes.ok) setSyncSchedule(await schedRes.json())
                         setRegistryMsg(e.target.checked ? 'Schedule enabled' : 'Schedule disabled')
                       }
@@ -6399,18 +6443,15 @@ function AdminPanel({
                   onChange={async (e) => {
                     const newTime = e.target.value
                     try {
-                      const res = await fetch('/api/admin/sync-schedule', {
+                      const res = await authFetch('/api/admin/sync-schedule', {
                         method: 'PUT',
                         headers: {
                           'Content-Type': 'application/json',
-                          'Authorization': `Bearer ${getAuthToken()}`
                         },
                         body: JSON.stringify({ updateTime: newTime })
                       })
                       if (res.ok) {
-                        const schedRes = await fetch('/api/admin/sync-schedule', {
-                          headers: { 'Authorization': `Bearer ${getAuthToken()}` }
-                        })
+                        const schedRes = await authFetch('/api/admin/sync-schedule')
                         if (schedRes.ok) setSyncSchedule(await schedRes.json())
                         setRegistryMsg(`Schedule updated to ${newTime}`)
                       }
