@@ -1175,7 +1175,7 @@ export async function deleteCallChain(id, ownerId) {
 }
 
 // Export the raw sqlite connection for advanced queries
-export { sqlite }
+export { sqlite, decompressPayload }
 
 // Auto-initialize database on module load
 initializeDatabase()

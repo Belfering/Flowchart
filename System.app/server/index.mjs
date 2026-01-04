@@ -2952,6 +2952,40 @@ app.post('/api/bots/:id/run-backtest', async (req, res) => {
   }
 })
 
+// POST /api/backtest - Run backtest from payload directly (for unsaved strategies)
+// Routes all backtests through server to ensure consistent results
+app.post('/api/backtest', async (req, res) => {
+  try {
+    const { payload, mode = 'CC', costBps = 5 } = req.body
+
+    if (!payload) {
+      return res.status(400).json({ error: 'payload is required' })
+    }
+
+    const payloadStr = typeof payload === 'string' ? payload : JSON.stringify(payload)
+
+    console.log(`[Backtest] Running backtest for unsaved strategy with mode=${mode}, costBps=${costBps}...`)
+    const startTime = Date.now()
+
+    const result = await runBacktest(payloadStr, { mode, costBps })
+
+    const elapsed = Date.now() - startTime
+    console.log(`[Backtest] Completed in ${elapsed}ms - CAGR: ${(result.metrics.cagr * 100).toFixed(2)}%`)
+
+    res.json({
+      success: true,
+      metrics: result.metrics,
+      equityCurve: result.equityCurve,
+      benchmarkCurve: result.benchmarkCurve,
+      allocations: result.allocations,
+      compression: result.compression,
+    })
+  } catch (e) {
+    console.error('[Backtest] Error:', e)
+    res.status(500).json({ error: String(e?.message || e) })
+  }
+})
+
 // ============================================================================
 // Helper: Get daily returns for a ticker from parquet data
 // ============================================================================
@@ -3068,8 +3102,11 @@ app.post('/api/bots/:id/sanity-report', async (req, res) => {
     const botMode = botRow.backtest_mode || 'CC'
     const botCostBps = botRow.backtest_cost_bps ?? 5
 
+    // Decompress payload if it was compressed (must do before hashing for consistent cache keys)
+    const decompressedPayload = await database.decompressPayload(botRow.payload)
+
     // Check cache first - include mode/costBps in hash since daily returns depend on them
-    const payloadHash = backtestCache.hashPayload(botRow.payload, { mode: botMode, costBps: botCostBps })
+    const payloadHash = backtestCache.hashPayload(decompressedPayload, { mode: botMode, costBps: botCostBps })
     const dataDate = await getLatestTickerDataDate()
 
     const cached = backtestCache.getCachedSanityReport(botId, payloadHash, dataDate)
@@ -3087,7 +3124,7 @@ app.post('/api/bots/:id/sanity-report', async (req, res) => {
     console.log(`[SanityReport] Running backtest for bot ${botId} (${botRow.name}) with mode=${botMode}, costBps=${botCostBps}...`)
     const startTime = Date.now()
 
-    const backtestResult = await runBacktest(botRow.payload, {
+    const backtestResult = await runBacktest(decompressedPayload, {
       mode: botMode,
       costBps: botCostBps,
     })
@@ -3879,10 +3916,13 @@ app.post('/api/admin/cache/prewarm', async (req, res) => {
     for (const bot of allBots) {
       processed++
       try {
+        // Decompress payload if it was compressed (raw SQLite query doesn't auto-decompress)
+        const decompressedPayload = await database.decompressPayload(bot.payload)
+
         // Use bot's stored backtest settings (defaults to CC/5 if not set)
         const botMode = bot.backtest_mode || 'CC'
         const botCostBps = bot.backtest_cost_bps ?? 5
-        const payloadHash = backtestCache.hashPayload(bot.payload, { mode: botMode, costBps: botCostBps })
+        const payloadHash = backtestCache.hashPayload(decompressedPayload, { mode: botMode, costBps: botCostBps })
 
         // Check if backtest already cached
         const existingBacktest = backtestCache.getCachedBacktest(bot.id, payloadHash, dataDate)
@@ -3894,7 +3934,7 @@ app.post('/api/admin/cache/prewarm', async (req, res) => {
         } else {
           // Run backtest with bot's stored settings
           console.log(`[Cache Prewarm] ${processed}/${allBots.length} - ${bot.name}: Running backtest (mode=${botMode}, cost=${botCostBps}bps)...`)
-          result = await runBacktest(bot.payload, { mode: botMode, costBps: botCostBps })
+          result = await runBacktest(decompressedPayload, { mode: botMode, costBps: botCostBps })
 
           // Store in cache
           backtestCache.setCachedBacktest(bot.id, payloadHash, dataDate, {
@@ -3921,7 +3961,7 @@ app.post('/api/admin/cache/prewarm', async (req, res) => {
           } else {
             // Need backtest result for daily returns
             if (!result) {
-              result = await runBacktest(bot.payload, { mode: botMode, costBps: botCostBps })
+              result = await runBacktest(decompressedPayload, { mode: botMode, costBps: botCostBps })
             }
 
             if (result.dailyReturns && result.dailyReturns.length >= 50) {

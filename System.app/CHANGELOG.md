@@ -4,6 +4,21 @@ All notable changes to Atlas Engine are documented here.
 
 ---
 
+## [1.5.2] - 2026-01-04
+
+### Changed
+- **All backtests now run on the server** - Removed ~400 lines of local browser-based backtest code
+  - Frontend now calls `/api/backtest` endpoint for all strategies (saved and unsaved)
+  - Ensures consistent results across all environments
+  - Protects IP by keeping evaluation logic server-side only
+  - Server handles tree compression, data fetching, evaluation, and metrics calculation
+
+### Fixed
+- QM Import: Added `'currentprice'` to indicator mapping for Current Price indicator imports
+- QM Import: Debug logging for weighted node imports to trace weighting mode detection
+
+---
+
 ## [1.5.1] - 2026-01-03
 
 ### Fixed

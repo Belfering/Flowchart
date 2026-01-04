@@ -424,6 +424,9 @@ const parseIncantation = (
       : weightType === 'InverseVolatility' ? 'inverse'
       : 'equal'
 
+    // Debug log
+    console.log('[QM Import] Weighted node:', node.name || '(unnamed)', 'type:', weightType, '-> weighting:', weighting, 'weights:', customWeights)
+
     const children = incantations
       .map((inc, idx) => {
         const child = parseIncantation(inc, idGen)

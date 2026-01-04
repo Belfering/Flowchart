@@ -3084,17 +3084,14 @@ export async function runBacktest(payload, options = {}) {
   const rawNode = typeof payload === 'string' ? JSON.parse(payload) : payload
   console.log(`[Backtest] >>> Parsed payload, rawNode kind=${rawNode?.kind}, has children=${!!rawNode?.children}`)
 
-  // Compress tree for faster evaluation (doesn't affect visual tree)
   console.log(`[Backtest] >>> Starting compression...`)
   const compressionStart = Date.now()
   const { tree: node, tickerLocations, stats: compressionStats } = compressTree(rawNode)
   const compressionTime = Date.now() - compressionStart
-
-  // Always log compression stats for debugging
   console.log(`[Backtest] Tree compression: ${compressionStats.originalNodes} → ${compressionStats.compressedNodes} nodes (${compressionStats.nodesRemoved} removed, ${compressionStats.gateChainsMerged} gates merged) in ${compressionTime}ms`)
 
   if (!node) {
-    throw new Error('Strategy tree is empty after compression')
+    throw new Error('Strategy tree is empty')
   }
 
   // Collect all tickers from the strategy (positions + conditions + scaling + ratio components)
