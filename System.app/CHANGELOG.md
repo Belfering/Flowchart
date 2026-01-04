@@ -16,6 +16,10 @@ All notable changes to Atlas Engine are documented here.
   - Shows max DD percentage and actual recovery time
 - Fixed missing `ultSmooth` cache key causing "Cannot read properties of undefined" error
 - Fixed Drawdown Recovery using wrong equity curve property (`p.value` instead of `p.equity`)
+- **Current Price now uses adjClose in CC mode** for consistency with indicator calculations
+  - Previously Current Price used regular close while indicators (SMA, RSI, etc.) used adjClose
+  - This caused "apples to oranges" comparisons (e.g., comparing close price to adjClose-based SMA)
+  - Now all CC mode calculations use adjClose for internal consistency
 
 ### Changed
 - Robustness analysis now auto-runs after every backtest (no separate button click needed)
