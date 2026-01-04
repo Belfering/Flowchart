@@ -1853,7 +1853,25 @@ import authRoutes from './routes/auth.mjs'
 import passwordResetRoutes from './routes/password-reset.mjs'
 import adminInviteRoutes from './routes/admin-invites.mjs'
 
-// Register auth routes
+// ============================================================================
+// Feature-Based Routes (FRD-030 Architecture)
+// ============================================================================
+import { dataRoutes } from './features/data/index.mjs'
+import { botsRoutes } from './features/bots/index.mjs'
+import { watchlistRoutes } from './features/watchlist/index.mjs'
+import { nexusRoutes } from './features/nexus/index.mjs'
+import { authRoutes as featureAuthRoutes } from './features/auth/index.mjs'
+import { errorHandler, notFoundHandler } from './middleware/errorHandler.mjs'
+
+// Mount feature routes (take precedence over legacy routes)
+app.use('/api', dataRoutes)  // /api/status, /api/tickers/*, /api/candles/*, /api/download/*
+app.use('/api/bots', botsRoutes)  // /api/bots/*
+app.use('/api/watchlists', watchlistRoutes)  // /api/watchlists/*
+app.use('/api/nexus', nexusRoutes)  // /api/nexus/*
+app.use('/api/correlation', nexusRoutes)  // /api/correlation/* (also in nexus)
+app.use('/api/auth', featureAuthRoutes)  // /api/auth/* (consolidated)
+
+// Legacy auth routes (keep for backwards compatibility, will be shadowed by feature routes)
 app.use('/api/auth', authRoutes)
 app.use('/api/auth', passwordResetRoutes)
 app.use('/api/admin/invites', adminInviteRoutes)
@@ -3887,6 +3905,11 @@ if (isProduction) {
     res.sendFile(indexPath)
   })
 }
+
+// ============================================================================
+// Global Error Handler (must be last)
+// ============================================================================
+app.use(errorHandler)
 
 const PORT = Number(process.env.PORT || 8787)
 app.listen(PORT, async () => {
