@@ -11,4 +11,29 @@
 // useCommunityState - migrated to stores/useDashboardStore.ts (Phase 2N-13e)
 // useDashboardUIState - migrated to stores/useDashboardStore.ts (Phase 2N-13e)
 
-// No exports remaining - all hooks merged into stores
+// Phase 2N-15: Tree sync hooks
+export { useTreeSync, useTreeUndo } from './useTreeSync'
+
+// Phase 2N-16: Backtest runner hook
+export { useBacktestRunner, type BacktestRunResult } from './useBacktestRunner'
+
+// Phase 2N-17: Analyze runner hook
+export { useAnalyzeRunner } from './useAnalyzeRunner'
+
+// Phase 2N-18: Dashboard handlers hook
+export { useDashboardHandlers } from './useDashboardHandlers'
+
+// Phase 2N-19: Bot operations hook
+export { useBotOperations } from './useBotOperations'
+
+// Phase 2N-20: Watchlist callbacks hook
+export { useWatchlistCallbacks, ensureDefaultWatchlist } from './useWatchlistCallbacks'
+
+// Phase 2N-21: User data sync hook
+export { useUserDataSync } from './useUserDataSync'
+
+// Phase 2N-22: Ticker manager hook
+export { useTickerManager } from './useTickerManager'
+
+// Phase 2N-24: Call chain handlers hook
+export { useCallChainHandlers } from './useCallChainHandlers'
