@@ -1032,7 +1032,6 @@ function BotCard(props: BotCardProps) {
     watchlistsByBotId,
     userId,
     userDisplayName,
-    isAdmin: _isAdmin,
     uiState,
     setUiState,
     analyzeTickerSort,

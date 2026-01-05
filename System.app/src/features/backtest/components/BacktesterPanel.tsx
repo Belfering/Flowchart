@@ -53,10 +53,6 @@ export function BacktesterPanel({
   onFetchBenchmarks,
   modelSanityReport,
   onFetchRobustness,
-  onUndo: _onUndo,
-  onRedo: _onRedo,
-  canUndo: _canUndo = false,
-  canRedo: _canRedo = false,
   openTickerModal,
 }: BacktesterPanelProps) {
   const [tab, setTab] = useState<'Overview' | 'In Depth' | 'Benchmarks' | 'Robustness'>('Overview')

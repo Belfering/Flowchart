@@ -33,17 +33,14 @@ const PALETTE = [
 export const NodeCard = ({
   node,
   depth,
-  parentId: _parentId,
-  parentSlot: _parentSlot,
-  myIndex: _myIndex,
   inheritedWeight,
   weightMode,
   isSortChild,
   errorNodeIds,
   focusNodeId,
-  tickerOptions: _tickerOptions,
+  tickerOptions,
   onAdd,
-  onAppend: _onAppend,
+  onAppend,
   onRemoveSlotEntry,
   onDelete,
   onCopy,
@@ -228,9 +225,9 @@ export const NodeCard = ({
                     isSortChild={node.kind === 'function' && slot === 'next'}
                     errorNodeIds={errorNodeIds}
                     focusNodeId={focusNodeId}
-                    tickerOptions={_tickerOptions}
+                    tickerOptions={tickerOptions}
                     onAdd={onAdd}
-                    onAppend={_onAppend}
+                    onAppend={onAppend}
                     onRemoveSlotEntry={onRemoveSlotEntry}
                     onDelete={onDelete}
                     onCopy={onCopy}

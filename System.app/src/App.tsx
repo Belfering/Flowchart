@@ -416,7 +416,7 @@ function App() {
   const { refreshAllNexusBots } = useUserDataSync({
     userId,
     setSavedBots,
-    setWatchlists: (fn) => setWatchlists(fn),
+    setWatchlists,  // Pass directly - Zustand setters are stable
     setDashboardPortfolio,
     setUiState,
     setAllNexusBots,

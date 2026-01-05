@@ -184,6 +184,10 @@ export function DashboardPanel(props: DashboardPanelProps) {
     return map
   }, [watchlists])
 
+  // Memoize current time to avoid impure Date.now() calls during render
+  // eslint-disable-next-line react-hooks/purity -- Date.now() is intentionally captured once at mount
+  const now = useMemo(() => Date.now(), [])
+
   return (
     <Card className="h-full flex flex-col overflow-hidden m-4">
       <CardContent className="p-4 flex flex-col h-full overflow-auto">
@@ -875,7 +879,6 @@ export function DashboardPanel(props: DashboardPanelProps) {
                 const totalGains = fundGains.reduce((sum, g) => sum + g, 0)
 
                 // Generate equity curve data for T-Bill (simulated 4.5% annual return)
-                const now = Date.now()
                 const oneYearAgo = now - 365 * 24 * 60 * 60 * 1000
                 const tBillEquityData: { time: UTCTimestamp; value: number }[] = []
                 const startValue = 100000 // Starting with $100k
@@ -1193,7 +1196,7 @@ export function DashboardPanel(props: DashboardPanelProps) {
                                             const pnlPct = investment?.pnlPercent ?? 0
                                             let liveCagr = 0
                                             if (investment) {
-                                              const daysSinceInvestment = (Date.now() - investment.buyDate) / (1000 * 60 * 60 * 24)
+                                              const daysSinceInvestment = (now - investment.buyDate) / (1000 * 60 * 60 * 24)
                                               const yearsSinceInvestment = daysSinceInvestment / 365
                                               if (yearsSinceInvestment > 0 && amountInvested > 0) {
                                                 liveCagr = (Math.pow(currentValue / amountInvested, 1 / yearsSinceInvestment) - 1)

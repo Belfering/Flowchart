@@ -1,7 +1,7 @@
 // src/hooks/useUserDataSync.ts
 // Hook for user data loading and synchronization (Phase 2N-21)
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type SetStateAction } from 'react'
 import type {
   UserId,
   SavedBot,
@@ -29,7 +29,7 @@ import { ensureDefaultWatchlist } from './useWatchlistCallbacks'
 interface UseUserDataSyncOptions {
   userId: UserId | null
   setSavedBots: (bots: SavedBot[]) => void
-  setWatchlists: (fn: (prev: Watchlist[]) => Watchlist[]) => void
+  setWatchlists: (watchlistsOrFn: SetStateAction<Watchlist[]>) => void  // Zustand setter accepts SetStateAction
   setDashboardPortfolio: (portfolio: DashboardPortfolio) => void
   setUiState: (state: UserUiState) => void
   setAllNexusBots: (bots: SavedBot[]) => void

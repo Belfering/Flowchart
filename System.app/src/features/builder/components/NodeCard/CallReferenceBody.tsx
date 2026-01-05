@@ -10,12 +10,14 @@ export const CallReferenceBody = ({
   callChains,
   onUpdateCallRef,
 }: CallReferenceBodyProps) => {
-  if (node.kind !== 'call') return null
-
+  // Must call hooks before any conditional returns
   const callChainMap = useMemo(
     () => new Map(callChains.map((c) => [c.id, c])),
     [callChains]
   )
+
+  if (node.kind !== 'call') return null
+
   const linked = node.callRefId ? callChainMap.get(node.callRefId) : null
 
   return (

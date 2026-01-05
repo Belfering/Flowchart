@@ -166,6 +166,10 @@ export function useDashboardInvestments(params: UseDashboardInvestmentsParams): 
 
   const cash = dashboardPortfolio.cash
 
+  // Memoize current timestamp to avoid impure Date.now() calls during render
+  // eslint-disable-next-line react-hooks/purity -- Date.now() is intentionally captured once at mount
+  const now = useMemo(() => Date.now(), [])
+
   const findBot = useCallback(
     (botId: string): SavedBot | undefined => {
       return savedBots.find((b) => b.id === botId) ?? allNexusBots.find((b) => b.id === botId)
@@ -191,14 +195,14 @@ export function useDashboardInvestments(params: UseDashboardInvestmentsParams): 
         // Fallback: mock data if no backtest available
         equityCurve = [
           { date: inv.buyDate, value: 100 },
-          { date: Date.now(), value: 100 },
+          { date: now, value: 100 },
         ]
       }
 
       const { currentValue, pnl, pnlPercent } = calculateInvestmentPnl(inv, equityCurve)
       return { ...inv, currentValue, pnl, pnlPercent }
     })
-  }, [dashboardPortfolio.investments, analyzeBacktests])
+  }, [dashboardPortfolio.investments, analyzeBacktests, now])
 
   const totalValue = cash + investmentsWithPnl.reduce((sum, inv) => sum + inv.currentValue, 0)
   const totalPnl = investmentsWithPnl.reduce((sum, inv) => sum + inv.pnl, 0)

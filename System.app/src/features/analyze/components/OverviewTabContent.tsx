@@ -1,7 +1,7 @@
 // src/features/analyze/components/OverviewTabContent.tsx
 // Overview tab content for bot analysis cards
 
-import { type Dispatch, type SetStateAction } from 'react'
+import { type Dispatch, type SetStateAction, useMemo } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
@@ -65,6 +65,10 @@ export function OverviewTabContent(props: OverviewTabContentProps) {
     callChainsById,
     normalizeNodeForBacktest,
   } = props
+
+  // Memoize current time to avoid impure Date.now() calls during render
+  // eslint-disable-next-line react-hooks/purity -- Date.now() is intentionally captured once at mount
+  const now = useMemo(() => Date.now(), [])
 
   return (
     <div className="grid w-full max-w-full grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)] gap-2.5 items-stretch overflow-x-hidden">
@@ -138,7 +142,7 @@ export function OverviewTabContent(props: OverviewTabContentProps) {
                 // Calculate CAGR since investment if invested
                 let liveCagr = 0
                 if (investment) {
-                  const daysSinceInvestment = (Date.now() - investment.buyDate) / (1000 * 60 * 60 * 24)
+                  const daysSinceInvestment = (now - investment.buyDate) / (1000 * 60 * 60 * 24)
                   const yearsSinceInvestment = daysSinceInvestment / 365
                   if (yearsSinceInvestment > 0 && amountInvested > 0) {
                     liveCagr = (Math.pow(currentValue / amountInvested, 1 / yearsSinceInvestment) - 1)

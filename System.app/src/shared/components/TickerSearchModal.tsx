@@ -39,8 +39,11 @@ export function TickerSearchModal({
   // Auto-focus on open and reset search
   useEffect(() => {
     if (open) {
-      setTimeout(() => inputRef.current?.focus(), 50)
-      setSearch('')
+      // Defer state update to avoid cascading renders
+      setTimeout(() => {
+        inputRef.current?.focus()
+        setSearch('')
+      }, 50)
     }
   }, [open])
 

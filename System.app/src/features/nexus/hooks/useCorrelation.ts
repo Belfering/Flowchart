@@ -207,6 +207,13 @@ export const useCorrelation = ({
   // Recommendations effect
   useEffect(() => {
     const fetchRecommendations = async () => {
+      // Check for auth token first to avoid spamming console with errors
+      const token = localStorage.getItem('accessToken') || sessionStorage.getItem('accessToken')
+      if (!token) {
+        // Not authenticated, skip fetching recommendations
+        return
+      }
+
       // Get user bot IDs with backtest data
       const userBotIds = savedBots
         .filter(b => b.backtestResult || analyzeBacktests[b.id]?.result)

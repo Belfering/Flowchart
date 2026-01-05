@@ -3,7 +3,7 @@
 // This enables zundo-based undo/redo while maintaining per-bot tree state
 
 import { useEffect, useRef } from 'react'
-import { useTreeStore, useTreeHistory } from '@/stores/useTreeStore'
+import { useTreeStore, getTreeTemporalState } from '@/stores/useTreeStore'
 import { useBotStore } from '@/stores/useBotStore'
 import { ensureSlots } from '@/features/builder'
 import type { FlowNode } from '@/types'
@@ -51,7 +51,7 @@ export function useTreeSync(): FlowNode {
 
     // Clear zundo history on bot switch for fresh undo/redo stack
     if (isBotSwitch) {
-      useTreeHistory().clear()
+      getTreeTemporalState().clear()
     }
 
     // Small delay to ensure setRoot completes before allowing sync back
@@ -92,7 +92,7 @@ export function useTreeUndo() {
   const activeBotId = useBotStore((s) => s.activeBotId)
   const setBots = useBotStore((s) => s.setBots)
 
-  const temporal = useTreeHistory()
+  const temporal = getTreeTemporalState()
 
   const undo = () => {
     temporal.undo()

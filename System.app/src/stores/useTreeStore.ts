@@ -372,4 +372,8 @@ export const useTreeStore = create<TreeState>()(
 )
 
 // Export temporal controls for undo/redo
-export const useTreeHistory = () => useTreeStore.temporal.getState()
+// Named without 'use' prefix to clarify it's not a React hook - it returns temporal state directly
+export const getTreeTemporalState = () => useTreeStore.temporal.getState()
+
+// Legacy alias for backward compatibility (deprecated - use getTreeTemporalState)
+export const useTreeHistory = getTreeTemporalState

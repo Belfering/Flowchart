@@ -85,6 +85,10 @@ export function useDashboardHandlers({ userId }: UseDashboardHandlersOptions) {
   // Computed values
   const dashboardCash = dashboardPortfolio.cash
 
+  // Memoize current timestamp to avoid impure Date.now() calls during render
+  // eslint-disable-next-line react-hooks/purity -- Date.now() is intentionally captured once at mount
+  const now = useMemo(() => Date.now(), [])
+
   // Calculate live P&L for investments using real backtest data
   const dashboardInvestmentsWithPnl = useMemo(() => {
     return dashboardPortfolio.investments.map((inv) => {
@@ -103,14 +107,14 @@ export function useDashboardHandlers({ userId }: UseDashboardHandlersOptions) {
         // Fallback: mock data if no backtest available
         equityCurve = [
           { date: inv.buyDate, value: 100 },
-          { date: Date.now(), value: 100 },
+          { date: now, value: 100 },
         ]
       }
 
       const { currentValue, pnl, pnlPercent } = calculateInvestmentPnl(inv, equityCurve)
       return { ...inv, currentValue, pnl, pnlPercent }
     })
-  }, [dashboardPortfolio.investments, analyzeBacktests])
+  }, [dashboardPortfolio.investments, analyzeBacktests, now])
 
   const dashboardTotalValue = dashboardCash + dashboardInvestmentsWithPnl.reduce((sum, inv) => sum + inv.currentValue, 0)
   const dashboardTotalPnl = dashboardInvestmentsWithPnl.reduce((sum, inv) => sum + inv.pnl, 0)
@@ -122,7 +126,6 @@ export function useDashboardHandlers({ userId }: UseDashboardHandlersOptions) {
 
     if (investments.length === 0) {
       // No investments - show flat line at starting capital
-      const now = Date.now()
       const oneDay = 24 * 60 * 60 * 1000
       const portfolioPoints: EquityCurvePoint[] = []
       for (let i = 30; i >= 0; i--) {
@@ -203,7 +206,6 @@ export function useDashboardHandlers({ userId }: UseDashboardHandlersOptions) {
 
     // If no portfolio points generated, create a simple curve
     if (portfolioPoints.length === 0) {
-      const now = Date.now()
       const oneDay = 24 * 60 * 60 * 1000
       for (let i = 30; i >= 0; i--) {
         const timestamp = Math.floor((now - i * oneDay) / 1000) as UTCTimestamp
@@ -212,7 +214,7 @@ export function useDashboardHandlers({ userId }: UseDashboardHandlersOptions) {
     }
 
     return { dashboardEquityCurve: portfolioPoints, dashboardBotSeries: botSeries }
-  }, [dashboardInvestmentsWithPnl, analyzeBacktests, dashboardCash, dashboardTotalValue])
+  }, [dashboardInvestmentsWithPnl, analyzeBacktests, dashboardCash, dashboardTotalValue, now])
 
   /**
    * Handle buying a bot from the Dashboard tab
