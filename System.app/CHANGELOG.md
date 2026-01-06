@@ -4,6 +4,80 @@ All notable changes to Atlas Engine are documented here.
 
 ---
 
+## [1.5.2] - 2026-01-04
+
+### Changed
+- **All backtests now run on the server** - Removed ~400 lines of local browser-based backtest code
+  - Frontend now calls `/api/backtest` endpoint for all strategies (saved and unsaved)
+  - Ensures consistent results across all environments
+  - Protects IP by keeping evaluation logic server-side only
+  - Server handles tree compression, data fetching, evaluation, and metrics calculation
+
+### Fixed
+- QM Import: Added `'currentprice'` to indicator mapping for Current Price indicator imports
+- QM Import: Debug logging for weighted node imports to trace weighting mode detection
+
+---
+
+## [1.5.1] - 2026-01-03
+
+### Fixed
+- Frontend evaluation now includes high/low price data for all indicators
+  - Previously only fetched open/close/adjClose - now includes high/low from API
+  - Fixes indicators requiring high/low: Aroon, Williams %R, Stochastic, ATR, etc.
+- Suppressed duplicate warnings for altExit conditions in `tracePositionContributions`
+- Drawdown Recovery fingerprint now correctly measures time to recover from MAX drawdown
+  - Previously measured longest time in any drawdown, now tracks recovery from the deepest drawdown
+  - Shows max DD percentage and actual recovery time
+- Fixed missing `ultSmooth` cache key causing "Cannot read properties of undefined" error
+- Fixed Drawdown Recovery using wrong equity curve property (`p.value` instead of `p.equity`)
+- **Current Price now uses adjClose in CC mode** for consistency with indicator calculations
+  - Previously Current Price used regular close while indicators (SMA, RSI, etc.) used adjClose
+  - This caused "apples to oranges" comparisons (e.g., comparing close price to adjClose-based SMA)
+  - Now all CC mode calculations use adjClose for internal consistency
+
+### Changed
+- Robustness analysis now auto-runs after every backtest (no separate button click needed)
+
+---
+
+## [1.5.0] - 2026-01-03
+
+### Added
+- OAuth Login - Sign in with Google, Discord, or GitHub (no invite code required for OAuth users)
+- Branch Equity References (Subspells) - Scaling nodes can now reference child branch equity curves as indicator sources
+  - Enables strategies like "Scale from 1x to 6x based on 60d Volatility of the From branch"
+  - Imported from QuantMage as `Subspell "From"` / `Subspell "To"` references
+  - Full backtest engine support with branch equity simulation and caching
+- 4 new Fragility Fingerprints in Robustness tab:
+  - Backtest Length: flags strategies with <5 years of data
+  - Turnover Risk: flags high-frequency trading (>50% daily turnover)
+  - Position Concentration: flags under-diversified strategies (<3 holdings)
+  - Drawdown Recovery: flags slow recovery from max drawdown (>2 years)
+- Fragility Fingerprints now displayed in 2x4 grid layout (8 total indicators)
+- Background data preloading on login - all tickers cached automatically
+
+---
+
+## [1.4.0] - 2026-01-02
+
+### Added
+- Find/Replace instance count - shows number of ticker instances found, updates with filter checkboxes
+- Replace button now shows count: "Replace (5)" when instances are found
+
+### Performance
+- Tree Compression Engine - optimizes strategy trees before backtest evaluation
+  - Gate chain merging: nested if/else with same outcome merged into OR conditions
+  - Empty branch pruning: removes branches leading only to Empty positions
+  - Single-child collapse: removes unnecessary wrapper nodes
+  - Pre-computed ticker locations: O(1) lookup instead of tree traversal per bar
+
+### Fixed
+- Tiingo download progress bar now updates correctly (was stuck at 0%)
+  - Added stdout line buffering to handle JSON fragmentation across buffer chunks
+
+---
+
 ## [1.3.0] - 2026-01-01
 
 ### Added
