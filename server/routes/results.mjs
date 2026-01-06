@@ -1,77 +1,69 @@
 import express from 'express';
-import { resultsDb } from '../db/index.mjs';
-import { branches } from '../db/schema.mjs';
-import { eq, desc } from 'drizzle-orm';
+import { atlasDb } from '../db/index.mjs';
 
 const router = express.Router();
 
-// GET /api/results/:jobId - Get passing branches
-router.get('/:jobId', async (req, res) => {
+// GET /api/results/jobs - Get all jobs (MUST come before /:jobId route)
+router.get('/jobs', async (req, res) => {
   try {
-    const { jobId } = req.params;
-    const { sortBy = 'is_timar', order = 'desc', limit = 1000 } = req.query;
-
-    const results = await resultsDb.select()
-      .from(branches)
-      .where(eq(branches.jobId, parseInt(jobId)))
-      .orderBy(order === 'desc' ? desc(branches[sortBy]) : branches[sortBy])
-      .limit(parseInt(limit));
-
-    res.json(results);
+    const jobs = await atlasDb.getAllJobs();
+    res.json(jobs);
   } catch (error) {
+    console.error('Get jobs error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// GET /api/results/:jobId/csv - Export to CSV
+// GET /api/results/:jobId/csv - Export results as CSV (MUST come before /:jobId route)
 router.get('/:jobId/csv', async (req, res) => {
   try {
-    const { jobId } = req.params;
-
-    const results = await resultsDb.select()
-      .from(branches)
-      .where(eq(branches.jobId, parseInt(jobId)));
+    const jobId = parseInt(req.params.jobId);
+    const results = await atlasDb.getResults(jobId, 'isTimar', 'desc', null);
 
     if (results.length === 0) {
-      return res.status(404).json({ error: 'No results found' });
+      return res.status(404).send('No results found');
     }
 
-    // Generate CSV
-    const headers = Object.keys(results[0]).join(',');
-    const rows = results.map(row =>
-      Object.values(row).map(v =>
-        typeof v === 'string' && v.includes(',') ? `"${v}"` : v
-      ).join(',')
-    );
-    const csv = [headers, ...rows].join('\n');
+    // Generate CSV headers
+    const headers = Object.keys(results[0]);
+    const csvHeaders = headers.join(',');
+
+    // Generate CSV rows
+    const csvRows = results.map(result => {
+      return headers.map(header => {
+        const value = result[header];
+        // Escape values with commas or quotes
+        if (typeof value === 'string' && (value.includes(',') || value.includes('"'))) {
+          return `"${value.replace(/"/g, '""')}"`;
+        }
+        return value !== null && value !== undefined ? value : '';
+      }).join(',');
+    });
+
+    const csv = [csvHeaders, ...csvRows].join('\n');
 
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="results_job${jobId}.csv"`);
     res.send(csv);
   } catch (error) {
+    console.error('CSV export error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// GET /api/results/:jobId/trade-log/:branchId - Get trade log
-router.get('/:jobId/trade-log/:branchId', async (req, res) => {
+// GET /api/results/:jobId - Get results for a job
+router.get('/:jobId', async (req, res) => {
   try {
-    const { branchId } = req.params;
+    const jobId = parseInt(req.params.jobId);
+    const sortBy = req.query.sortBy || 'isTimar';
+    const order = req.query.order || 'desc';
+    const limit = req.query.limit ? parseInt(req.query.limit) : 1000;
 
-    const branch = await resultsDb.select()
-      .from(branches)
-      .where(eq(branches.id, parseInt(branchId)))
-      .limit(1);
+    const results = await atlasDb.getResults(jobId, sortBy, order, limit);
 
-    if (branch.length === 0) {
-      return res.status(404).json({ error: 'Branch not found' });
-    }
-
-    // TODO: Read trade log from file path
-    const tradeLogPath = branch[0].tradeLogPath;
-
-    res.json({ path: tradeLogPath, trades: [] });
+    res.json(results);
   } catch (error) {
+    console.error('Get results error:', error);
     res.status(500).json({ error: error.message });
   }
 });

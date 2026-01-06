@@ -1,9 +1,12 @@
+import { useState } from 'react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import DataManagement from '@/components/DataManagement/DataManagement'
 import ForgeDashboard from '@/components/Forge/ForgeDashboard'
 import Results from '@/components/Results/Results'
 
 function App() {
+  const [activeTab, setActiveTab] = useState('data')
+
   return (
     <div className="min-h-screen bg-background">
       <header className="border-b">
@@ -14,7 +17,7 @@ function App() {
       </header>
 
       <main className="container mx-auto py-6 px-4">
-        <Tabs defaultValue="data" className="w-full">
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
           <TabsList className="grid w-full grid-cols-3">
             <TabsTrigger value="data">Data Management</TabsTrigger>
             <TabsTrigger value="forge">Forge</TabsTrigger>

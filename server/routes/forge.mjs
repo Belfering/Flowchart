@@ -1,297 +1,346 @@
 import express from 'express';
-import { atlasDb, resultsDb } from '../db/index.mjs';
-import { forgeJobs, forgeConfigs, branches } from '../db/schema.mjs';
-import { eq } from 'drizzle-orm';
-import { generateBranches, estimateBranchCount } from '../engine/branch-generator.mjs';
+import { atlasDb } from '../db/index.mjs';
+import { generateBranches } from '../engine/branch-generator.mjs';
 import { WorkerPool } from '../engine/worker-pool.mjs';
+import { spawn } from 'child_process';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const router = express.Router();
-
-// Store active worker pools
 const activeJobs = new Map();
+const sseClients = new Map();
 
-// POST /api/forge/start - Start branch generation
-router.post('/start', async (req, res) => {
-  try {
-    const { config } = req.body;
-
-    // Save config
-    const configResult = await atlasDb.insert(forgeConfigs).values({
-      name: `Run ${new Date().toISOString()}`,
-      configJson: JSON.stringify(config),
-    }).returning();
-
-    // Generate branches
-    const branchList = generateBranches(config);
-    const totalBranches = branchList.length;
-
-    // Create job
-    const jobResult = await atlasDb.insert(forgeJobs).values({
-      configId: configResult[0].id,
-      status: 'running',
-      totalBranches,
-      completedBranches: 0,
-      passingBranches: 0,
-      startedAt: new Date().toISOString(),
-    }).returning();
-
-    const jobId = jobResult[0].id;
-
-    // Start worker pool
-    const pool = new WorkerPool(config.numWorkers);
-    activeJobs.set(jobId, pool);
-
-    // Progress callback
-    pool.onProgress = async (progress) => {
-      await atlasDb.update(forgeJobs)
-        .set({
-          completedBranches: progress.completed,
-          passingBranches: progress.passing,
-        })
-        .where(eq(forgeJobs.id, jobId));
-    };
-
-    // Completion callback
-    pool.onComplete = async (summary) => {
-      console.log(`Job ${jobId} complete:`, summary);
-
-      // Save passing branches to results.db
-      for (const result of summary.results) {
-        await resultsDb.insert(branches).values({
-          jobId,
-          signalTicker: result.signal_ticker,
-          investTicker: result.invest_ticker,
-          indicator: result.indicator,
-          period: result.period,
-          comparator: result.comparator,
-          threshold: result.threshold,
-          l2Indicator: result.l2_indicator || null,
-          l2Period: result.l2_period || null,
-          l2Comparator: result.l2_comparator || null,
-          l2Threshold: result.l2_threshold || null,
-          // IS metrics
-          isTim: result.is_metrics.TIM,
-          isTimar: result.is_metrics.TIMAR,
-          isMaxdd: result.is_metrics.MaxDD,
-          isCagr: result.is_metrics.CAGR,
-          isTrades: result.is_metrics.Trades,
-          isAvgHold: result.is_metrics.AvgHold,
-          isDd3: result.is_metrics.DD3,
-          isTimar3: result.is_metrics.TIMAR3,
-          isDd50: result.is_metrics.DD50,
-          isDd95: result.is_metrics.DD95,
-          // OOS metrics
-          oosTim: result.oos_metrics.TIM,
-          oosTimar: result.oos_metrics.TIMAR,
-          oosMaxdd: result.oos_metrics.MaxDD,
-          oosCagr: result.oos_metrics.CAGR,
-          oosTrades: result.oos_metrics.Trades,
-          oosAvgHold: result.oos_metrics.AvgHold,
-          oosDd3: result.oos_metrics.DD3,
-          oosTimar3: result.oos_metrics.TIMAR3,
-          oosDd50: result.oos_metrics.DD50,
-          oosDd95: result.oos_metrics.DD95,
-        });
-      }
-
-      await atlasDb.update(forgeJobs)
-        .set({
-          status: 'completed',
-          completedAt: new Date().toISOString(),
-        })
-        .where(eq(forgeJobs.id, jobId));
-
-      activeJobs.delete(jobId);
-    };
-
-    // Error callback
-    pool.onError = async (error) => {
-      console.error(`Job ${jobId} error:`, error);
-      await atlasDb.update(forgeJobs)
-        .set({
-          status: 'failed',
-          error: error.message,
-          completedAt: new Date().toISOString(),
-        })
-        .where(eq(forgeJobs.id, jobId));
-    };
-
-    // Add tasks and start
-    pool.addTasks(branchList, config);
-    pool.start();
-
-    res.json({ success: true, jobId, totalBranches });
-  } catch (error) {
-    console.error('Error starting forge job:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// POST /api/forge/cancel/:jobId - Cancel job
-router.post('/cancel/:jobId', async (req, res) => {
-  try {
-    const { jobId } = req.params;
-    const jobIdInt = parseInt(jobId);
-
-    // Cancel worker pool if active
-    const pool = activeJobs.get(jobIdInt);
-    if (pool) {
-      pool.cancel();
-      activeJobs.delete(jobIdInt);
-    }
-
-    await atlasDb.update(forgeJobs)
-      .set({
-        status: 'cancelled',
-        completedAt: new Date().toISOString(),
-      })
-      .where(eq(forgeJobs.id, jobIdInt));
-
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// GET /api/forge/status/:jobId - Get job status (polling endpoint)
-router.get('/status/:jobId', async (req, res) => {
-  try {
-    const { jobId } = req.params;
-    const job = await atlasDb.select()
-      .from(forgeJobs)
-      .where(eq(forgeJobs.id, parseInt(jobId)))
-      .limit(1);
-
-    if (job.length === 0) {
-      return res.status(404).json({ error: 'Job not found' });
-    }
-
-    // Add real-time info from worker pool if active
-    const pool = activeJobs.get(parseInt(jobId));
-    const status = job[0];
-
-    if (pool) {
-      const poolStatus = pool.getStatus();
-      status.realtime = poolStatus;
-    }
-
-    res.json(status);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// GET /api/forge/stream/:jobId - SSE stream for real-time progress
-router.get('/stream/:jobId', async (req, res) => {
-  const { jobId } = req.params;
-  const jobIdInt = parseInt(jobId);
-
-  // Set SSE headers
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-
-  // Send initial status
-  const job = await atlasDb.select()
-    .from(forgeJobs)
-    .where(eq(forgeJobs.id, jobIdInt))
-    .limit(1);
-
-  if (job.length === 0) {
-    res.write(`data: ${JSON.stringify({ error: 'Job not found' })}\n\n`);
-    res.end();
-    return;
-  }
-
-  // Stream updates
-  const interval = setInterval(async () => {
-    try {
-      const currentJob = await atlasDb.select()
-        .from(forgeJobs)
-        .where(eq(forgeJobs.id, jobIdInt))
-        .limit(1);
-
-      if (currentJob.length === 0) {
-        clearInterval(interval);
-        res.end();
-        return;
-      }
-
-      const status = currentJob[0];
-
-      // Add real-time info from worker pool
-      const pool = activeJobs.get(jobIdInt);
-      if (pool) {
-        const poolStatus = pool.getStatus();
-        status.realtime = poolStatus;
-      }
-
-      res.write(`data: ${JSON.stringify(status)}\n\n`);
-
-      // End stream if job is done
-      if (['completed', 'failed', 'cancelled'].includes(status.status)) {
-        clearInterval(interval);
-        res.end();
-      }
-    } catch (error) {
-      console.error('SSE error:', error);
-      clearInterval(interval);
-      res.end();
-    }
-  }, 1000); // Update every second
-
-  // Clean up on client disconnect
-  req.on('close', () => {
-    clearInterval(interval);
-  });
-});
-
-// POST /api/forge/estimate - Estimate branch count & ETA
+// POST /api/forge/estimate - Estimate branch count and runtime
 router.post('/estimate', async (req, res) => {
   try {
     const { config } = req.body;
-    const totalBranches = estimateBranchCount(config);
 
-    // Estimate speed: 10-50 branches/sec
-    const avgSpeed = 20; // branches/sec
-    const estimatedSeconds = Math.ceil(totalBranches / avgSpeed);
-    const estimatedMinutes = Math.ceil(estimatedSeconds / 60);
+    // Calculate total branches
+    const periodRange = config.periodMax - config.periodMin + 1;
+    const comparatorCount = config.comparator === 'BOTH' ? 2 : 1;
+    const thresholdCount = Math.floor((config.thresholdMax - config.thresholdMin) / config.thresholdStep) + 1;
+    const tickerCount = config.tickers.length;
+
+    const totalBranches = periodRange * comparatorCount * thresholdCount * tickerCount;
+
+    // Estimate: 100-500 branches/sec with optimized engine (use conservative 200)
+    const estimatedSeconds = Math.ceil(totalBranches / 200);
+    const estimatedMinutes = Math.round(estimatedSeconds / 60 * 10) / 10;
 
     res.json({
       totalBranches,
       estimatedSeconds,
       estimatedMinutes,
-      branchesPerSecond: avgSpeed,
     });
   } catch (error) {
+    console.error('Estimate error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// POST /api/forge/configs - Save config preset
-router.post('/configs', async (req, res) => {
+// POST /api/forge/start - Start branch generation (OPTIMIZED)
+router.post('/start', async (req, res) => {
   try {
-    const { name, config } = req.body;
-    const result = await atlasDb.insert(forgeConfigs).values({
-      name,
-      configJson: JSON.stringify(config),
-    }).returning();
-    res.json({ success: true, config: result[0] });
+    const { config } = req.body;
+
+    // Calculate total branches
+    const periodRange = config.periodMax - config.periodMin + 1;
+    const comparatorCount = config.comparator === 'BOTH' ? 2 : 1;
+    const thresholdCount = Math.floor((config.thresholdMax - config.thresholdMin) / config.thresholdStep) + 1;
+    const tickerCount = config.tickers.length;
+    const totalBranches = periodRange * comparatorCount * thresholdCount * tickerCount;
+
+    // Create job
+    const job = await atlasDb.createJob({
+      config: config,
+      status: 'running',
+      totalBranches,
+      completedBranches: 0,
+      passingBranches: 0,
+      startedAt: new Date().toISOString(),
+    });
+
+    const jobId = job.id;
+    console.log(`[FORGE] Starting optimized job ${jobId} with ${totalBranches} branches`);
+
+    // Send response immediately
+    res.json({ jobId, totalBranches });
+
+    // Start optimized Python forge engine (runs in background)
+    const pythonScript = path.join(__dirname, '../../python/optimized_forge_engine.py');
+    const configJson = JSON.stringify(config);
+
+    const python = spawn('python', [pythonScript, configJson, jobId.toString()]);
+    activeJobs.set(jobId, { python, status: 'running' });
+
+    let stdout = '';
+    let stderr = '';
+    let lastProgressUpdate = Date.now();
+
+    // Capture stderr for progress updates
+    python.stderr.on('data', (data) => {
+      stderr += data.toString();
+      const lines = data.toString().split('\n');
+
+      // Parse progress updates from stderr
+      for (const line of lines) {
+        if (line.includes('Progress:')) {
+          // Extract progress information
+          const match = line.match(/(\d+)\/(\d+) tickers.*?(\d+) passing/);
+          if (match) {
+            const tickersCompleted = parseInt(match[1]);
+            const tickersTotal = parseInt(match[2]);
+            const passingCount = parseInt(match[3]);
+
+            // Calculate completed branches
+            const branchesPerTicker = totalBranches / tickerCount;
+            const completedBranches = Math.floor(tickersCompleted * branchesPerTicker);
+
+            // Update database (throttled to every 2 seconds)
+            const now = Date.now();
+            if (now - lastProgressUpdate > 2000) {
+              lastProgressUpdate = now;
+
+              atlasDb.updateJob(jobId, {
+                completedBranches,
+                passingBranches: passingCount,
+              }).catch(err => console.error('Failed to update job:', err));
+
+              // Broadcast to SSE clients
+              const clients = sseClients.get(jobId) || [];
+              const message = {
+                jobId,
+                status: 'running',
+                totalBranches,
+                completedBranches,
+                passingBranches: passingCount,
+              };
+              const data = JSON.stringify(message);
+              clients.forEach(client => {
+                client.write(`data: ${data}\n\n`);
+              });
+            }
+          }
+        }
+      }
+    });
+
+    // Capture stdout for final result
+    python.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
+
+    // Handle completion
+    python.on('close', async (code) => {
+      if (code !== 0) {
+        console.error(`[FORGE] Job ${jobId} failed with code ${code}`);
+        console.error(`[FORGE] stderr: ${stderr}`);
+
+        await atlasDb.updateJob(jobId, {
+          status: 'failed',
+          error: `Python process exited with code ${code}`,
+          completedAt: new Date().toISOString(),
+        });
+
+        // Notify SSE clients
+        const clients = sseClients.get(jobId) || [];
+        const message = {
+          jobId,
+          status: 'failed',
+          error: `Process failed with code ${code}`,
+        };
+        const data = JSON.stringify(message);
+        clients.forEach(client => {
+          client.write(`data: ${data}\n\n`);
+          client.end();
+        });
+
+        activeJobs.delete(jobId);
+        sseClients.delete(jobId);
+        return;
+      }
+
+      try {
+        // Parse result from stdout
+        const lines = stdout.trim().split('\n');
+        const resultLine = lines[lines.length - 1];
+        const result = JSON.parse(resultLine);
+
+        if (!result.success) {
+          throw new Error(result.error || 'Unknown error');
+        }
+
+        console.log(`[FORGE] Job ${jobId} completed: ${result.passingCount} passing branches`);
+        console.log(`[FORGE] Performance: ${result.stats.branchesPerSecond.toFixed(1)} branches/sec`);
+
+        // Save results to database (if any)
+        if (result.results && result.results.length > 0) {
+          console.log(`[FORGE] Saving ${result.results.length} results to database...`);
+
+          const resultsData = result.results.map(branchResult => ({
+            jobId: jobId,
+            signalTicker: branchResult.ticker,
+            investTicker: branchResult.ticker,
+            indicator: branchResult.indicator,
+            period: branchResult.period,
+            comparator: branchResult.comparator,
+            threshold: branchResult.threshold,
+            isTim: branchResult.TIM,
+            isTimar: branchResult.TIMAR,
+            isMaxdd: branchResult.MaxDD,
+            isCagr: branchResult.CAGR,
+            isTrades: branchResult.Trades,
+            isAvgHold: branchResult.AvgHold,
+            isSharpe: branchResult.Sharpe,
+            isDd3: branchResult.DD3,
+            isDd50: branchResult.DD50,
+            isDd95: branchResult.DD95,
+            isTimar3: branchResult.TIMAR3,
+          }));
+
+          const savedCount = await atlasDb.batchCreateResults(resultsData);
+          console.log(`[FORGE] Saved ${savedCount} results successfully`);
+        }
+
+        // Update job status
+        await atlasDb.updateJob(jobId, {
+          status: 'completed',
+          completedBranches: totalBranches,
+          passingBranches: result.passingCount,
+          completedAt: new Date().toISOString(),
+        });
+
+        // Notify SSE clients
+        const clients = sseClients.get(jobId) || [];
+        const message = {
+          jobId,
+          status: 'completed',
+          totalBranches,
+          completedBranches: totalBranches,
+          passingBranches: result.passingCount,
+          stats: result.stats,
+        };
+        const data = JSON.stringify(message);
+        clients.forEach(client => {
+          client.write(`data: ${data}\n\n`);
+          client.end();
+        });
+
+        activeJobs.delete(jobId);
+        sseClients.delete(jobId);
+
+      } catch (error) {
+        console.error('[FORGE] Failed to parse result:', error);
+        console.error('[FORGE] stdout:', stdout);
+
+        await atlasDb.updateJob(jobId, {
+          status: 'failed',
+          error: `Failed to parse result: ${error.message}`,
+          completedAt: new Date().toISOString(),
+        });
+
+        activeJobs.delete(jobId);
+        sseClients.delete(jobId);
+      }
+    });
+
   } catch (error) {
+    console.error('Start error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// GET /api/forge/configs - List saved presets
-router.get('/configs', async (req, res) => {
+// GET /api/forge/stream/:jobId - SSE progress stream
+router.get('/stream/:jobId', async (req, res) => {
+  const jobId = parseInt(req.params.jobId);
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
+  // Add client to list
+  if (!sseClients.has(jobId)) {
+    sseClients.set(jobId, []);
+  }
+  sseClients.get(jobId).push(res);
+
+  // Send initial status
+  const job = await atlasDb.getJob(jobId);
+  if (job) {
+    const message = {
+      jobId,
+      status: job.status,
+      totalBranches: job.totalBranches,
+      completedBranches: job.completedBranches,
+      passingBranches: job.passingBranches,
+    };
+    res.write(`data: ${JSON.stringify(message)}\n\n`);
+  }
+
+  // Remove client on disconnect
+  req.on('close', () => {
+    const clients = sseClients.get(jobId) || [];
+    const index = clients.indexOf(res);
+    if (index !== -1) {
+      clients.splice(index, 1);
+    }
+  });
+});
+
+// POST /api/forge/cancel/:jobId - Cancel job
+router.post('/cancel/:jobId', async (req, res) => {
   try {
-    const configs = await atlasDb.select().from(forgeConfigs);
-    const parsed = configs.map(c => ({
-      ...c,
-      config: JSON.parse(c.configJson),
-    }));
-    res.json(parsed);
+    const jobId = parseInt(req.params.jobId);
+    const activeJob = activeJobs.get(jobId);
+
+    if (activeJob && activeJob.python) {
+      // Kill Python process
+      activeJob.python.kill();
+
+      await atlasDb.updateJob(jobId, {
+        status: 'cancelled',
+        completedAt: new Date().toISOString(),
+      });
+
+      activeJobs.delete(jobId);
+
+      // Notify SSE clients
+      const clients = sseClients.get(jobId) || [];
+      const message = {
+        jobId,
+        status: 'cancelled',
+      };
+      const data = JSON.stringify(message);
+      clients.forEach(client => {
+        client.write(`data: ${data}\n\n`);
+        client.end();
+      });
+      sseClients.delete(jobId);
+    }
+
+    res.json({ success: true });
   } catch (error) {
+    console.error('Cancel error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/forge/status/:jobId - Get job status
+router.get('/status/:jobId', async (req, res) => {
+  try {
+    const jobId = parseInt(req.params.jobId);
+    const job = await atlasDb.getJob(jobId);
+
+    if (!job) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    res.json(job);
+  } catch (error) {
+    console.error('Status error:', error);
     res.status(500).json({ error: error.message });
   }
 });

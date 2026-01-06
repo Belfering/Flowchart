@@ -1,37 +1,64 @@
-import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
-import { api } from '@/lib/api';
+import { useJobsManagement, useResultsData, useResultsExport } from '@/hooks';
 
 export default function Results() {
-  const [jobId, setJobId] = useState<number>(1);
-  const [results, setResults] = useState<any[]>([]);
-  const [loading, setLoading] = useState(false);
+  const { jobs, selectedJobId, setSelectedJobId, loading: jobsLoading } =
+    useJobsManagement();
+  const { results, loading: resultsLoading, sortBy, order } = useResultsData(selectedJobId);
+  const { exportCSV, exporting } = useResultsExport();
 
-  const loadResults = async () => {
-    setLoading(true);
-    try {
-      const data = await api.results.getResults(jobId, 'is_timar', 'desc', 100);
-      setResults(Array.isArray(data) ? data : []);
-    } catch(e) { console.error(e); setResults([]); }
-    setLoading(false);
-  };
-
-  const handleExport = () => {
-    api.results.downloadCSV(jobId);
+  const handleExport = async () => {
+    if (selectedJobId) {
+      try {
+        await exportCSV(selectedJobId);
+      } catch (error) {
+        console.error('Export failed:', error);
+      }
+    }
   };
 
   return (
     <div className="space-y-6">
-      <div><h2 className="text-2xl font-bold">Results</h2></div>
+      <div>
+        <h2 className="text-2xl font-bold">Results</h2>
+      </div>
+
       <Card className="p-6">
-        <div className="flex gap-2 mb-4">
-          <input type="number" value={jobId} onChange={(e)=>setJobId(+e.target.value)} className="border rounded px-2" placeholder="Job ID" />
-          <Button onClick={loadResults}>Load Results</Button>
-          <Button onClick={handleExport} variant="outline">Export CSV</Button>
+        {/* Job Selector */}
+        <div className="flex gap-2 mb-4 items-center">
+          <label className="font-semibold">Job:</label>
+          <select
+            value={selectedJobId || ''}
+            onChange={(e) => setSelectedJobId(e.target.value ? +e.target.value : null)}
+            className="border rounded px-3 py-2 flex-1"
+            disabled={jobsLoading}
+          >
+            <option value="">Select a job...</option>
+            {jobs.map((job) => (
+              <option key={job.id} value={job.id}>
+                Job #{job.id} - {job.status} - {job.passingBranches || 0} passing branches -{' '}
+                {new Date(job.createdAt).toLocaleString()}
+              </option>
+            ))}
+          </select>
+          <Button
+            onClick={handleExport}
+            variant="outline"
+            disabled={!selectedJobId || results.length === 0 || exporting}
+          >
+            {exporting ? 'Exporting...' : 'Export CSV'}
+          </Button>
         </div>
-        {loading ? <p>Loading...</p> : (
-          results.length > 0 ? (
+
+        {/* Results Table */}
+        {resultsLoading ? (
+          <p className="text-center py-8">Loading results...</p>
+        ) : results.length > 0 ? (
+          <>
+            <p className="mb-4 text-sm text-muted-foreground">
+              Showing {results.length} passing branches sorted by {sortBy} ({order})
+            </p>
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead className="bg-secondary">
@@ -48,23 +75,35 @@ export default function Results() {
                   </tr>
                 </thead>
                 <tbody>
-                  {results.map((r,i)=>(
+                  {results.map((r, i) => (
                     <tr key={i} className="border-b hover:bg-secondary/50">
                       <td className="p-2">{r.signalTicker}</td>
                       <td className="p-2">{r.indicator}</td>
                       <td className="p-2 text-right">{r.period}</td>
                       <td className="p-2 text-center">{r.comparator}</td>
                       <td className="p-2 text-right">{r.threshold}</td>
-                      <td className="p-2 text-right font-medium text-green-600">{r.isTimar?.toFixed(1)}</td>
-                      <td className="p-2 text-right text-red-600">{r.isMaxdd?.toFixed(1)}%</td>
+                      <td className="p-2 text-right font-medium text-green-600">
+                        {r.isTimar?.toFixed(1)}
+                      </td>
+                      <td className="p-2 text-right text-red-600">
+                        {r.isMaxdd?.toFixed(1)}%
+                      </td>
                       <td className="p-2 text-right">{r.isTrades}</td>
-                      <td className="p-2 text-right font-medium">{r.oosTimar?.toFixed(1)}</td>
+                      <td className="p-2 text-right font-medium">
+                        {r.oosTimar?.toFixed(1)}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-          ) : <p className="text-muted-foreground">No results. Run Forge first.</p>
+          </>
+        ) : (
+          <p className="text-center py-8 text-muted-foreground">
+            {selectedJobId
+              ? 'No passing branches found for this job.'
+              : 'Select a job to view results.'}
+          </p>
         )}
       </Card>
     </div>

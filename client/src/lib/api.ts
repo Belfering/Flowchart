@@ -39,6 +39,105 @@ export const api = {
       });
       return res.json();
     },
+
+    // Sync/batch download methods
+    async getSyncStatus() {
+      const res = await fetch(`${API_BASE}/data/sync-status`);
+      return res.json();
+    },
+
+    async startYFinanceDownload(fillGaps: boolean = false) {
+      const res = await fetch(`${API_BASE}/data/sync/yfinance`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fillGaps }),
+      });
+      return res.json();
+    },
+
+    async startTiingoDownload() {
+      const res = await fetch(`${API_BASE}/data/sync/tiingo`, {
+        method: 'POST',
+      });
+      return res.json();
+    },
+
+    async stopDownload() {
+      const res = await fetch(`${API_BASE}/data/sync/stop`, {
+        method: 'POST',
+      });
+      return res.json();
+    },
+
+    async updateSyncSettings(settings: { batchSize: number; yfinancePause: number; tiingoPause: number }) {
+      const res = await fetch(`${API_BASE}/data/sync-settings`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settings),
+      });
+      return res.json();
+    },
+
+    // Tiingo API key methods
+    async getTiingoKeyStatus() {
+      const res = await fetch(`${API_BASE}/data/tiingo-key`);
+      return res.json();
+    },
+
+    async saveTiingoKey(key: string) {
+      const res = await fetch(`${API_BASE}/data/tiingo-key`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key }),
+      });
+      return res.json();
+    },
+
+    async removeTiingoKey() {
+      const res = await fetch(`${API_BASE}/data/tiingo-key`, {
+        method: 'DELETE',
+      });
+      return res.json();
+    },
+
+    // Ticker database methods
+    async searchTickers(query: string) {
+      const res = await fetch(`${API_BASE}/data/search?q=${encodeURIComponent(query)}&limit=10`);
+      return res.json();
+    },
+
+    async getTickerPreview(ticker: string) {
+      const res = await fetch(`${API_BASE}/data/preview/${ticker}?limit=50`);
+      return res.json();
+    },
+
+    // Ticker registry methods
+    async syncRegistry() {
+      const res = await fetch(`${API_BASE}/data/registry/sync`, {
+        method: 'POST',
+      });
+      return res.json();
+    },
+
+    async getRegistryStats() {
+      const res = await fetch(`${API_BASE}/data/registry/stats`);
+      return res.json();
+    },
+
+    async searchRegistry(query: string) {
+      const res = await fetch(`${API_BASE}/data/registry/search?q=${encodeURIComponent(query)}`);
+      return res.json();
+    },
+
+    async getRegistryTickers() {
+      const res = await fetch(`${API_BASE}/data/registry/tickers`);
+      return res.json();
+    },
+
+    async getMissingTickers() {
+      const res = await fetch(`${API_BASE}/data/registry/missing`);
+      return res.json();
+    },
   },
 
   // Forge
@@ -94,6 +193,11 @@ export const api = {
 
   // Results
   results: {
+    async getJobs() {
+      const res = await fetch(`${API_BASE}/results/jobs`);
+      return res.json();
+    },
+
     async getResults(jobId: number, sortBy?: string, order?: 'asc' | 'desc', limit?: number) {
       const params = new URLSearchParams();
       if (sortBy) params.append('sortBy', sortBy);
@@ -115,6 +219,11 @@ export const api = {
       a.click();
       a.remove();
       window.URL.revokeObjectURL(url);
+    },
+
+    async exportCSV(jobId: number) {
+      const res = await fetch(`${API_BASE}/results/${jobId}/csv`);
+      return res.text();
     },
   },
 };
