@@ -186,13 +186,22 @@ export const collectUsedTickers = (root: FlowNode, callChains?: { id: string; ro
 }
 
 /**
+ * Extended condition with parent node ID for branch reference resolution
+ */
+export interface ConditionWithContext extends ConditionLine {
+  parentNodeId?: string
+}
+
+/**
  * Collect enabled conditions from the tree for indicator overlay
+ * Includes parentNodeId for conditions that use branch references (branch:from, branch:to, etc.)
+ * so the server can look up the parent node to compute branch equity curves.
  */
 export const collectEnabledConditions = (
   root: FlowNode,
   enabledSet: Set<string>
-): ConditionLine[] => {
-  const conditions: ConditionLine[] = []
+): ConditionWithContext[] => {
+  const conditions: ConditionWithContext[] = []
   if (enabledSet.size === 0) return conditions
 
   const traverse = (node: FlowNode) => {
@@ -201,7 +210,8 @@ export const collectEnabledConditions = (
       node.conditions.forEach(cond => {
         const key = `${node.id}:${cond.id}`
         if (enabledSet.has(key)) {
-          conditions.push(cond)
+          // Include parent node ID for branch reference resolution
+          conditions.push({ ...cond, parentNodeId: node.id })
         }
       })
     }
@@ -212,7 +222,7 @@ export const collectEnabledConditions = (
         item.conditions?.forEach(cond => {
           const key = `${node.id}:${item.id}:${cond.id}`
           if (enabledSet.has(key)) {
-            conditions.push(cond)
+            conditions.push({ ...cond, parentNodeId: node.id })
           }
         })
       })
@@ -223,7 +233,7 @@ export const collectEnabledConditions = (
       node.entryConditions.forEach(cond => {
         const key = `${node.id}:entry:${cond.id}`
         if (enabledSet.has(key)) {
-          conditions.push(cond)
+          conditions.push({ ...cond, parentNodeId: node.id })
         }
       })
     }
@@ -231,9 +241,27 @@ export const collectEnabledConditions = (
       node.exitConditions.forEach(cond => {
         const key = `${node.id}:exit:${cond.id}`
         if (enabledSet.has(key)) {
-          conditions.push(cond)
+          conditions.push({ ...cond, parentNodeId: node.id })
         }
       })
+    }
+
+    // Check scaling node overlay (Scale by indicator)
+    if (node.kind === 'scaling') {
+      const scaleKey = `${node.id}:scale`
+      if (enabledSet.has(scaleKey)) {
+        // Create a synthetic condition for the scaling indicator
+        conditions.push({
+          id: `${node.id}-scale`,
+          type: 'if',
+          ticker: node.scaleTicker ?? 'SPY',
+          metric: node.scaleMetric ?? 'Relative Strength Index',
+          window: node.scaleWindow ?? 14,
+          comparator: 'gt',
+          threshold: 0,
+          parentNodeId: node.id,
+        })
+      }
     }
 
     // Recurse into children

@@ -272,6 +272,38 @@ const rollingStdDev = (values, period) => {
   return out
 }
 
+// Rolling standard deviation of prices (raw absolute $ values)
+// Used for "Standard Deviation of Price" indicator - measures price level volatility
+const rollingStdDevOfPrices = (values, period) => {
+  const out = new Array(values.length).fill(null)
+  let sum = 0
+  let sumSq = 0
+  let missing = 0
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i]
+    if (Number.isNaN(v)) {
+      missing += 1
+    } else {
+      sum += v
+      sumSq += v * v
+    }
+    if (i >= period) {
+      const prev = values[i - period]
+      if (Number.isNaN(prev)) missing -= 1
+      else {
+        sum -= prev
+        sumSq -= prev * prev
+      }
+    }
+    if (i >= period - 1 && missing === 0) {
+      const mean = sum / period
+      const variance = Math.max(0, sumSq / period - mean * mean)
+      out[i] = Math.sqrt(variance) // Raw stddev in $ terms
+    }
+  }
+  return out
+}
+
 // Rolling max drawdown using close prices only
 // Calculates the largest peak-to-trough decline within the window using daily closes
 // Returns POSITIVE values (e.g., 0.05 for 5% drawdown)
@@ -538,14 +570,18 @@ const rollingTrendClarity = (values, period) => {
 // ULTIMATE SMOOTHER (Ehlers filter)
 // ============================================
 
-// John Ehlers' Ultimate Smoother - reduces lag while maintaining smoothness
+// John Ehlers' SuperSmoother - a more stable alternative to the original Ultimate Smoother
+// Uses a 2-pole Butterworth filter which maintains unity DC gain naturally
 const rollingUltimateSmoother = (values, period) => {
   const out = new Array(values.length).fill(null)
-  const a = Math.exp(-1.414 * Math.PI / period)
-  const b = 2 * a * Math.cos(1.414 * Math.PI / period)
-  const c2 = b
-  const c3 = -a * a
-  const c1 = (1 + c2 - c3) / 4
+
+  // 2-pole Butterworth filter coefficients for SuperSmoother
+  const f = 1.414 * Math.PI / period
+  const a1 = Math.exp(-f)
+  const b1 = 2 * a1 * Math.cos(f)
+  const c2 = b1
+  const c3 = -a1 * a1
+  const c1 = 1 - c2 - c3  // This ensures unity DC gain
 
   for (let i = 0; i < values.length; i++) {
     if (i < 2 || i < period) {
@@ -557,7 +593,8 @@ const rollingUltimateSmoother = (values, period) => {
     }
     const prev1 = out[i - 1] ?? values[i - 1]
     const prev2 = out[i - 2] ?? values[i - 2]
-    out[i] = c1 * (values[i] + 2 * values[i - 1] + values[i - 2]) + c2 * prev1 + c3 * prev2
+    // SuperSmoother: simple weighted average input with recursive feedback
+    out[i] = c1 * values[i] + c2 * prev1 + c3 * prev2
   }
   return out
 }
@@ -965,9 +1002,12 @@ const rollingStochK = (highs, lows, closes, period) => {
 }
 
 // Stochastic %D (Slow) = SMA of %K
-const rollingStochD = (highs, lows, closes, kPeriod, dPeriod = 3) => {
+// Both kPeriod and dPeriod use the user's window setting for consistency
+const rollingStochD = (highs, lows, closes, kPeriod, dPeriod) => {
+  // Default dPeriod to kPeriod if not specified (common practice)
+  const actualDPeriod = dPeriod ?? kPeriod
   const stochK = rollingStochK(highs, lows, closes, kPeriod)
-  return rollingSma(stochK.map(v => v ?? NaN), dPeriod)
+  return rollingSma(stochK.map(v => v ?? NaN), actualDPeriod)
 }
 
 // Average Directional Index (ADX)
@@ -1446,17 +1486,58 @@ const rollingVwapRatio = (closes, volumes, window) => {
 // ============================================
 
 const metricAt = (ctx, ticker, metric, window, parentNode = null) => {
+  // DEBUG: Log when branch:from is being calculated
+  if (ticker && ticker.toLowerCase().includes('branch:')) {
+    console.log(`[BRANCH CALC] metricAt called with ticker="${ticker}", metric="${metric}", window=${window}, parentNode=${parentNode?.id ?? 'NULL'}`)
+  }
+
   // FRD-021: Handle branch references (e.g., 'branch:from')
   if (isBranchRef(ticker)) {
     const branchName = parseBranchRef(ticker)
-    const branchNode = getBranchChildNode(parentNode || ctx.branchParentNode, branchName)
+
+    // UNCONDITIONAL DEBUG - first 3 bars only to avoid log spam
+    if (ctx.decisionIndex < 3) {
+      console.log(`[BRANCH INSIDE] decisionIndex=${ctx.decisionIndex}, branchName="${branchName}", parentNode=${parentNode?.id ?? 'NULL'}`)
+    }
+
+    // DEBUG: Log branch resolution details for first few dates
+    const DEBUG_BRANCH = ctx.decisionIndex < 5
+    if (DEBUG_BRANCH) {
+      console.log(`[metricAt DEBUG] ticker: "${ticker}", branchName: "${branchName}"`)
+      console.log(`[metricAt DEBUG] parentNode provided: ${!!parentNode}, id: ${parentNode?.id ?? 'none'}`)
+      console.log(`[metricAt DEBUG] ctx.branchParentNode: ${!!ctx.branchParentNode}`)
+    }
+
+    const branchNode = getBranchChildNode(parentNode || ctx.branchParentNode, branchName, DEBUG_BRANCH)
+
+    if (DEBUG_BRANCH) {
+      console.log(`[metricAt DEBUG] getBranchChildNode returned: ${branchNode ? `node id=${branchNode.id}, kind=${branchNode.kind}` : 'NULL'}`)
+    }
+
     if (!branchNode) {
       // Branch not found - return null (indicator will fail gracefully)
+      if (DEBUG_BRANCH) {
+        console.log(`[metricAt DEBUG] Branch not found, returning null`)
+      }
       return null
     }
     const branchEquity = getBranchEquity(ctx, branchNode)
+
+    if (DEBUG_BRANCH) {
+      console.log(`[metricAt DEBUG] branchEquity: ${branchEquity ? `equity array length=${branchEquity.equity?.length}` : 'NULL'}`)
+    }
+
     if (!branchEquity) return null
-    return branchMetricAt(ctx, branchEquity, metric, window, ctx.indicatorIndex)
+    const result = branchMetricAt(ctx, branchEquity, metric, window, ctx.indicatorIndex)
+
+    if (DEBUG_BRANCH) {
+      console.log(`[metricAt DEBUG] branchMetricAt result: ${result?.toFixed(6) ?? 'NULL'}`)
+    }
+
+    // DEBUG: Print branch:from value for EVERY day
+    console.log(`[BRANCH VALUE] day=${ctx.decisionIndex}, date=${ctx.db.dates[ctx.decisionIndex]}, ticker="${ticker}", metric="${metric}", window=${window}, value=${result}`)
+
+    return result
   }
 
   const t = getSeriesKey(ticker)
@@ -1500,7 +1581,7 @@ const metricAt = (ctx, ticker, metric, window, parentNode = null) => {
       return series[i] ?? null
     }
     case 'Standard Deviation of Price': {
-      const series = getCachedSeries(ctx.cache, 'stdPrice', t, w, () => rollingStdDev(closes, w))
+      const series = getCachedSeries(ctx.cache, 'stdPrice', t, w, () => rollingStdDevOfPrices(closes, w))
       return series[i] ?? null
     }
     case 'Cumulative Return': {
@@ -1739,6 +1820,28 @@ const metricAt = (ctx, ticker, metric, window, parentNode = null) => {
 // FRD-021: BRANCH EQUITY SIMULATION (Subspell Support)
 // ============================================
 
+// Find a node by ID in the tree (for resolving branch references in indicator overlays)
+const findNodeById = (root, nodeId) => {
+  if (!root || !nodeId) return null
+  if (root.id === nodeId) return root
+
+  // Check all children slots
+  if (root.children) {
+    for (const slot of Object.keys(root.children)) {
+      const children = root.children[slot]
+      if (Array.isArray(children)) {
+        for (const child of children) {
+          if (child) {
+            const found = findNodeById(child, nodeId)
+            if (found) return found
+          }
+        }
+      }
+    }
+  }
+  return null
+}
+
 // Check if a ticker reference is a branch reference (e.g., 'branch:from' or 'BRANCH:FROM')
 const isBranchRef = (ticker) => {
   return typeof ticker === 'string' && ticker.toUpperCase().startsWith('BRANCH:')
@@ -1752,8 +1855,16 @@ const parseBranchRef = (ticker) => {
 
 // Get the child node for a branch reference from the parent node
 // branchName: 'from', 'to', 'then', 'else', 'enter', 'exit'
-const getBranchChildNode = (parentNode, branchName) => {
-  if (!parentNode || !branchName) return null
+const getBranchChildNode = (parentNode, branchName, debug = false) => {
+  if (debug) {
+    console.log(`[getBranchChildNode DEBUG] parentNode: ${parentNode ? `id=${parentNode.id}, kind=${parentNode.kind}` : 'NULL'}`)
+    console.log(`[getBranchChildNode DEBUG] branchName: "${branchName}"`)
+  }
+
+  if (!parentNode || !branchName) {
+    if (debug) console.log(`[getBranchChildNode DEBUG] Early return null - missing parentNode or branchName`)
+    return null
+  }
 
   // Map branch names to slot names
   const slotMap = {
@@ -1766,9 +1877,20 @@ const getBranchChildNode = (parentNode, branchName) => {
   }
 
   const slotName = slotMap[branchName]
+  if (debug) {
+    console.log(`[getBranchChildNode DEBUG] slotName for "${branchName}": ${slotName ?? 'NOT FOUND'}`)
+  }
   if (!slotName) return null
 
   const children = parentNode.children?.[slotName]
+  if (debug) {
+    console.log(`[getBranchChildNode DEBUG] parentNode.children keys: ${parentNode.children ? Object.keys(parentNode.children).join(', ') : 'no children'}`)
+    console.log(`[getBranchChildNode DEBUG] children[${slotName}]: ${children ? `array length=${children.length}` : 'NULL/undefined'}`)
+    if (children?.[0]) {
+      console.log(`[getBranchChildNode DEBUG] children[0]: id=${children[0].id}, kind=${children[0].kind}`)
+    }
+  }
+
   if (!Array.isArray(children) || children.length === 0) return null
 
   return children[0] // Return first child in the slot
@@ -1791,10 +1913,10 @@ function simulateBranchEquity(ctx, branchNode) {
   const lookback = Math.max(50, collectMaxLookback(branchNode))
   const startIndex = ctx.decisionPrice === 'open' ? (lookback > 0 ? lookback + 1 : 0) : lookback
 
-  // Fill initial values
+  // Fill initial values with NaN (not 0) so rolling calculations skip them
   for (let i = 0; i < startIndex && i < numDates; i++) {
     equity[i] = 1.0
-    returns[i] = 0.0
+    returns[i] = NaN
   }
 
   // Create persistent state for altExit nodes across all days in this simulation
@@ -1823,6 +1945,7 @@ function simulateBranchEquity(ctx, branchNode) {
 
     // Calculate portfolio return for this day
     let portfolioReturn = 0
+    let hasValidReturn = false
     for (const [ticker, weight] of Object.entries(allocation)) {
       const t = getSeriesKey(ticker)
       if (!t || t === 'Empty' || weight === 0) continue
@@ -1837,9 +1960,11 @@ function simulateBranchEquity(ctx, branchNode) {
 
       const tickerReturn = (currClose - prevClose) / prevClose
       portfolioReturn += tickerReturn * weight
+      hasValidReturn = true
     }
 
-    returns[i] = portfolioReturn
+    // Use NaN if no valid returns could be calculated (ticker data not available)
+    returns[i] = hasValidReturn ? portfolioReturn : NaN
     currentEquity *= (1 + portfolioReturn)
     equity[i] = currentEquity
   }
@@ -2028,7 +2153,20 @@ const branchMetricAt = (ctx, branchEquity, metric, window, index) => {
 }
 
 // Evaluate a metric at a specific index (for forDays support)
-const metricAtIndex = (ctx, ticker, metric, window, index) => {
+const metricAtIndex = (ctx, ticker, metric, window, index, parentNode = null) => {
+  // FRD-021: Handle branch references (e.g., 'branch:from')
+  if (isBranchRef(ticker)) {
+    const branchName = parseBranchRef(ticker)
+    const branchNode = getBranchChildNode(parentNode || ctx.branchParentNode, branchName)
+    if (!branchNode) {
+      // Branch not found - return null (indicator will fail gracefully)
+      return null
+    }
+    const branchEquity = getBranchEquity(ctx, branchNode)
+    if (!branchEquity) return null
+    return branchMetricAt(ctx, branchEquity, metric, window, index)
+  }
+
   const t = getSeriesKey(ticker)
   if (!t || t === 'Empty') return null
 
@@ -2067,7 +2205,7 @@ const metricAtIndex = (ctx, ticker, metric, window, index) => {
       return series[index] ?? null
     }
     case 'Standard Deviation of Price': {
-      const series = getCachedSeries(ctx.cache, 'stdPrice', t, w, () => rollingStdDev(closes, w))
+      const series = getCachedSeries(ctx.cache, 'stdPrice', t, w, () => rollingStdDevOfPrices(closes, w))
       return series[index] ?? null
     }
     case 'Cumulative Return': {
@@ -2333,9 +2471,9 @@ const getSlotConfig = (node, slot) => {
 const normalizeComparatorChoice = (c) => (c === 'gt' || c === '>' ? 'gt' : 'lt')
 
 // Evaluate a single condition at a specific index (for forDays support)
-const evaluateConditionAtIndex = (ctx, cond, index) => {
+const evaluateConditionAtIndex = (ctx, cond, index, parentNode = null) => {
   const leftTicker = normalizeChoice(cond.ticker)
-  const leftVal = metricAtIndex(ctx, leftTicker, cond.metric, cond.window, index)
+  const leftVal = metricAtIndex(ctx, leftTicker, cond.metric, cond.window, index, parentNode)
   if (leftVal == null) return null
 
   if (!cond.expanded) {
@@ -2348,13 +2486,13 @@ const evaluateConditionAtIndex = (ctx, cond, index) => {
   const rightTicker = normalizeChoice(cond.rightTicker ?? cond.ticker)
   const rightMetric = cond.rightMetric ?? cond.metric
   const rightWindow = cond.rightWindow ?? cond.window
-  const rightVal = metricAtIndex(ctx, rightTicker, rightMetric, rightWindow, index)
+  const rightVal = metricAtIndex(ctx, rightTicker, rightMetric, rightWindow, index, parentNode)
   if (rightVal == null) return null
   const cmp = normalizeComparatorChoice(cond.comparator)
   return cmp === 'gt' ? leftVal > rightVal : leftVal < rightVal
 }
 
-const evaluateCondition = (ctx, cond) => {
+const evaluateCondition = (ctx, cond, parentNode = null) => {
   const forDays = cond.forDays || 1
 
   // For forDays > 1, check that the condition was true for the past N consecutive days
@@ -2362,10 +2500,10 @@ const evaluateCondition = (ctx, cond) => {
     for (let dayOffset = 0; dayOffset < forDays; dayOffset++) {
       const checkIndex = ctx.indicatorIndex - dayOffset
       if (checkIndex < 0) {
-        // Not enough history to check
-        return false
+        // Not enough history to check - return null (indeterminate), not false
+        return null
       }
-      const result = evaluateConditionAtIndex(ctx, cond, checkIndex)
+      const result = evaluateConditionAtIndex(ctx, cond, checkIndex, parentNode)
       if (result !== true) {
         // Condition failed on one of the days (false or null)
         return result === null ? null : false
@@ -2377,7 +2515,7 @@ const evaluateCondition = (ctx, cond) => {
 
   // Standard single-day evaluation (forDays = 1)
   const leftTicker = normalizeChoice(cond.ticker)
-  const leftVal = metricAt(ctx, leftTicker, cond.metric, cond.window)
+  const leftVal = metricAt(ctx, leftTicker, cond.metric, cond.window, parentNode)
   if (leftVal == null) return null
 
   if (!cond.expanded) {
@@ -2390,7 +2528,7 @@ const evaluateCondition = (ctx, cond) => {
   const rightTicker = normalizeChoice(cond.rightTicker ?? cond.ticker)
   const rightMetric = cond.rightMetric ?? cond.metric
   const rightWindow = cond.rightWindow ?? cond.window
-  const rightVal = metricAt(ctx, rightTicker, rightMetric, rightWindow)
+  const rightVal = metricAt(ctx, rightTicker, rightMetric, rightWindow, parentNode)
   if (rightVal == null) return null
   const cmp = normalizeComparatorChoice(cond.comparator)
   return cmp === 'gt' ? leftVal > rightVal : leftVal < rightVal
@@ -2401,31 +2539,40 @@ const normalizeConditionType = (t, fallback = 'and') => {
   return fallback
 }
 
-const evaluateConditions = (ctx, conditions, logic) => {
+const evaluateConditions = (ctx, conditions, logic, parentNode = null) => {
   if (!conditions || conditions.length === 0) return false
 
   // Standard boolean precedence: AND binds tighter than OR.
   // Example: `A or B and C` => `A || (B && C)`.
-  let currentAnd = null
+  //
+  // Null handling:
+  // - AND: null AND anything = null (null propagates through AND)
+  // - OR: null OR true = true, null OR false = null, null OR null = null
+  let currentAnd = undefined  // Use undefined to distinguish "not set" from null
   const orTerms = []
 
   for (const c of conditions) {
-    const v = evaluateCondition(ctx, c)
-    if (v == null) return null // null propagates
+    const v = evaluateCondition(ctx, c, parentNode)
     const t = normalizeConditionType(c.type, 'and')
+
     if (t === 'if') {
-      if (currentAnd !== null) orTerms.push(currentAnd)
+      if (currentAnd !== undefined) orTerms.push(currentAnd)
       currentAnd = v
       continue
     }
 
-    if (currentAnd === null) {
+    if (currentAnd === undefined) {
       currentAnd = v
       continue
     }
 
     if (t === 'and') {
-      currentAnd = currentAnd && v
+      // AND with null propagates null
+      if (currentAnd === null || v === null) {
+        currentAnd = null
+      } else {
+        currentAnd = currentAnd && v
+      }
       continue
     }
 
@@ -2438,8 +2585,12 @@ const evaluateConditions = (ctx, conditions, logic) => {
     currentAnd = v
   }
 
-  if (currentAnd !== null) orTerms.push(currentAnd)
-  return orTerms.some(Boolean)
+  if (currentAnd !== undefined) orTerms.push(currentAnd)
+
+  // OR logic: true if ANY term is true, null if no true but has null, false otherwise
+  if (orTerms.some(term => term === true)) return true
+  if (orTerms.some(term => term === null)) return null
+  return false
 }
 
 // ============================================
@@ -2540,6 +2691,147 @@ function collectMaxLookback(node) {
   return maxLookback
 }
 
+// Helper to find first index with valid data in an array
+function findFirstValidIndex(arr) {
+  if (!arr) return 0
+  for (let i = 0; i < arr.length; i++) {
+    if (arr[i] != null && !Number.isNaN(arr[i])) return i
+  }
+  return arr.length  // No valid data
+}
+
+/**
+ * Collect branch lookback requirements from all nodes in the tree.
+ * Branch references (branch:from, branch:to, etc.) require extra warmup because
+ * the branch equity curve needs to be calculated first, and THEN indicators
+ * need additional history on top of that.
+ *
+ * This applies to ALL node types that use branch references:
+ * - Indicator nodes with branch:from/to in conditions
+ * - Scaling nodes with branch:from/to in scaleTicker
+ * - AltExit nodes with branch:from/to in entry/exit conditions
+ * - Numbered nodes with branch references in item conditions
+ */
+function collectBranchLookbacks(node) {
+  let maxBranchLookback = 0
+
+  const checkConditions = (conditions) => {
+    for (const cond of conditions || []) {
+      // Check main ticker
+      if (isBranchRef(cond.ticker)) {
+        const lookback = getIndicatorLookback(cond.metric, cond.window || 0)
+        maxBranchLookback = Math.max(maxBranchLookback, lookback)
+      }
+      // Check rightTicker for expanded conditions
+      if (cond.expanded && isBranchRef(cond.rightTicker)) {
+        const rightMetric = cond.rightMetric ?? cond.metric
+        const lookback = getIndicatorLookback(rightMetric, cond.rightWindow || 0)
+        maxBranchLookback = Math.max(maxBranchLookback, lookback)
+      }
+    }
+  }
+
+  // Check all condition sources - applicable to ANY node type
+  checkConditions(node.conditions)
+  checkConditions(node.entryConditions)
+  checkConditions(node.exitConditions)
+
+  // Check numbered items (numbered nodes)
+  if (node.numbered?.items) {
+    for (const item of node.numbered.items) {
+      checkConditions(item.conditions)
+    }
+  }
+
+  // Check scaling nodes with branch references in scaleTicker
+  if (node.scaleMetric && isBranchRef(node.scaleTicker)) {
+    const lookback = getIndicatorLookback(node.scaleMetric, node.scaleWindow || 0)
+    maxBranchLookback = Math.max(maxBranchLookback, lookback)
+  }
+
+  // Recurse into ALL children regardless of node type
+  for (const slot of Object.keys(node.children || {})) {
+    for (const child of node.children[slot] || []) {
+      if (child) {
+        maxBranchLookback = Math.max(maxBranchLookback, collectBranchLookbacks(child))
+      }
+    }
+  }
+
+  return maxBranchLookback
+}
+
+/**
+ * Collect ratio ticker lookback requirements from all nodes in the tree.
+ * Ratio tickers (like SPY/AGG) need BOTH component tickers to have valid data
+ * before the ratio can be calculated, and THEN the indicator lookback applies.
+ *
+ * This applies to ALL node types that use ratio tickers in conditions.
+ * Returns an array of { firstValidIndex, lookback } for each ratio found.
+ */
+function collectRatioLookbacks(node, db) {
+  const ratioLookbacks = []  // Array of { firstValidIndex, lookback }
+
+  const checkConditions = (conditions) => {
+    for (const cond of conditions || []) {
+      // Check main ticker
+      const ratio = parseRatioTicker(cond.ticker)
+      if (ratio) {
+        const lookback = getIndicatorLookback(cond.metric, cond.window || 0)
+        const numFirst = findFirstValidIndex(db.close[ratio.numerator])
+        const denFirst = findFirstValidIndex(db.close[ratio.denominator])
+        const firstValid = Math.max(numFirst, denFirst)
+        ratioLookbacks.push({ firstValidIndex: firstValid, lookback })
+      }
+      // Check rightTicker for expanded conditions
+      if (cond.expanded) {
+        const rightRatio = parseRatioTicker(cond.rightTicker)
+        if (rightRatio) {
+          const rightMetric = cond.rightMetric ?? cond.metric
+          const lookback = getIndicatorLookback(rightMetric, cond.rightWindow || 0)
+          const numFirst = findFirstValidIndex(db.close[rightRatio.numerator])
+          const denFirst = findFirstValidIndex(db.close[rightRatio.denominator])
+          const firstValid = Math.max(numFirst, denFirst)
+          ratioLookbacks.push({ firstValidIndex: firstValid, lookback })
+        }
+      }
+    }
+  }
+
+  // Check all condition sources - applicable to ANY node type
+  checkConditions(node.conditions)
+  checkConditions(node.entryConditions)
+  checkConditions(node.exitConditions)
+
+  // Check numbered items (numbered nodes)
+  if (node.numbered?.items) {
+    for (const item of node.numbered.items) {
+      checkConditions(item.conditions)
+    }
+  }
+
+  // Check scaling nodes with ratio tickers in scaleTicker
+  const scaleRatio = parseRatioTicker(node.scaleTicker)
+  if (node.scaleMetric && scaleRatio) {
+    const lookback = getIndicatorLookback(node.scaleMetric, node.scaleWindow || 0)
+    const numFirst = findFirstValidIndex(db.close[scaleRatio.numerator])
+    const denFirst = findFirstValidIndex(db.close[scaleRatio.denominator])
+    const firstValid = Math.max(numFirst, denFirst)
+    ratioLookbacks.push({ firstValidIndex: firstValid, lookback })
+  }
+
+  // Recurse into ALL children regardless of node type
+  for (const slot of Object.keys(node.children || {})) {
+    for (const child of node.children[slot] || []) {
+      if (child) {
+        ratioLookbacks.push(...collectRatioLookbacks(child, db))
+      }
+    }
+  }
+
+  return ratioLookbacks
+}
+
 // ============================================
 // NODE EVALUATION
 // ============================================
@@ -2566,7 +2858,8 @@ function evaluateNode(ctx, node) {
   if (node.kind === 'indicator') {
     const conditions = node.conditions || []
     const logic = node.conditionLogic || 'and'
-    const result = evaluateConditions(ctx, conditions, logic)
+    // FRD-021: Pass node as parentNode for branch reference resolution in conditions
+    const result = evaluateConditions(ctx, conditions, logic, node)
     const branch = result === true ? 'then' : 'else'
 
     const children = (node.children?.[branch] || []).filter(Boolean)
@@ -2613,6 +2906,9 @@ function evaluateNode(ctx, node) {
   }
 
   if (node.kind === 'scaling') {
+    // DEBUG: Always log scaling node evaluation
+    console.log(`[SCALING EVAL] node=${node.id}, raw scaleTicker="${node.scaleTicker}"`)
+
     // Scaling nodes blend between then/else based on an indicator value in a range
     const scaleTicker = normalizeChoice(node.scaleTicker || 'SPY')
     const scaleMetric = node.scaleMetric || 'Relative Strength Index'
@@ -2620,20 +2916,39 @@ function evaluateNode(ctx, node) {
     const scaleFrom = Number(node.scaleFrom ?? 0)
     const scaleTo = Number(node.scaleTo ?? 100)
 
-    // DEBUG: Log branch reference resolution
-    if (isBranchRef(scaleTicker)) {
-      const branchName = parseBranchRef(scaleTicker)
-      const branchNode = getBranchChildNode(node, branchName)
-      console.log(`[Scaling] Branch ref: ${scaleTicker} -> ${branchName}, branchNode: ${branchNode ? branchNode.kind : 'null'}, children.then: ${node.children?.then?.length || 0}`)
+    // DEBUG: Log EVERY scaling node on first date to see what's happening
+    if (ctx.decisionIndex === 0) {
+      console.log(`[Scaling Node] id=${node.id}, scaleTicker="${scaleTicker}", isBranchRef=${isBranchRef(scaleTicker)}`)
+    }
+
+    // ALWAYS log for branch references on first date to verify resolution
+    const isBranch = isBranchRef(scaleTicker)
+    if (isBranch && ctx.decisionIndex === 0) {
+      console.log(`\n[Branch Scaling] ========== First Date Debug ==========`)
+      console.log(`[Branch Scaling] Node: ${node.title || node.id}`)
+      console.log(`[Branch Scaling] scaleTicker: "${scaleTicker}", scaleMetric: "${scaleMetric}", scaleWindow: ${scaleWindow}`)
+      console.log(`[Branch Scaling] scaleFrom: ${scaleFrom}, scaleTo: ${scaleTo}`)
+      console.log(`[Branch Scaling] node.children.then exists: ${!!node.children?.then}, length: ${node.children?.then?.length ?? 0}`)
+      console.log(`[Branch Scaling] node.children.else exists: ${!!node.children?.else}, length: ${node.children?.else?.length ?? 0}`)
+      if (node.children?.then?.[0]) {
+        console.log(`[Branch Scaling] then[0] id: ${node.children.then[0].id}, kind: ${node.children.then[0].kind}`)
+      }
     }
 
     // FRD-021: Pass the scaling node as parent for branch reference resolution
     const val = metricAt(ctx, scaleTicker, scaleMetric, scaleWindow, node)
 
+    // ALWAYS log result for branch references on first date
+    if (isBranch && ctx.decisionIndex === 0) {
+      console.log(`[Branch Scaling] metricAt result: ${val?.toFixed(6) ?? 'NULL'}`)
+      console.log(`[Branch Scaling] ==========================================\n`)
+    }
+
     // Calculate blend factor: 0 = all "then", 1 = all "else"
     // If val is below scaleFrom, blend = 0 (100% then)
     // If val is above scaleTo, blend = 1 (100% else)
     // Otherwise, linear interpolation
+    // If val is null (no valid data yet), default to blend=0 (100% then branch)
     let blend = 0
     if (val != null && scaleFrom !== scaleTo) {
       if (scaleFrom < scaleTo) {
@@ -2681,8 +2996,9 @@ function evaluateNode(ctx, node) {
     const entryLogic = node.entryConditionLogic || 'and'
     const exitLogic = node.exitConditionLogic || 'and'
 
-    const entryMet = entryConditions.length > 0 ? evaluateConditions(ctx, entryConditions, entryLogic) : false
-    const exitMet = exitConditions.length > 0 ? evaluateConditions(ctx, exitConditions, exitLogic) : false
+    // FRD-021: Pass node as parentNode for branch reference resolution in conditions
+    const entryMet = entryConditions.length > 0 ? evaluateConditions(ctx, entryConditions, entryLogic, node) : false
+    const exitMet = exitConditions.length > 0 ? evaluateConditions(ctx, exitConditions, exitLogic, node) : false
 
     // State machine:
     // - If not entered and entry conditions met → enter (then branch)
@@ -2714,7 +3030,8 @@ function evaluateNode(ctx, node) {
       let currentAnd = null
       const orTerms = []
       for (const c of conditions) {
-        const v = evaluateCondition(ctx, c)
+        // FRD-021: Pass node as parentNode for branch reference resolution in conditions
+        const v = evaluateCondition(ctx, c, node)
         if (v == null) return false // Missing data = false
         const t = c.type === 'or' ? 'or' : c.type === 'and' ? 'and' : 'if'
         if (t === 'if') {
@@ -3072,7 +3389,16 @@ const turnoverFraction = (prevAlloc, alloc) => {
 // ============================================
 
 // Export cache initialization function for server startup
-export { initTickerCache }
+// Clear ticker data cache (for admin cache invalidation)
+function clearTickerDataCache() {
+  const count = tickerDataCache.size
+  tickerDataCache.clear()
+  cacheInitialized = false
+  console.log(`[Backtest] Cleared ticker data cache (${count} entries)`)
+  return count
+}
+
+export { initTickerCache, clearTickerDataCache }
 
 export async function runBacktest(payload, options = {}) {
   console.log(`[Backtest] >>> runBacktest called`)
@@ -3083,6 +3409,60 @@ export async function runBacktest(payload, options = {}) {
   // Parse payload if string
   const rawNode = typeof payload === 'string' ? JSON.parse(payload) : payload
   console.log(`[Backtest] >>> Parsed payload, rawNode kind=${rawNode?.kind}, has children=${!!rawNode?.children}`)
+
+  // DEBUG: Dump all scaling nodes to verify branch:from is being received
+  const dumpScalingNodes = (n, depth = 0) => {
+    if (!n) return
+    const indent = '  '.repeat(depth)
+
+    // Helper to describe a branch
+    const describeBranch = (b) => {
+      if (!b) return 'NONE'
+      if (Array.isArray(b)) {
+        const first = b[0]
+        return first ? `[array] first: id=${first.id}, kind=${first.kind}` : '[empty array]'
+      }
+      return `id=${b.id}, kind=${b.kind}`
+    }
+
+    if (n.kind === 'scaling') {
+      console.log(`${indent}[DUMP] SCALING NODE: id=${n.id}, scaleTicker="${n.scaleTicker}", scaleMetric="${n.scaleMetric}", scaleWindow=${n.scaleWindow}`)
+      console.log(`${indent}[DUMP]   children.then: ${describeBranch(n.children?.then)}`)
+      console.log(`${indent}[DUMP]   children.else: ${describeBranch(n.children?.else)}`)
+    } else if (n.kind === 'indicator' && n.conditions) {
+      // Check for branch refs in conditions
+      const branchConditions = n.conditions.filter(c => c.ticker?.startsWith('branch:') || c.rightTicker?.startsWith('branch:'))
+      if (branchConditions.length > 0) {
+        console.log(`${indent}[DUMP] INDICATOR NODE with branch refs: id=${n.id}`)
+        branchConditions.forEach(c => {
+          console.log(`${indent}[DUMP]   condition: ticker="${c.ticker}", rightTicker="${c.rightTicker}"`)
+        })
+      }
+    }
+    // Recurse into children
+    if (n.children) {
+      if (Array.isArray(n.children)) {
+        n.children.forEach(c => dumpScalingNodes(c, depth + 1))
+      } else {
+        const recurse = (slot) => {
+          if (!slot) return
+          if (Array.isArray(slot)) slot.forEach(c => dumpScalingNodes(c, depth + 1))
+          else dumpScalingNodes(slot, depth + 1)
+        }
+        recurse(n.children.then)
+        recurse(n.children.else)
+        recurse(n.children.pass)
+        recurse(n.children.fail)
+        recurse(n.children.next)
+      }
+    }
+    if (n.incantations) {
+      n.incantations.forEach((inc, i) => dumpScalingNodes(inc, depth + 1))
+    }
+  }
+  console.log(`[DUMP] ========== RAW PAYLOAD BEFORE COMPRESSION ==========`)
+  dumpScalingNodes(rawNode)
+  console.log(`[DUMP] ========== END RAW PAYLOAD ==========`)
 
   console.log(`[Backtest] >>> Starting compression...`)
   const compressionStart = Date.now()
@@ -3177,16 +3557,42 @@ export async function runBacktest(payload, options = {}) {
   const decisionPrice = backtestMode === 'CC' || backtestMode === 'CO' ? 'close' : 'open'
 
   const allocationsAt = Array.from({ length: db.dates.length }, () => ({}))
+
   // Calculate lookback based on indicators used (momentum indicators need 252 days)
-  const lookback = Math.max(50, collectMaxLookback(node))
-  // Start evaluation from the later of: lookback period OR first valid position data
-  const startEvalIndex = Math.max(
-    decisionPrice === 'open' ? (lookback > 0 ? lookback + 1 : 0) : lookback,
-    firstValidPosIndex
+  const regularLookback = Math.max(50, collectMaxLookback(node))
+
+  // Branch lookback: indicators using branch:from/to need extra warmup because
+  // the branch equity curve must be calculated FIRST, then the indicator needs
+  // additional history on top of that. This applies to ALL node types.
+  const branchLookback = collectBranchLookbacks(node)
+
+  // Ratio lookbacks: ratio tickers (like SPY/AGG) need both components to have
+  // valid data before the ratio can be calculated. Each ratio has its own
+  // firstValidIndex + lookback requirement.
+  const ratioLookbacks = collectRatioLookbacks(node, db)
+
+  // Calculate effective start index considering all constraints:
+  // 1. Regular lookback (for normal indicators)
+  // 2. firstValidPosIndex + branchLookback (branch refs need extra warmup AFTER position data is available)
+  // 3. Each ratio's firstValidIndex + lookback
+  let startEvalIndex = Math.max(
+    decisionPrice === 'open' ? (regularLookback > 0 ? regularLookback + 1 : 0) : regularLookback,
+    firstValidPosIndex + branchLookback  // Branch references need extra warmup AFTER position tickers have data
   )
+
+  // Also check ratio constraints - each ratio has its own first valid index + lookback
+  for (const { firstValidIndex, lookback } of ratioLookbacks) {
+    const ratioStart = decisionPrice === 'open' ? firstValidIndex + lookback + 1 : firstValidIndex + lookback
+    startEvalIndex = Math.max(startEvalIndex, ratioStart)
+  }
+
+  console.log(`[WARMUP] regularLookback=${regularLookback}, branchLookback=${branchLookback}, firstValidPosIndex=${firstValidPosIndex}, ratioCount=${ratioLookbacks.length}, startEvalIndex=${startEvalIndex}`)
 
   // Persistent state for altExit (Enter/Exit) nodes across all days
   const altExitState = {}
+
+  // Track which days have valid scaling data (no null fallbacks)
+  const hasValidScalingData = new Array(db.dates.length).fill(true)
 
   for (let i = startEvalIndex; i < db.dates.length; i++) {
     const indicatorIndex = decisionPrice === 'open' ? i - 1 : i
@@ -3199,12 +3605,22 @@ export async function runBacktest(payload, options = {}) {
       warnings: [],
       tickerLocations, // Pre-computed ticker locations for O(1) lookup
       altExitState, // Persist Enter/Exit state across days
+      usedScalingFallback: false, // Track if any scaling node used null fallback
     }
     allocationsAt[i] = evaluateNode(ctx, node)
+    hasValidScalingData[i] = !ctx.usedScalingFallback
   }
 
   // Calculate equity curve
-  const startTradeIndex = startEvalIndex
+  // Find first day with non-empty allocation (skip days where indicators don't have enough data)
+  let startTradeIndex = startEvalIndex
+  for (let i = startEvalIndex; i < db.dates.length; i++) {
+    const alloc = allocationsAt[i]
+    if (alloc && Object.keys(alloc).length > 0) {
+      startTradeIndex = i
+      break
+    }
+  }
   const startPointIndex = backtestMode === 'OC' ? Math.max(0, startTradeIndex - 1) : startTradeIndex
   const points = [{ time: db.dates[startPointIndex], value: 1 }]
   const returns = []
@@ -3366,6 +3782,46 @@ export async function runBacktest(payload, options = {}) {
     indicatorIndex: db.dates.length - 1,
     decisionPrice: "close",
     warnings: [],
+    tickerLocations, // Needed for branch equity simulation
+  }
+
+  // Cache for branch equity curves (avoid recomputing for same branch)
+  const branchEquityCache = new Map()
+
+  // Helper to get or compute branch equity for indicator overlays
+  const getOrComputeBranchEquity = (ticker, parentNodeId) => {
+    if (!isBranchRef(ticker)) return null
+    if (!parentNodeId) {
+      console.warn(`[Overlay] Branch reference ${ticker} missing parentNodeId, cannot resolve`)
+      return null
+    }
+
+    const cacheKey = `${parentNodeId}:${ticker}`
+    if (branchEquityCache.has(cacheKey)) {
+      return branchEquityCache.get(cacheKey)
+    }
+
+    // Look up parent node from the raw tree
+    const parentNode = findNodeById(rawNode, parentNodeId)
+    if (!parentNode) {
+      console.warn(`[Overlay] Could not find parent node ${parentNodeId} for branch ${ticker}`)
+      branchEquityCache.set(cacheKey, null)
+      return null
+    }
+
+    // Get branch child node
+    const branchName = parseBranchRef(ticker)
+    const branchNode = getBranchChildNode(parentNode, branchName)
+    if (!branchNode) {
+      console.warn(`[Overlay] Could not find branch ${branchName} in node ${parentNodeId}`)
+      branchEquityCache.set(cacheKey, null)
+      return null
+    }
+
+    // Simulate branch equity
+    const branchEquity = simulateBranchEquity(overlayCtx, branchNode)
+    branchEquityCache.set(cacheKey, branchEquity)
+    return branchEquity
   }
 
   // Compute indicator overlay series if requested
@@ -3377,13 +3833,27 @@ export async function runBacktest(payload, options = {}) {
     const formatLabel = (ticker, metric, window) => {
       const WINDOWLESS = ['Current Price', 'Momentum (Weighted)', 'Momentum (Unweighted)', 'Momentum (12-Month SMA)', 'Drawdown', 'MACD Histogram', 'PPO Histogram', 'Laguerre RSI']
       const prefix = WINDOWLESS.includes(metric) ? '' : `${Math.floor(window || 0)}d `
-      return `${prefix}${metric} of ${getSeriesKey(ticker)}`
+      // For branch references, show the branch name instead of the raw ticker
+      const tickerLabel = isBranchRef(ticker) ? ticker.replace('branch:', '').replace('BRANCH:', '') + ' Branch' : getSeriesKey(ticker)
+      return `${prefix}${metric} of ${tickerLabel}`
     }
 
     // Compute left indicator series
     const leftSeries = []
+    const leftBranchEquity = isBranchRef(cond.ticker) ? getOrComputeBranchEquity(cond.ticker, cond.parentNodeId) : null
+
     for (let i = startEvalIndex; i < db.dates.length; i++) {
-      const value = metricAtIndex(overlayCtx, cond.ticker, cond.metric, cond.window, i)
+      let value
+      if (leftBranchEquity) {
+        // Use branchMetricAt for branch equity
+        value = branchMetricAt(overlayCtx, leftBranchEquity, cond.metric, cond.window, i)
+      } else if (isBranchRef(cond.ticker)) {
+        // Branch reference but no equity computed (error case)
+        value = null
+      } else {
+        // Regular ticker
+        value = metricAtIndex(overlayCtx, cond.ticker, cond.metric, cond.window, i)
+      }
       leftSeries.push({
         date: safeIsoDate(db.dates[i]),
         value: value ?? null
@@ -3394,8 +3864,17 @@ export async function runBacktest(payload, options = {}) {
     let rightSeries = null
     if (cond.expanded && cond.rightTicker && cond.rightMetric) {
       rightSeries = []
+      const rightBranchEquity = isBranchRef(cond.rightTicker) ? getOrComputeBranchEquity(cond.rightTicker, cond.parentNodeId) : null
+
       for (let i = startEvalIndex; i < db.dates.length; i++) {
-        const value = metricAtIndex(overlayCtx, cond.rightTicker, cond.rightMetric, cond.rightWindow || cond.window, i)
+        let value
+        if (rightBranchEquity) {
+          value = branchMetricAt(overlayCtx, rightBranchEquity, cond.rightMetric, cond.rightWindow || cond.window, i)
+        } else if (isBranchRef(cond.rightTicker)) {
+          value = null
+        } else {
+          value = metricAtIndex(overlayCtx, cond.rightTicker, cond.rightMetric, cond.rightWindow || cond.window, i)
+        }
         rightSeries.push({
           date: safeIsoDate(db.dates[i]),
           value: value ?? null
