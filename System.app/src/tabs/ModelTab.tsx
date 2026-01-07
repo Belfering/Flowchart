@@ -1,7 +1,7 @@
 // src/tabs/ModelTab.tsx
 // Model tab component - lazy loadable wrapper for flowchart builder
 
-import { type RefObject, useState, useMemo, useEffect, useCallback } from 'react'
+import { type RefObject, useState, useMemo, useEffect } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent } from '@/components/ui/card'
