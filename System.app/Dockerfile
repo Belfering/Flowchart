@@ -12,7 +12,7 @@ FROM node:20-slim AS builder
 
 # Cache buster - Railway sets RAILWAY_GIT_COMMIT_SHA automatically
 ARG RAILWAY_GIT_COMMIT_SHA
-ARG CACHEBUST=20260107
+ARG CACHEBUST=20260107v2
 
 WORKDIR /app
 
