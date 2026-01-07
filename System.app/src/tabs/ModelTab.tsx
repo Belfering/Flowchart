@@ -394,8 +394,20 @@ export function ModelTab({
       }
     }
 
+    // Initialize scroll dimensions on mount
+    const initScrollDimensions = () => {
+      const scrollContainer = flowchartScrollRef.current
+      if (scrollContainer) {
+        const { setFlowchartScrollWidth, setFlowchartClientWidth } = useUIStore.getState()
+        setFlowchartScrollWidth(scrollContainer.scrollWidth)
+        setFlowchartClientWidth(scrollContainer.clientWidth)
+      }
+    }
+
     // Initial update
     updateRect()
+    // Delay scroll dimension init to ensure content is rendered
+    setTimeout(initScrollDimensions, 100)
 
     // Update on resize
     window.addEventListener('resize', updateRect)
@@ -404,7 +416,10 @@ export function ModelTab({
     const container = flowchartScrollRef.current?.parentElement
     let resizeObserver: ResizeObserver | null = null
     if (container) {
-      resizeObserver = new ResizeObserver(updateRect)
+      resizeObserver = new ResizeObserver(() => {
+        updateRect()
+        initScrollDimensions()
+      })
       resizeObserver.observe(container)
     }
 
