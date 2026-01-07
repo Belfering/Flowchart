@@ -1862,6 +1862,74 @@ app.get('/api/admin/me', authenticate, async (req, res) => {
   })
 })
 
+// ============================================
+// VARIABLE LIBRARY (FRD-035)
+// ============================================
+
+// GET /api/admin/variables - Get all metric variables
+app.get('/api/admin/variables', authenticate, requireSuperAdmin, async (req, res) => {
+  try {
+    await ensureDbInitialized()
+    const { sqlite } = await import('./db/index.mjs')
+    const variables = sqlite.prepare(`
+      SELECT id, variable_name as variableName, display_name as displayName,
+             description, formula, source_file as sourceFile, category,
+             created_at as createdAt
+      FROM metric_variables
+      ORDER BY category, variable_name
+    `).all()
+    res.json({ variables })
+  } catch (err) {
+    console.error('Error fetching variables:', err)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// POST /api/admin/variables - Create a new metric variable
+app.post('/api/admin/variables', authenticate, requireSuperAdmin, async (req, res) => {
+  try {
+    const { variableName, displayName, description, formula, sourceFile, category } = req.body
+    if (!variableName) {
+      return res.status(400).json({ error: 'variableName is required' })
+    }
+    await ensureDbInitialized()
+    const { sqlite } = await import('./db/index.mjs')
+    const result = sqlite.prepare(`
+      INSERT INTO metric_variables (variable_name, display_name, description, formula, source_file, category, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(variableName, displayName || null, description || null, formula || null, sourceFile || null, category || null, Date.now())
+
+    const newVar = sqlite.prepare(`
+      SELECT id, variable_name as variableName, display_name as displayName,
+             description, formula, source_file as sourceFile, category,
+             created_at as createdAt
+      FROM metric_variables WHERE id = ?
+    `).get(result.lastInsertRowid)
+
+    res.json(newVar)
+  } catch (err) {
+    console.error('Error creating variable:', err)
+    if (err.message?.includes('UNIQUE constraint')) {
+      return res.status(400).json({ error: 'Variable name already exists' })
+    }
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// DELETE /api/admin/variables/:id - Delete a metric variable
+app.delete('/api/admin/variables/:id', authenticate, requireSuperAdmin, async (req, res) => {
+  try {
+    const { id } = req.params
+    await ensureDbInitialized()
+    const { sqlite } = await import('./db/index.mjs')
+    sqlite.prepare('DELETE FROM metric_variables WHERE id = ?').run(id)
+    res.json({ success: true })
+  } catch (err) {
+    console.error('Error deleting variable:', err)
+    res.status(500).json({ error: err.message })
+  }
+})
+
 // GET /api/admin/systems/user - Get all user systems (from main atlas.db)
 app.get('/api/admin/systems/user', authenticate, requireSuperAdmin, async (req, res) => {
   try {
@@ -2033,7 +2101,7 @@ app.get('/api/waitlist/position/:email', async (req, res) => {
 // Database-Backed API (Scalable Architecture)
 // ============================================================================
 import * as database from './db/index.mjs'
-import { runBacktest, initTickerCache } from './backtest.mjs'
+import { runBacktest, initTickerCache, clearTickerDataCache } from './backtest.mjs'
 import { generateSanityReport, computeBenchmarkMetrics, computeBeta } from './sanity-report.mjs'
 import * as backtestCache from './db/cache.mjs'
 import authRoutes from './routes/auth.mjs'
@@ -3416,27 +3484,32 @@ app.get('/api/benchmarks/metrics', async (req, res) => {
 
 // POST /api/indicator-series - Get indicator time series for chart overlay
 // Takes conditions and returns indicator values for each date
+// Optionally accepts a payload for resolving branch references (branch:from, branch:to, etc.)
 app.post('/api/indicator-series', async (req, res) => {
   try {
-    const { conditions, mode = 'OC' } = req.body
+    const { conditions, mode = 'OC', payload } = req.body
 
     if (!conditions || !Array.isArray(conditions) || conditions.length === 0) {
       return res.json({ indicatorOverlays: [] })
     }
 
-    // Collect all tickers from conditions
+    // Collect all tickers from conditions (excluding branch references)
     const tickers = new Set()
     conditions.forEach(cond => {
-      if (cond.ticker) tickers.add(cond.ticker)
-      if (cond.rightTicker) tickers.add(cond.rightTicker)
+      if (cond.ticker && !cond.ticker.toLowerCase().startsWith('branch:')) {
+        tickers.add(cond.ticker)
+      }
+      if (cond.rightTicker && !cond.rightTicker.toLowerCase().startsWith('branch:')) {
+        tickers.add(cond.rightTicker)
+      }
     })
 
     // Always include SPY as reference
     tickers.add('SPY')
 
-    // Create a minimal payload with just a position node for SPY
-    // This is needed to run the backtest infrastructure
-    const dummyPayload = {
+    // Use the actual payload if provided (needed for branch reference resolution)
+    // Otherwise fall back to a minimal payload
+    const backtestPayload = payload || {
       id: 'dummy-root',
       kind: 'position',
       title: 'Dummy',
@@ -3446,7 +3519,8 @@ app.post('/api/indicator-series', async (req, res) => {
     }
 
     // Run backtest with indicator overlays
-    const result = await runBacktest(dummyPayload, {
+    // Pass the full payload so branch references can be resolved
+    const result = await runBacktest(backtestPayload, {
       mode,
       costBps: 0,
       indicatorOverlays: conditions
@@ -3861,9 +3935,10 @@ app.post('/api/admin/cache/invalidate', authenticate, requireAdmin, async (req, 
       const invalidated = backtestCache.invalidateBotCache(botId)
       res.json({ success: true, botId, invalidated })
     } else {
-      // Invalidate all
-      const count = backtestCache.invalidateAllCache()
-      res.json({ success: true, invalidatedCount: count })
+      // Invalidate all caches: SQLite backtest cache + in-memory ticker data cache
+      const backtestCount = backtestCache.invalidateAllCache()
+      const tickerCount = clearTickerDataCache()
+      res.json({ success: true, invalidatedCount: backtestCount, tickerCacheCleared: tickerCount })
     }
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) })

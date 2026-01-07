@@ -374,6 +374,8 @@ export const NodeCard = ({
         return (
           <AltExitBody
             node={node}
+            enabledOverlays={enabledOverlays}
+            onToggleOverlay={onToggleOverlay}
             onAddEntryCondition={onAddEntryCondition}
             onDeleteEntryCondition={onDeleteEntryCondition}
             onUpdateEntryCondition={onUpdateEntryCondition}

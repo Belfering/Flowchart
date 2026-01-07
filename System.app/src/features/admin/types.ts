@@ -22,7 +22,7 @@ export interface AdminDataPanelProps {
 /**
  * Admin panel subtab options
  */
-export type AdminSubtab = 'Atlas Overview' | 'Nexus Maintenance' | 'Ticker Data' | 'User Management' | 'Trading Control' | 'Atlas Systems'
+export type AdminSubtab = 'Atlas Overview' | 'Nexus Maintenance' | 'Ticker Data' | 'User Management' | 'Trading Control' | 'Atlas Systems' | 'Variable Library'
 
 /**
  * Atlas System type for super admin panel

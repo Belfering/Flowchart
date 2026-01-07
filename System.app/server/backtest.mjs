@@ -2468,18 +2468,94 @@ const getSlotConfig = (node, slot) => {
 // CONDITION EVALUATION
 // ============================================
 
-const normalizeComparatorChoice = (c) => (c === 'gt' || c === '>' ? 'gt' : 'lt')
+const normalizeComparatorChoice = (c) => {
+  if (c === 'gt' || c === '>') return 'gt'
+  if (c === 'crossAbove') return 'crossAbove'
+  if (c === 'crossBelow') return 'crossBelow'
+  return 'lt'
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Date Condition Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Convert a date to a comparable "month-day" number (month * 100 + day)
+ */
+const toMonthDay = (month, day) => month * 100 + day
+
+/**
+ * Check if a trading date (timestamp in seconds) falls within the specified date range
+ * Handles year-wrapping ranges (e.g., Dec 15 to Jan 15)
+ */
+const isDateInRange = (timestamp, fromMonth, fromDay, toMonth, toDay) => {
+  // Convert timestamp (seconds) to Date
+  const date = new Date(timestamp * 1000)
+  const currentMonth = date.getUTCMonth() + 1 // 1-12
+  const currentDay = date.getUTCDate()
+  const current = toMonthDay(currentMonth, currentDay)
+
+  // If no range (single date), check exact match
+  if (toMonth === undefined || toDay === undefined) {
+    const target = toMonthDay(fromMonth, fromDay)
+    return current === target
+  }
+
+  const from = toMonthDay(fromMonth, fromDay)
+  const to = toMonthDay(toMonth, toDay)
+
+  // Normal range (e.g., Jan 1 to Mar 31)
+  if (from <= to) {
+    return current >= from && current <= to
+  }
+
+  // Year-wrapping range (e.g., Nov 1 to Feb 28)
+  // True if current >= from OR current <= to
+  return current >= from || current <= to
+}
 
 // Evaluate a single condition at a specific index (for forDays support)
 const evaluateConditionAtIndex = (ctx, cond, index, parentNode = null) => {
+  // Handle Date conditions specially
+  if (cond.metric === 'Date') {
+    const dateTimestamp = ctx.db.dates[index]
+    if (dateTimestamp == null) return null
+    // For expanded Date conditions, use dateTo if available, otherwise default to end of same month
+    const fromMonth = cond.dateMonth ?? 1
+    const fromDay = cond.dateDay ?? 1
+    let toMonth, toDay
+    if (cond.expanded) {
+      // Use dateTo if set, otherwise default to last day of the from month
+      toMonth = cond.dateTo?.month ?? fromMonth
+      toDay = cond.dateTo?.day ?? 31
+    }
+    return isDateInRange(dateTimestamp, fromMonth, fromDay, toMonth, toDay)
+  }
+
   const leftTicker = normalizeChoice(cond.ticker)
   const leftVal = metricAtIndex(ctx, leftTicker, cond.metric, cond.window, index, parentNode)
   if (leftVal == null) return null
 
+  const cmp = normalizeComparatorChoice(cond.comparator)
+  const isCrossing = cmp === 'crossAbove' || cmp === 'crossBelow'
+
+  // For crossing comparators, get yesterday's value
+  const leftYesterday = isCrossing && index > 0
+    ? metricAtIndex(ctx, leftTicker, cond.metric, cond.window, index - 1, parentNode)
+    : null
+
   if (!cond.expanded) {
     const threshold = Number(cond.threshold)
     if (!Number.isFinite(threshold)) return null
-    const cmp = normalizeComparatorChoice(cond.comparator)
+
+    if (isCrossing) {
+      if (leftYesterday == null) return null
+      // crossAbove: yesterday < threshold AND today >= threshold
+      // crossBelow: yesterday > threshold AND today <= threshold
+      if (cmp === 'crossAbove') return leftYesterday < threshold && leftVal >= threshold
+      return leftYesterday > threshold && leftVal <= threshold
+    }
+
     return cmp === 'gt' ? leftVal > threshold : leftVal < threshold
   }
 
@@ -2488,11 +2564,38 @@ const evaluateConditionAtIndex = (ctx, cond, index, parentNode = null) => {
   const rightWindow = cond.rightWindow ?? cond.window
   const rightVal = metricAtIndex(ctx, rightTicker, rightMetric, rightWindow, index, parentNode)
   if (rightVal == null) return null
-  const cmp = normalizeComparatorChoice(cond.comparator)
+
+  if (isCrossing) {
+    const rightYesterday = index > 0
+      ? metricAtIndex(ctx, rightTicker, rightMetric, rightWindow, index - 1, parentNode)
+      : null
+    if (leftYesterday == null || rightYesterday == null) return null
+    // crossAbove: yesterday left < right AND today left >= right
+    // crossBelow: yesterday left > right AND today left <= right
+    if (cmp === 'crossAbove') return leftYesterday < rightYesterday && leftVal >= rightVal
+    return leftYesterday > rightYesterday && leftVal <= rightVal
+  }
+
   return cmp === 'gt' ? leftVal > rightVal : leftVal < rightVal
 }
 
 const evaluateCondition = (ctx, cond, parentNode = null) => {
+  // Handle Date conditions specially (no forDays needed for date conditions)
+  if (cond.metric === 'Date') {
+    const dateTimestamp = ctx.db.dates[ctx.indicatorIndex]
+    if (dateTimestamp == null) return null
+    // For expanded Date conditions, use dateTo if available, otherwise default to end of same month
+    const fromMonth = cond.dateMonth ?? 1
+    const fromDay = cond.dateDay ?? 1
+    let toMonth, toDay
+    if (cond.expanded) {
+      // Use dateTo if set, otherwise default to last day of the from month
+      toMonth = cond.dateTo?.month ?? fromMonth
+      toDay = cond.dateTo?.day ?? 31
+    }
+    return isDateInRange(dateTimestamp, fromMonth, fromDay, toMonth, toDay)
+  }
+
   const forDays = cond.forDays || 1
 
   // For forDays > 1, check that the condition was true for the past N consecutive days
@@ -2518,10 +2621,24 @@ const evaluateCondition = (ctx, cond, parentNode = null) => {
   const leftVal = metricAt(ctx, leftTicker, cond.metric, cond.window, parentNode)
   if (leftVal == null) return null
 
+  const cmp = normalizeComparatorChoice(cond.comparator)
+  const isCrossing = cmp === 'crossAbove' || cmp === 'crossBelow'
+
+  // For crossing comparators, get yesterday's value
+  const leftYesterday = isCrossing && ctx.indicatorIndex > 0
+    ? metricAtIndex(ctx, leftTicker, cond.metric, cond.window, ctx.indicatorIndex - 1, parentNode)
+    : null
+
   if (!cond.expanded) {
     const threshold = Number(cond.threshold)
     if (!Number.isFinite(threshold)) return null
-    const cmp = normalizeComparatorChoice(cond.comparator)
+
+    if (isCrossing) {
+      if (leftYesterday == null) return null
+      if (cmp === 'crossAbove') return leftYesterday < threshold && leftVal >= threshold
+      return leftYesterday > threshold && leftVal <= threshold
+    }
+
     return cmp === 'gt' ? leftVal > threshold : leftVal < threshold
   }
 
@@ -2530,7 +2647,16 @@ const evaluateCondition = (ctx, cond, parentNode = null) => {
   const rightWindow = cond.rightWindow ?? cond.window
   const rightVal = metricAt(ctx, rightTicker, rightMetric, rightWindow, parentNode)
   if (rightVal == null) return null
-  const cmp = normalizeComparatorChoice(cond.comparator)
+
+  if (isCrossing) {
+    const rightYesterday = ctx.indicatorIndex > 0
+      ? metricAtIndex(ctx, rightTicker, rightMetric, rightWindow, ctx.indicatorIndex - 1, parentNode)
+      : null
+    if (leftYesterday == null || rightYesterday == null) return null
+    if (cmp === 'crossAbove') return leftYesterday < rightYesterday && leftVal >= rightVal
+    return leftYesterday > rightYesterday && leftVal <= rightVal
+  }
+
   return cmp === 'gt' ? leftVal > rightVal : leftVal < rightVal
 }
 

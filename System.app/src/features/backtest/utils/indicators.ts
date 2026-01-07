@@ -417,10 +417,38 @@ export const rollingSmaOfReturns = (values: number[], period: number): Array<num
 }
 
 /**
- * Standard Deviation of Prices (absolute price volatility)
+ * Standard Deviation of Prices (absolute price volatility in dollars, not percentage)
+ * Unlike rollingStdDev which multiplies by 100 for return-based volatility,
+ * this returns the raw standard deviation of price values.
  */
 export const rollingStdDevOfPrices = (values: number[], period: number): Array<number | null> => {
-  return rollingStdDev(values, period)
+  const out: Array<number | null> = new Array(values.length).fill(null)
+  let sum = 0
+  let sumSq = 0
+  let missing = 0
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i]
+    if (Number.isNaN(v)) {
+      missing += 1
+    } else {
+      sum += v
+      sumSq += v * v
+    }
+    if (i >= period) {
+      const prev = values[i - period]
+      if (Number.isNaN(prev)) missing -= 1
+      else {
+        sum -= prev
+        sumSq -= prev * prev
+      }
+    }
+    if (i >= period - 1 && missing === 0) {
+      const mean = sum / period
+      const variance = Math.max(0, sumSq / period - mean * mean)
+      out[i] = Math.sqrt(variance) // Raw stddev, no percentage conversion
+    }
+  }
+  return out
 }
 
 /**
@@ -437,7 +465,9 @@ export const rolling13612W = (closes: number[]): Array<number | null> => {
     const p3 = closes[i - m3]
     const p6 = closes[i - m6]
     const p12 = closes[i - m12]
-    if (p1 && p3 && p6 && p12 && !Number.isNaN(p0) && !Number.isNaN(p1) && !Number.isNaN(p3) && !Number.isNaN(p6) && !Number.isNaN(p12)) {
+    // Check for valid numbers (not NaN) and non-zero divisors (can't divide by 0)
+    if (p1 !== 0 && p3 !== 0 && p6 !== 0 && p12 !== 0 &&
+        Number.isFinite(p0) && Number.isFinite(p1) && Number.isFinite(p3) && Number.isFinite(p6) && Number.isFinite(p12)) {
       out[i] = (12 * (p0 / p1 - 1) + 4 * (p0 / p3 - 1) + 2 * (p0 / p6 - 1) + (p0 / p12 - 1)) / 19
     }
   }
@@ -456,7 +486,9 @@ export const rolling13612U = (closes: number[]): Array<number | null> => {
     const p3 = closes[i - m3]
     const p6 = closes[i - m6]
     const p12 = closes[i - m12]
-    if (p1 && p3 && p6 && p12 && !Number.isNaN(p0) && !Number.isNaN(p1) && !Number.isNaN(p3) && !Number.isNaN(p6) && !Number.isNaN(p12)) {
+    // Check for valid numbers (not NaN) and non-zero divisors (can't divide by 0)
+    if (p1 !== 0 && p3 !== 0 && p6 !== 0 && p12 !== 0 &&
+        Number.isFinite(p0) && Number.isFinite(p1) && Number.isFinite(p3) && Number.isFinite(p6) && Number.isFinite(p12)) {
       out[i] = ((p0 / p1 - 1) + (p0 / p3 - 1) + (p0 / p6 - 1) + (p0 / p12 - 1)) / 4
     }
   }
@@ -604,6 +636,7 @@ export const rollingTrendClarity = (values: number[], period: number): Array<num
 
 /**
  * Ultimate Smoother (Ehlers)
+ * Fixed: c1 = (1 - c2 - c3) / 4 ensures unity DC gain (output tracks input level)
  */
 export const rollingUltimateSmoother = (values: number[], period: number): Array<number | null> => {
   const out: Array<number | null> = new Array(values.length).fill(null)
@@ -611,7 +644,8 @@ export const rollingUltimateSmoother = (values: number[], period: number): Array
   const b = 2 * a * Math.cos(1.414 * Math.PI / period)
   const c2 = b
   const c3 = -a * a
-  const c1 = (1 + c2 - c3) / 4
+  // Unity DC gain: c1*4 + c2 + c3 = 1, so c1 = (1 - c2 - c3) / 4
+  const c1 = (1 - c2 - c3) / 4
 
   for (let i = 2; i < values.length; i++) {
     if (i < period) continue

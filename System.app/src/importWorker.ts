@@ -3,7 +3,7 @@
 
 type PositionChoice = string
 type MetricChoice = string
-type ComparatorChoice = 'gt' | 'lt' | 'gte' | 'lte'
+type ComparatorChoice = 'gt' | 'lt' | 'crossAbove' | 'crossBelow'
 type WeightMode = 'equal' | 'defined' | 'inverse'
 type BlockKind = 'basic' | 'function' | 'indicator' | 'position' | 'numbered' | 'call' | 'altExit' | 'scaling'
 type SlotId = 'next' | 'then' | 'else' | `ladder-${number}`

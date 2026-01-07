@@ -52,6 +52,34 @@ export function useBacktestRunner({ callChainsById: _callChainsById }: UseBackte
       const prepared = normalizeNodeForBacktest(ensureSlots(cloneNode(node)))
       const payload = JSON.stringify(prepared)
 
+      // DEBUG: Log scaling nodes in the payload to verify branch:from is being sent
+      const dumpScalingNodes = (n: FlowNode, depth: number = 0): void => {
+        if (!n) return
+        const indent = '  '.repeat(depth)
+        if (n.kind === 'scaling') {
+          console.log(`${indent}[PAYLOAD DUMP] SCALING: id=${n.id}, scaleTicker="${n.scaleTicker}", scaleMetric="${n.scaleMetric}"`)
+          const children = n.children as Record<string, unknown>
+          console.log(`${indent}[PAYLOAD DUMP]   children.then: ${JSON.stringify(children?.then ? 'present' : 'NONE')}`)
+          console.log(`${indent}[PAYLOAD DUMP]   children.else: ${JSON.stringify(children?.else ? 'present' : 'NONE')}`)
+        }
+        // Recurse
+        if (n.children) {
+          if (Array.isArray(n.children)) {
+            n.children.forEach(c => c && dumpScalingNodes(c, depth + 1))
+          } else {
+            const ch = n.children as Record<string, FlowNode | FlowNode[] | null>
+            Object.values(ch).forEach(slot => {
+              if (!slot) return
+              if (Array.isArray(slot)) slot.forEach(c => c && dumpScalingNodes(c, depth + 1))
+              else dumpScalingNodes(slot, depth + 1)
+            })
+          }
+        }
+      }
+      console.log('[PAYLOAD DUMP] ========== OUTGOING PAYLOAD ==========')
+      dumpScalingNodes(prepared)
+      console.log('[PAYLOAD DUMP] ========== END ==========')
+
       // Call server API for backtest
       console.log(`[Backtest] Calling server API with mode=${backtestMode}, costBps=${backtestCostBps}...`)
       const response = await fetch(`${API_BASE}/backtest`, {

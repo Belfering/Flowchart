@@ -36,13 +36,37 @@ export const normalizeConditionType = (
 // Condition Expression Formatting
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Month names for date formatting
+const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+/**
+ * Format a date as "Jan 1st", "Feb 14th", etc.
+ */
+const formatDateCondition = (month: number, day: number): string => {
+  const suffix = day === 1 || day === 21 || day === 31 ? 'st'
+    : day === 2 || day === 22 ? 'nd'
+    : day === 3 || day === 23 ? 'rd' : 'th'
+  return `${MONTH_ABBR[month - 1]} ${day}${suffix}`
+}
+
 /**
  * Format a condition as a human-readable expression string
  */
 export const conditionExpr = (cond: ConditionLine): string => {
+  // Special formatting for Date conditions
+  if (cond.metric === 'Date') {
+    const fromDate = formatDateCondition(cond.dateMonth ?? 1, cond.dateDay ?? 1)
+    if (cond.expanded && cond.dateTo) {
+      const toDate = formatDateCondition(cond.dateTo.month, cond.dateTo.day)
+      return `Date is ${fromDate} to ${toDate}`
+    }
+    return `Date is ${fromDate}`
+  }
+
   const leftPrefix = isWindowlessIndicator(cond.metric) ? '' : `${Math.floor(Number(cond.window || 0))}d `
   const left = `${leftPrefix}${cond.metric} of ${normalizeChoice(cond.ticker)}`
-  const cmp = normalizeComparatorChoice(cond.comparator) === 'lt' ? '<' : '>'
+  const normalized = normalizeComparatorChoice(cond.comparator)
+  const cmp = normalized === 'lt' ? '<' : normalized === 'gt' ? '>' : normalized === 'crossAbove' ? '↗' : '↘'
   const forDaysSuffix = cond.forDays && cond.forDays > 1 ? ` for ${cond.forDays} days` : ''
   if (!cond.expanded) return `${left} ${cmp} ${String(cond.threshold)}${forDaysSuffix}`
 
@@ -52,6 +76,52 @@ export const conditionExpr = (cond: ConditionLine): string => {
   const rightPrefix = isWindowlessIndicator(rightMetric) ? '' : `${rightWindow}d `
   const right = `${rightPrefix}${rightMetric} of ${rightTicker}`
   return `${left} ${cmp} ${right}${forDaysSuffix}`
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Date Evaluation Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Convert a date to a comparable "month-day" number (month * 100 + day)
+ * This allows easy comparison that handles year wrapping properly
+ */
+const toMonthDay = (month: number, day: number): number => month * 100 + day
+
+/**
+ * Check if a trading date (ISO string) falls within the specified date range
+ * Handles year-wrapping ranges (e.g., Dec 15 to Jan 15)
+ */
+const isDateInRange = (
+  isoDate: string,
+  fromMonth: number,
+  fromDay: number,
+  toMonth?: number,
+  toDay?: number
+): boolean => {
+  // Parse the ISO date string to get month and day
+  const date = new Date(isoDate)
+  const currentMonth = date.getUTCMonth() + 1 // 1-12
+  const currentDay = date.getUTCDate()
+  const current = toMonthDay(currentMonth, currentDay)
+
+  // If no range (single date), check exact match
+  if (toMonth === undefined || toDay === undefined) {
+    const target = toMonthDay(fromMonth, fromDay)
+    return current === target
+  }
+
+  const from = toMonthDay(fromMonth, fromDay)
+  const to = toMonthDay(toMonth, toDay)
+
+  // Normal range (e.g., Jan 1 to Mar 31)
+  if (from <= to) {
+    return current >= from && current <= to
+  }
+
+  // Year-wrapping range (e.g., Nov 1 to Feb 28)
+  // True if current >= from OR current <= to
+  return current >= from || current <= to
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -66,17 +136,63 @@ export const evalConditionAtIndex = (
   cond: ConditionLine,
   index: number
 ): boolean => {
+  // Handle Date conditions specially
+  if (cond.metric === 'Date') {
+    const dateTimestamp = ctx.db.dates[index]
+    if (dateTimestamp == null) return false
+    const isoDate = isoFromUtcSeconds(dateTimestamp)
+    // For expanded Date conditions, use dateTo if available, otherwise default to end of same month
+    const fromMonth = cond.dateMonth ?? 1
+    const fromDay = cond.dateDay ?? 1
+    let toMonth: number | undefined, toDay: number | undefined
+    if (cond.expanded) {
+      // Use dateTo if set, otherwise default to last day of the from month
+      toMonth = cond.dateTo?.month ?? fromMonth
+      toDay = cond.dateTo?.day ?? 31
+    }
+    return isDateInRange(isoDate, fromMonth, fromDay, toMonth, toDay)
+  }
+
   const cmp = normalizeComparatorChoice(cond.comparator)
   const left = metricAtIndex(ctx, cond.ticker, cond.metric, cond.window, index)
+
+  // For crossing comparators, we need yesterday's value too
+  const isCrossing = cmp === 'crossAbove' || cmp === 'crossBelow'
+  const leftYesterday = isCrossing && index > 0
+    ? metricAtIndex(ctx, cond.ticker, cond.metric, cond.window, index - 1)
+    : null
+
   if (cond.expanded) {
     const rightMetric = cond.rightMetric ?? cond.metric
     const rightTicker = cond.rightTicker ?? cond.ticker
     const rightWindow = cond.rightWindow ?? cond.window
     const right = metricAtIndex(ctx, rightTicker, rightMetric, rightWindow, index)
     if (left == null || right == null) return false
+
+    if (isCrossing) {
+      const rightYesterday = index > 0
+        ? metricAtIndex(ctx, rightTicker, rightMetric, rightWindow, index - 1)
+        : null
+      if (leftYesterday == null || rightYesterday == null) return false
+      // crossAbove: yesterday left < right AND today left >= right
+      // crossBelow: yesterday left > right AND today left <= right
+      if (cmp === 'crossAbove') return leftYesterday < rightYesterday && left >= right
+      return leftYesterday > rightYesterday && left <= right
+    }
+
     return cmp === 'lt' ? left < right : left > right
   }
+
   if (left == null) return false
+
+  if (isCrossing) {
+    if (leftYesterday == null) return false
+    // crossAbove: yesterday < threshold AND today >= threshold
+    // crossBelow: yesterday > threshold AND today <= threshold
+    if (cmp === 'crossAbove') return leftYesterday < cond.threshold && left >= cond.threshold
+    return leftYesterday > cond.threshold && left <= cond.threshold
+  }
+
   return cmp === 'lt' ? left < cond.threshold : left > cond.threshold
 }
 
@@ -89,6 +205,36 @@ export const evalCondition = (
   traceOwnerId: string,
   cond: ConditionLine
 ): boolean => {
+  // Handle Date conditions specially
+  if (cond.metric === 'Date') {
+    const dateTimestamp = ctx.db.dates[ctx.indicatorIndex]
+    if (dateTimestamp == null) {
+      ctx.trace?.recordCondition(traceOwnerId, cond, false, {
+        date: 'unknown',
+        left: null,
+        threshold: undefined,
+      })
+      return false
+    }
+    const isoDate = isoFromUtcSeconds(dateTimestamp)
+    // For expanded Date conditions, use dateTo if available, otherwise default to end of same month
+    const fromMonth = cond.dateMonth ?? 1
+    const fromDay = cond.dateDay ?? 1
+    let toMonth: number | undefined, toDay: number | undefined
+    if (cond.expanded) {
+      // Use dateTo if set, otherwise default to last day of the from month
+      toMonth = cond.dateTo?.month ?? fromMonth
+      toDay = cond.dateTo?.day ?? 31
+    }
+    const ok = isDateInRange(isoDate, fromMonth, fromDay, toMonth, toDay)
+    ctx.trace?.recordCondition(traceOwnerId, cond, ok, {
+      date: isoDate,
+      left: null,
+      threshold: undefined,
+    })
+    return ok
+  }
+
   const forDays = cond.forDays || 1
   const cmp = normalizeComparatorChoice(cond.comparator)
 
@@ -128,6 +274,13 @@ export const evalCondition = (
 
   // Standard single-day evaluation (forDays = 1)
   const left = metricAt(ctx, cond.ticker, cond.metric, cond.window)
+  const isCrossing = cmp === 'crossAbove' || cmp === 'crossBelow'
+
+  // For crossing comparators, get yesterday's values
+  const leftYesterday = isCrossing && ctx.indicatorIndex > 0
+    ? metricAtIndex(ctx, cond.ticker, cond.metric, cond.window, ctx.indicatorIndex - 1)
+    : null
+
   if (cond.expanded) {
     const rightMetric = cond.rightMetric ?? cond.metric
     const rightTicker = cond.rightTicker ?? cond.ticker
@@ -147,7 +300,27 @@ export const evalCondition = (
       })
       return false
     }
-    const ok = cmp === 'lt' ? left < right : left > right
+
+    let ok: boolean
+    if (isCrossing) {
+      const rightYesterday = ctx.indicatorIndex > 0
+        ? metricAtIndex(ctx, rightTicker, rightMetric, rightWindow, ctx.indicatorIndex - 1)
+        : null
+      if (leftYesterday == null || rightYesterday == null) {
+        ctx.trace?.recordCondition(traceOwnerId, cond, false, {
+          date: isoFromUtcSeconds(ctx.db.dates[ctx.decisionIndex]),
+          left,
+          right,
+        })
+        return false
+      }
+      ok = cmp === 'crossAbove'
+        ? leftYesterday < rightYesterday && left >= right
+        : leftYesterday > rightYesterday && left <= right
+    } else {
+      ok = cmp === 'lt' ? left < right : left > right
+    }
+
     ctx.trace?.recordCondition(traceOwnerId, cond, ok, {
       date: isoFromUtcSeconds(ctx.db.dates[ctx.decisionIndex]),
       left,
@@ -169,7 +342,24 @@ export const evalCondition = (
     })
     return false
   }
-  const ok = cmp === 'lt' ? left < cond.threshold : left > cond.threshold
+
+  let ok: boolean
+  if (isCrossing) {
+    if (leftYesterday == null) {
+      ctx.trace?.recordCondition(traceOwnerId, cond, false, {
+        date: isoFromUtcSeconds(ctx.db.dates[ctx.decisionIndex]),
+        left,
+        threshold: cond.threshold,
+      })
+      return false
+    }
+    ok = cmp === 'crossAbove'
+      ? leftYesterday < cond.threshold && left >= cond.threshold
+      : leftYesterday > cond.threshold && left <= cond.threshold
+  } else {
+    ok = cmp === 'lt' ? left < cond.threshold : left > cond.threshold
+  }
+
   ctx.trace?.recordCondition(traceOwnerId, cond, ok, {
     date: isoFromUtcSeconds(ctx.db.dates[ctx.decisionIndex]),
     left,

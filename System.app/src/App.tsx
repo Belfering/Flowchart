@@ -563,12 +563,13 @@ function App() {
     }
 
     // Fetch indicator series from server
+    // Send the full payload so server can resolve branch references
     const fetchOverlays = async () => {
       try {
         const res = await fetch(API_BASE + "/indicator-series", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ conditions, mode: backtestMode })
+          body: JSON.stringify({ conditions, mode: backtestMode, payload: current })
         })
         if (!res.ok) throw new Error("Failed to fetch indicator series")
         const data = await res.json()

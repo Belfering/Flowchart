@@ -10,6 +10,8 @@ import type { TickerModalMode } from '@/shared/components'
 
 export interface AltExitBodyProps {
   node: FlowNode
+  enabledOverlays?: Set<string>
+  onToggleOverlay?: (key: string) => void
   onAddEntryCondition: (nodeId: string, type: 'and' | 'or') => void
   onDeleteEntryCondition: (nodeId: string, condId: string) => void
   onUpdateEntryCondition: (nodeId: string, condId: string, updates: Partial<ConditionLine>) => void
@@ -26,6 +28,8 @@ export interface AltExitBodyProps {
 
 export const AltExitBody = ({
   node,
+  enabledOverlays,
+  onToggleOverlay,
   onAddEntryCondition,
   onDeleteEntryCondition,
   onUpdateEntryCondition,
@@ -50,20 +54,36 @@ export const AltExitBody = ({
     <>
       {/* ENTER IF conditions */}
       <div className="condition-bubble">
-        {node.entryConditions?.map((cond, idx) => (
-          <div className="flex items-center gap-2" key={cond.id}>
-            <div className="w-3.5 h-full border-l border-border" />
-            <ConditionEditor
-              condition={cond}
-              index={idx}
-              total={node.entryConditions?.length ?? 0}
-              onUpdate={(updates) => onUpdateEntryCondition(node.id, cond.id, updates)}
-              onDelete={() => onDeleteEntryCondition(node.id, cond.id)}
-              openTickerModal={openTickerModal}
-              nodeKind={node.kind}
-            />
-          </div>
-        ))}
+        {node.entryConditions?.map((cond, idx) => {
+          const overlayKey = `${node.id}:entry:${cond.id}`
+          const isOverlayActive = enabledOverlays?.has(overlayKey)
+          return (
+            <div className="flex items-center gap-2" key={cond.id}>
+              <div className="w-3.5 h-full border-l border-border" />
+              {/* Indicator overlay toggle button - only on first condition */}
+              {onToggleOverlay && idx === 0 && (
+                <Button
+                  variant={isOverlayActive ? 'accent' : 'ghost'}
+                  size="sm"
+                  className={`h-6 w-6 p-0 text-xs ${isOverlayActive ? 'ring-2 ring-accent' : ''}`}
+                  onClick={() => onToggleOverlay(overlayKey)}
+                  title={isOverlayActive ? 'Hide indicator on chart' : 'Show indicator on chart'}
+                >
+                  📈
+                </Button>
+              )}
+              <ConditionEditor
+                condition={cond}
+                index={idx}
+                total={node.entryConditions?.length ?? 0}
+                onUpdate={(updates) => onUpdateEntryCondition(node.id, cond.id, updates)}
+                onDelete={() => onDeleteEntryCondition(node.id, cond.id)}
+                openTickerModal={openTickerModal}
+                nodeKind={node.kind}
+              />
+            </div>
+          )
+        })}
       </div>
 
       {/* Add entry condition buttons */}
@@ -123,20 +143,36 @@ export const AltExitBody = ({
 
       {/* Exit conditions */}
       <div className="condition-bubble">
-        {node.exitConditions?.map((cond, idx) => (
-          <div className="flex items-center gap-2" key={cond.id}>
-            <div className="w-3.5 h-full border-l border-border" />
-            <ConditionEditor
-              condition={cond}
-              index={idx}
-              total={node.exitConditions?.length ?? 0}
-              onUpdate={(updates) => onUpdateExitCondition(node.id, cond.id, updates)}
-              onDelete={() => onDeleteExitCondition(node.id, cond.id)}
-              openTickerModal={openTickerModal}
-              nodeKind={node.kind}
-            />
-          </div>
-        ))}
+        {node.exitConditions?.map((cond, idx) => {
+          const overlayKey = `${node.id}:exit:${cond.id}`
+          const isOverlayActive = enabledOverlays?.has(overlayKey)
+          return (
+            <div className="flex items-center gap-2" key={cond.id}>
+              <div className="w-3.5 h-full border-l border-border" />
+              {/* Indicator overlay toggle button - only on first condition */}
+              {onToggleOverlay && idx === 0 && (
+                <Button
+                  variant={isOverlayActive ? 'accent' : 'ghost'}
+                  size="sm"
+                  className={`h-6 w-6 p-0 text-xs ${isOverlayActive ? 'ring-2 ring-accent' : ''}`}
+                  onClick={() => onToggleOverlay(overlayKey)}
+                  title={isOverlayActive ? 'Hide indicator on chart' : 'Show indicator on chart'}
+                >
+                  📈
+                </Button>
+              )}
+              <ConditionEditor
+                condition={cond}
+                index={idx}
+                total={node.exitConditions?.length ?? 0}
+                onUpdate={(updates) => onUpdateExitCondition(node.id, cond.id, updates)}
+                onDelete={() => onDeleteExitCondition(node.id, cond.id)}
+                openTickerModal={openTickerModal}
+                nodeKind={node.kind}
+              />
+            </div>
+          )
+        })}
       </div>
 
       {/* Add exit condition buttons */}

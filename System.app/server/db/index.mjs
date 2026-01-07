@@ -283,6 +283,18 @@ export function initializeDatabase() {
       UNIQUE(provider, provider_account_id)
     );
 
+    -- FRD-035: Variable Library for documentation
+    CREATE TABLE IF NOT EXISTS metric_variables (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      variable_name TEXT NOT NULL UNIQUE,
+      display_name TEXT,
+      description TEXT,
+      formula TEXT,
+      source_file TEXT,
+      category TEXT,
+      created_at INTEGER
+    );
+
     -- Indexes for performance
     CREATE INDEX IF NOT EXISTS idx_bots_owner ON bots(owner_id);
     CREATE INDEX IF NOT EXISTS idx_bots_visibility ON bots(visibility);

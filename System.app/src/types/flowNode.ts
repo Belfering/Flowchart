@@ -23,6 +23,10 @@ export type ConditionLine = {
   rightMetric?: MetricChoice
   rightTicker?: PositionChoice
   forDays?: number // Condition must be true for N consecutive days (default: 1)
+  // Date-specific fields (used when metric is 'Date')
+  dateMonth?: number   // 1-12 for month (e.g., 1 = January)
+  dateDay?: number     // 1-31 for day of month
+  dateTo?: { month: number; day: number } // End of date range (when expanded)
 }
 
 export type NumberedItem = {

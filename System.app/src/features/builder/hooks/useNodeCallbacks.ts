@@ -68,6 +68,7 @@ export type ConditionFieldUpdates = Partial<{
   rightWindow: number
   rightMetric: MetricChoice
   rightTicker: PositionChoice
+  forDays: number
 }>
 
 export type ScalingFieldUpdates = Partial<{

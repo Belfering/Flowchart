@@ -6,6 +6,7 @@ import type { MetricChoice } from '../types'
 // Indicators that don't require a window parameter
 export const WINDOWLESS_INDICATORS: MetricChoice[] = [
   'Current Price',
+  'Date',                     // Calendar-based, no lookback needed
   'Momentum (Weighted)',      // Fixed 1/3/6/12 month
   'Momentum (Unweighted)',    // Fixed 1/3/6/12 month
   'Momentum (12-Month SMA)',  // Fixed 12 month
@@ -22,6 +23,7 @@ export const isWindowlessIndicator = (metric: MetricChoice): boolean =>
 export const getIndicatorLookback = (metric: MetricChoice, window: number): number => {
   switch (metric) {
     case 'Current Price':
+    case 'Date':
       return 0
     case 'Momentum (Weighted)':
     case 'Momentum (Unweighted)':
@@ -53,6 +55,9 @@ export const INDICATOR_INFO: Record<MetricChoice, { desc: string; formula: strin
   // Price
   'Current Price': { desc: 'The current closing price of the asset', formula: 'Price = Close' },
 
+  // Date-based
+  'Date': { desc: 'Check if current date falls within a range (for seasonal strategies)', formula: 'True if dateFrom <= currentDate <= dateTo' },
+
   // Moving Averages
   'Simple Moving Average': { desc: 'Average price over N periods, equal weight to all', formula: 'SMA = Σ(Close) / N' },
   'Exponential Moving Average': { desc: 'Weighted average giving more weight to recent prices', formula: 'EMA = α×Close + (1-α)×EMA_prev, α=2/(N+1)' },
@@ -83,7 +88,7 @@ export const INDICATOR_INFO: Record<MetricChoice, { desc: string; formula: strin
 
   // Volatility
   'Standard Deviation': { desc: 'Volatility of returns over N periods', formula: 'StdDev = √(Σ(r - r̄)² / N)' },
-  'Standard Deviation of Price': { desc: 'Volatility of price levels', formula: 'StdDev = √(Σ(P - P̄)² / N)' },
+  'Standard Deviation of Price': { desc: 'Volatility of price levels (absolute $)', formula: 'StdDev = √(Σ(P - P̄)² / N)' },
   'Max Drawdown': { desc: 'Largest peak-to-trough decline over N periods', formula: 'MaxDD = max((Peak - Trough) / Peak)' },
   'Drawdown': { desc: 'Current decline from recent peak', formula: 'DD = (Peak - Current) / Peak' },
   'Bollinger %B': { desc: 'Position within Bollinger Bands (0-1)', formula: '%B = (Close - LowerBand) / (UpperBand - LowerBand)' },
@@ -120,6 +125,7 @@ export const INDICATOR_INFO: Record<MetricChoice, { desc: string; formula: strin
 // Indicator categories for submenu dropdown
 export const INDICATOR_CATEGORIES: Record<string, MetricChoice[]> = {
   'Price': ['Current Price'],
+  'Date/Calendar': ['Date'],
   'Moving Averages': [
     'Simple Moving Average',
     'Exponential Moving Average',

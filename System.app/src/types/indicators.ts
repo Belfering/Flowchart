@@ -4,6 +4,8 @@
 export type MetricChoice =
   // Price
   | 'Current Price'
+  // Date-based (for seasonal/calendar strategies)
+  | 'Date'  // If Date is within a range (e.g., Jan 1st - Jan 31st)
   // Moving Averages
   | 'Simple Moving Average'
   | 'Exponential Moving Average'
@@ -61,7 +63,7 @@ export type MetricChoice =
   | 'VWAP Ratio'               // Price vs VWAP (100 = at VWAP)
 
 export type RankChoice = 'Bottom' | 'Top'
-export type ComparatorChoice = 'lt' | 'gt'
+export type ComparatorChoice = 'lt' | 'gt' | 'crossAbove' | 'crossBelow'
 
 // Indicator overlay data from server
 export type IndicatorOverlayData = {

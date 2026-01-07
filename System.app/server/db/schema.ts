@@ -160,6 +160,20 @@ export const adminConfig = sqliteTable('admin_config', {
 })
 
 // ============================================
+// METRIC VARIABLES (Documentation/Reference)
+// ============================================
+export const metricVariables = sqliteTable('metric_variables', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  variableName: text('variable_name').notNull().unique(), // Exact name in code (e.g., 'cagr', 'maxDd')
+  displayName: text('display_name'), // Human readable (e.g., 'CAGR', 'Max Drawdown')
+  description: text('description'), // What it calculates
+  formula: text('formula'), // Calculation formula
+  sourceFile: text('source_file'), // Where it's calculated
+  category: text('category'), // e.g., 'returns', 'risk', 'volatility'
+  createdAt: integer('created_at', { mode: 'timestamp' }).$defaultFn(() => new Date()),
+})
+
+// ============================================
 // RELATIONS
 // ============================================
 export const usersRelations = relations(users, ({ many, one }) => ({
@@ -208,3 +222,5 @@ export type BotMetrics = typeof botMetrics.$inferSelect
 export type Watchlist = typeof watchlists.$inferSelect
 export type Portfolio = typeof portfolios.$inferSelect
 export type PortfolioPosition = typeof portfolioPositions.$inferSelect
+export type MetricVariable = typeof metricVariables.$inferSelect
+export type NewMetricVariable = typeof metricVariables.$inferInsert

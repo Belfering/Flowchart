@@ -17,11 +17,15 @@ import { getAllSlotsForNode, newId } from './helpers'
  * Normalize comparator value to valid type
  */
 export const normalizeComparatorChoice = (value: unknown): ComparatorChoice => {
-  if (value === 'gt' || value === 'lt') return value
+  if (value === 'gt' || value === 'lt' || value === 'crossAbove' || value === 'crossBelow') return value
   const s = String(value || '').trim().toLowerCase()
   if (!s) return 'lt'
+  if (s === 'crossabove' || s === 'crosses above' || s === 'cross above') return 'crossAbove'
+  if (s === 'crossbelow' || s === 'crosses below' || s === 'cross below') return 'crossBelow'
   if (s === 'greater than' || s === 'greater' || s === 'gt') return 'gt'
   if (s === 'less than' || s === 'less' || s === 'lt') return 'lt'
+  if (s.includes('cross') && s.includes('above')) return 'crossAbove'
+  if (s.includes('cross') && s.includes('below')) return 'crossBelow'
   if (s.includes('greater')) return 'gt'
   if (s.includes('less')) return 'lt'
   return 'lt'
@@ -471,6 +475,7 @@ export const updateConditionFields = (
     rightWindow?: number
     rightMetric?: MetricChoice
     rightTicker?: PositionChoice
+    forDays?: number
   }>,
   itemId?: string
 ): FlowNode => {

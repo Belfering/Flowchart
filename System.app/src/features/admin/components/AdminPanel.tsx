@@ -158,6 +158,21 @@ export function AdminPanel({
   const [atlasSystemsLoading, setAtlasSystemsLoading] = useState(false)
   const [atlasSystemsError, setAtlasSystemsError] = useState<string | null>(null)
 
+  // Variable Library state (FRD-035)
+  type MetricVariable = {
+    id: number
+    variableName: string
+    displayName: string | null
+    description: string | null
+    formula: string | null
+    sourceFile: string | null
+    category: string | null
+    createdAt: string
+  }
+  const [metricVariables, setMetricVariables] = useState<MetricVariable[]>([])
+  const [variablesLoading, setVariablesLoading] = useState(false)
+  const [variablesError, setVariablesError] = useState<string | null>(null)
+
   // Sanitize ticker for filename comparison (matches Python download.py sanitize_filename)
   const sanitizeTickerForFilename = (ticker: string) =>
     ticker.replace(/[/\\:*?"<>|]/g, '-').toUpperCase()
@@ -227,7 +242,9 @@ export function AdminPanel({
 
       // Fetch ticker registry stats
       try {
-        const regRes = await fetch('/api/tickers/registry/stats')
+        const regRes = await fetch('/api/tickers/registry/stats', {
+          headers: { Authorization: `Bearer ${getAuthToken()}` }
+        })
         if (regRes.ok && !cancelled) {
           setRegistryStats(await regRes.json())
         }
@@ -237,7 +254,9 @@ export function AdminPanel({
 
       // Fetch Tiingo API key status
       try {
-        const keyRes = await fetch('/api/admin/tiingo-key')
+        const keyRes = await fetch('/api/admin/tiingo-key', {
+          headers: { Authorization: `Bearer ${getAuthToken()}` }
+        })
         if (keyRes.ok && !cancelled) {
           const keyData = await keyRes.json()
           setTiingoKeyStatus({ hasKey: keyData.hasKey, loading: false })
@@ -250,7 +269,9 @@ export function AdminPanel({
 
       // Fetch sync schedule status
       try {
-        const schedRes = await fetch('/api/admin/sync-schedule')
+        const schedRes = await fetch('/api/admin/sync-schedule', {
+          headers: { Authorization: `Bearer ${getAuthToken()}` }
+        })
         if (schedRes.ok && !cancelled) {
           setSyncSchedule(await schedRes.json())
         }
@@ -260,7 +281,9 @@ export function AdminPanel({
 
       // Fetch all registry tickers (for missing tickers calculation)
       try {
-        const regMetaRes = await fetch('/api/tickers/registry/metadata')
+        const regMetaRes = await fetch('/api/tickers/registry/metadata', {
+          headers: { Authorization: `Bearer ${getAuthToken()}` }
+        })
         if (regMetaRes.ok && !cancelled) {
           const data = await regMetaRes.json()
           if (data.tickers) {
@@ -276,13 +299,17 @@ export function AdminPanel({
     // Poll sync status every 2 seconds for faster UI updates during downloads
     const pollInterval = setInterval(async () => {
       try {
-        const schedRes = await fetch('/api/admin/sync-schedule')
+        const schedRes = await fetch('/api/admin/sync-schedule', {
+          headers: { Authorization: `Bearer ${getAuthToken()}` }
+        })
         if (schedRes.ok) {
           const data = await schedRes.json()
           setSyncSchedule(data)
           // Also refresh registry stats if job is running
           if (data.status?.isRunning) {
-            const regRes = await fetch('/api/tickers/registry/stats')
+            const regRes = await fetch('/api/tickers/registry/stats', {
+              headers: { Authorization: `Bearer ${getAuthToken()}` }
+            })
             if (regRes.ok) {
               setRegistryStats(await regRes.json())
             }
@@ -585,6 +612,38 @@ export function AdminPanel({
     return () => { cancelled = true }
   }, [adminTab])
 
+  // Auto-load Variable Library data when tab is selected (FRD-035)
+  useEffect(() => {
+    if (adminTab !== 'Variable Library' || !isSuperAdmin) return
+    let cancelled = false
+
+    const fetchVariables = async () => {
+      setVariablesLoading(true)
+      setVariablesError(null)
+      try {
+        const token = getAuthToken()
+        const res = await fetch(`${API_BASE}/admin/variables`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        if (!res.ok) {
+          const errText = await res.text()
+          throw new Error(errText || 'Failed to load variables')
+        }
+        const data = await res.json()
+        if (cancelled) return
+        setMetricVariables(data.variables || [])
+      } catch (e) {
+        if (cancelled) return
+        setVariablesError(String((e as Error)?.message || e))
+      } finally {
+        if (!cancelled) setVariablesLoading(false)
+      }
+    }
+
+    fetchVariables()
+    return () => { cancelled = true }
+  }, [adminTab, isSuperAdmin])
+
   const saveEligibilityRequirements = useCallback(async (reqs: EligibilityRequirement[]) => {
     setEligibilitySaving(true)
     try {
@@ -689,6 +748,14 @@ export function AdminPanel({
             onClick={() => setAdminTab('Atlas Systems')}
           >
             Atlas Systems
+          </button>
+        )}
+        {isSuperAdmin && (
+          <button
+            className={`tab-btn ${adminTab === 'Variable Library' ? 'active' : ''}`}
+            onClick={() => setAdminTab('Variable Library')}
+          >
+            Variable Library
           </button>
         )}
       </div>
@@ -2356,6 +2423,59 @@ export function AdminPanel({
               </Table>
             </Card>
           )}
+        </div>
+      )}
+
+      {/* Variable Library Panel (FRD-035) - Read-only database view */}
+      {adminTab === 'Variable Library' && isSuperAdmin && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="font-black text-lg">Variable Library</div>
+            <div className="text-sm text-muted-foreground">
+              {variablesLoading ? 'Loading...' : `${metricVariables.length} variables`}
+            </div>
+          </div>
+
+          {variablesError && (
+            <div className="text-red-500 text-sm p-2 bg-red-500/10 rounded">{variablesError}</div>
+          )}
+
+          <Card className="p-0 overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="whitespace-nowrap">Variable</TableHead>
+                  <TableHead className="whitespace-nowrap">Display Name</TableHead>
+                  <TableHead className="whitespace-nowrap">Formula</TableHead>
+                  <TableHead className="whitespace-nowrap">Description</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {variablesLoading ? (
+                  <TableRow>
+                    <TableCell colSpan={4} className="text-center text-muted-foreground py-8">
+                      Loading variables...
+                    </TableCell>
+                  </TableRow>
+                ) : metricVariables.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={4} className="text-center text-muted-foreground py-8">
+                      No variables in database.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  metricVariables.map(v => (
+                    <TableRow key={v.id}>
+                      <TableCell className="font-mono text-xs whitespace-nowrap">{v.variableName}</TableCell>
+                      <TableCell className="text-sm whitespace-nowrap">{v.displayName || '—'}</TableCell>
+                      <TableCell className="font-mono text-xs whitespace-nowrap">{v.formula || '—'}</TableCell>
+                      <TableCell className="text-sm whitespace-nowrap">{v.description || '—'}</TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </Card>
         </div>
       )}
     </>
