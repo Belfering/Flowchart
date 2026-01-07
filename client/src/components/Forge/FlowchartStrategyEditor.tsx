@@ -1,15 +1,54 @@
 /**
  * Flowchart Strategy Editor
- * Phase 2: Visual flowchart builder with interactive editing
+ * Phase 3: Visual flowchart builder with parameter extraction
  */
 
 import { Card } from '@/components/ui/card';
 import { useFlowchartStore } from '@/stores/useFlowchartStore';
 import { FlowchartToolbar } from '@/components/Flowchart/FlowchartToolbar';
 import { InteractiveNodeCard } from '@/components/Flowchart/NodeCard/InteractiveNodeCard';
+import { ParameterExtractionPanel } from './ParameterExtractionPanel';
+import { useParameterExtraction } from '@/hooks/useParameterExtraction';
+import { useFlowchartEstimate } from '@/hooks/useFlowchartEstimate';
+import { useFlowchartPersistence } from '@/hooks/useFlowchartPersistence';
+import type { ForgeConfig } from '@/types/forge';
+import type { ParameterRange } from '@/types/flowchart';
+import { useEffect } from 'react';
 
-export function FlowchartStrategyEditor() {
+interface FlowchartStrategyEditorProps {
+  config: ForgeConfig;
+  updateConfig: (updates: Partial<ForgeConfig>) => void;
+}
+
+export function FlowchartStrategyEditor({ config, updateConfig }: FlowchartStrategyEditorProps) {
   const root = useFlowchartStore((state) => state.root);
+
+  // Persist flowchart to localStorage
+  useFlowchartPersistence(config, updateConfig);
+
+  // Extract parameters from flowchart
+  const extractedParameters = useParameterExtraction(root);
+
+  // Sync extracted parameters with config (initialize parameterRanges if needed)
+  useEffect(() => {
+    if (extractedParameters.length > 0 && !config.parameterRanges) {
+      updateConfig({ parameterRanges: extractedParameters });
+    }
+  }, [extractedParameters, config.parameterRanges, updateConfig]);
+
+  // Use parameterRanges from config, or fallback to extracted
+  const parameterRanges = config.parameterRanges || extractedParameters;
+
+  // Calculate branch estimate
+  const estimate = useFlowchartEstimate(parameterRanges, config.tickers.length);
+
+  // Update a specific parameter
+  const handleUpdateParameter = (id: string, updates: Partial<ParameterRange>) => {
+    const updatedRanges = parameterRanges.map((p) =>
+      p.id === id ? { ...p, ...updates } : p
+    );
+    updateConfig({ parameterRanges: updatedRanges });
+  };
 
   return (
     <div className="space-y-4">
@@ -33,8 +72,12 @@ export function FlowchartStrategyEditor() {
         </div>
       </Card>
 
-      {/* Phase 3: Parameter Extraction Panel will go here */}
-      {/* <ParameterExtractionPanel /> */}
+      {/* Parameter Extraction Panel */}
+      <ParameterExtractionPanel
+        parameters={parameterRanges}
+        onUpdateParameter={handleUpdateParameter}
+        branchCount={estimate?.totalBranches || 1}
+      />
 
       {/* Instructions */}
       <Card className="p-4 bg-blue-50 dark:bg-blue-950">

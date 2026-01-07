@@ -55,7 +55,7 @@ export default function ForgeDashboard() {
       {config.mode === 'simple' ? (
         <SimpleStrategyEditor config={config} updateConfig={updateConfig} />
       ) : (
-        <FlowchartStrategyEditor />
+        <FlowchartStrategyEditor config={config} updateConfig={updateConfig} />
       )}
 
       {/* Progress and Controls */}
