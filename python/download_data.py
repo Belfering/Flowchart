@@ -37,9 +37,9 @@ def download_ticker(ticker: str, start_date: str = None, end_date: str = None, o
 
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Download data
+        # Download data (auto_adjust=False to keep Adj Close column)
         print(f"Downloading {ticker} from {start_date} to {end_date}...", file=sys.stderr)
-        data = yf.download(ticker, start=start_date, end=end_date, progress=False)
+        data = yf.download(ticker, start=start_date, end=end_date, progress=False, auto_adjust=False)
 
         if data.empty:
             return {
@@ -50,8 +50,16 @@ def download_ticker(ticker: str, start_date: str = None, end_date: str = None, o
         # Clean data
         data = data.reset_index()
 
-        # Rename columns to standard format
-        data.columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume']
+        # Rename columns to standard format (should be 7 columns with auto_adjust=False)
+        if len(data.columns) == 7:
+            data.columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume']
+        elif len(data.columns) == 6:
+            # If auto_adjust=True was used, no Adj Close column
+            data.columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
+            # Add Adj Close as copy of Close
+            data['Adj Close'] = data['Close']
+            # Reorder columns
+            data = data[['Date', 'Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume']]
 
         # Save as parquet
         output_file = output_dir / f'{ticker}.parquet'

@@ -69,6 +69,21 @@ export class WorkerPool {
   }
 
   /**
+   * Process branches with callbacks
+   */
+  processBranches(branches, config, callbacks) {
+    this.onProgress = callbacks.onProgress;
+    this.onComplete = callbacks.onComplete;
+    this.onError = callbacks.onError;
+
+    // Add branches to task queue
+    this.addTasks(branches, config);
+
+    // Start workers
+    this.start();
+  }
+
+  /**
    * Process next task in queue for a worker
    */
   async processNextTask(worker) {
@@ -96,14 +111,9 @@ export class WorkerPool {
 
       this.completedTasks++;
 
-      // Report progress
+      // Report progress (send last result for debugging)
       if (this.onProgress) {
-        this.onProgress({
-          total: this.totalTasks,
-          completed: this.completedTasks,
-          passing: this.passingBranches,
-          percentage: (this.completedTasks / this.totalTasks) * 100,
-        });
+        await this.onProgress(this.completedTasks, this.passingBranches, result);
       }
     } catch (error) {
       console.error(`Worker ${worker.id} error:`, error);
@@ -124,6 +134,7 @@ export class WorkerPool {
    */
   runPythonBacktest(task) {
     return new Promise((resolve, reject) => {
+      // Use real backtester with actual indicator calculations
       const pythonScript = path.join(__dirname, '../../python/backtester.py');
       const dataPath = path.join(__dirname, `../../data/parquet/${task.signalTicker}.parquet`);
 
@@ -189,11 +200,7 @@ export class WorkerPool {
       console.log(`Worker pool complete: ${this.passingBranches} passing branches out of ${this.totalTasks}`);
 
       if (this.onComplete) {
-        this.onComplete({
-          total: this.totalTasks,
-          passing: this.passingBranches,
-          results: this.results,
-        });
+        this.onComplete(this.results);
       }
     }
   }

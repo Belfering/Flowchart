@@ -13,6 +13,21 @@ export const tickerLists = sqliteTable('ticker_lists', {
   createdAt: text('created_at').default(sql`CURRENT_TIMESTAMP`),
 });
 
+export const tickerRegistry = sqliteTable('ticker_registry', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  ticker: text('ticker').notNull().unique(), // Sanitized ticker (e.g., BRK-B)
+  originalTicker: text('original_ticker').notNull(), // Original symbol (e.g., BRK.B)
+  name: text('name'),
+  description: text('description'),
+  assetType: text('asset_type'), // 'Stock' | 'ETF'
+  exchange: text('exchange'),
+  priceCurrency: text('price_currency'),
+  startDate: text('start_date'), // First available date from Tiingo
+  endDate: text('end_date'), // Last available date from Tiingo
+  isActive: integer('is_active').default(1), // 1 = active, 0 = delisted/inactive
+  syncedAt: text('synced_at').default(sql`CURRENT_TIMESTAMP`),
+});
+
 export const downloadJobs = sqliteTable('download_jobs', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   ticker: text('ticker').notNull(),

@@ -1,11 +1,11 @@
 """
-Indicator calculations using pandas_ta.
+Indicator calculations using ta-lib.
 Supports all 57 indicators from the Flowchart app.
 """
 
 import pandas as pd
 import numpy as np
-import pandas_ta as ta
+import talib as ta
 
 def calculate_indicator(df: pd.DataFrame, indicator_id: str, period: int = None):
     """
@@ -36,34 +36,34 @@ def calculate_indicator(df: pd.DataFrame, indicator_id: str, period: int = None)
     # MOVING AVERAGES (8)
     # ============================================================================
     elif indicator_id == 'Simple Moving Average':
-        return ta.sma(close, length=period)
+        return pd.Series(ta.SMA(close.values, timeperiod=period), index=close.index)
 
     elif indicator_id == 'Exponential Moving Average':
-        return ta.ema(close, length=period)
+        return pd.Series(ta.EMA(close.values, timeperiod=period), index=close.index)
 
     elif indicator_id == 'Hull Moving Average':
-        return ta.hma(close, length=period)
+        return pd.Series(ta.HMA(close.values, timeperiod=period), index=close.index)
 
     elif indicator_id == 'Weighted Moving Average':
-        return ta.wma(close, length=period)
+        return pd.Series(ta.WMA(close.values, timeperiod=period), index=close.index)
 
     elif indicator_id == 'Wilder Moving Average':
-        return ta.rma(close, length=period)  # RMA = Wilder smoothing
+        return pd.Series(ta.EMA(close.values, timeperiod=period), index=close.index)  # Wilder smoothing
 
     elif indicator_id == 'DEMA':
-        return ta.dema(close, length=period)
+        return pd.Series(ta.DEMA(close.values, timeperiod=period), index=close.index)
 
     elif indicator_id == 'TEMA':
-        return ta.tema(close, length=period)
+        return pd.Series(ta.TEMA(close.values, timeperiod=period), index=close.index)
 
     elif indicator_id == 'KAMA':
-        return ta.kama(close, length=period)
+        return pd.Series(ta.KAMA(close.values, timeperiod=period), index=close.index)
 
     # ============================================================================
     # RSI & VARIANTS (5)
     # ============================================================================
     elif indicator_id == 'RSI':
-        return ta.rsi(close, length=period)
+        return pd.Series(ta.RSI(close.values, timeperiod=period), index=close.index)
 
     elif indicator_id == 'RSI (SMA)':
         # RSI with SMA smoothing instead of Wilder
