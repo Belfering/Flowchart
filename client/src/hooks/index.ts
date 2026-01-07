@@ -13,6 +13,9 @@ export { useSyncSettings } from './useSyncSettings';
 export { useTickerSearch } from './useTickerSearch';
 export { useTickerDatabase } from './useTickerDatabase';
 export { useTickerRegistry } from './useTickerRegistry';
+export { useDownloadQueue } from './useDownloadQueue';
+export { useMissingMetadata } from './useMissingMetadata';
+export { useTickerDatabaseTable } from './useTickerDatabaseTable';
 
 // Forge hooks
 export { useForgeConfig } from './useForgeConfig';

@@ -182,6 +182,72 @@ export default function ForgeDashboard() {
         </div>
       </Card>
 
+      {/* IS/OOS Data Split */}
+      <Card className="p-4">
+        <h3 className="font-semibold mb-3">In-Sample / Out-of-Sample Data Split</h3>
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <input
+              type="radio"
+              id="split-even-odd-month"
+              name="splitStrategy"
+              checked={config.splitStrategy === 'even_odd_month'}
+              onChange={() => updateConfig({ splitStrategy: 'even_odd_month', oosStartDate: undefined })}
+              className="w-4 h-4"
+            />
+            <label htmlFor="split-even-odd-month" className="cursor-pointer text-sm">
+              Even/Odd Month (50/50 split)
+            </label>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <input
+              type="radio"
+              id="split-even-odd-year"
+              name="splitStrategy"
+              checked={config.splitStrategy === 'even_odd_year'}
+              onChange={() => updateConfig({ splitStrategy: 'even_odd_year', oosStartDate: undefined })}
+              className="w-4 h-4"
+            />
+            <label htmlFor="split-even-odd-year" className="cursor-pointer text-sm">
+              Even/Odd Year (50/50 split)
+            </label>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <input
+              type="radio"
+              id="split-chronological"
+              name="splitStrategy"
+              checked={config.splitStrategy === 'chronological'}
+              onChange={() => updateConfig({ splitStrategy: 'chronological' })}
+              className="w-4 h-4"
+            />
+            <label htmlFor="split-chronological" className="cursor-pointer text-sm">
+              Chronological (Date-based split)
+            </label>
+          </div>
+
+          {config.splitStrategy === 'chronological' && (
+            <div className="ml-6 mt-2">
+              <label className="text-xs text-muted-foreground block mb-1">
+                Out-of-Sample Start Date (YYYY-MM-DD)
+              </label>
+              <Input
+                type="date"
+                value={config.oosStartDate || ''}
+                onChange={(e) => updateConfig({ oosStartDate: e.target.value })}
+                className="w-full"
+                placeholder="2020-01-01"
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                Data before this date = In-Sample, on or after = Out-of-Sample
+              </p>
+            </div>
+          )}
+        </div>
+      </Card>
+
       {/* Progress and Controls */}
       <Card className="p-6">
         {/* Estimate */}

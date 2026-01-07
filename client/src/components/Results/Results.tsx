@@ -1,12 +1,16 @@
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { useJobsManagement, useResultsData, useResultsExport } from '@/hooks';
+import { formatDateTime, formatDuration } from '@/lib/utils';
 
 export default function Results() {
   const { jobs, selectedJobId, setSelectedJobId, loading: jobsLoading } =
     useJobsManagement();
   const { results, loading: resultsLoading, sortBy, order } = useResultsData(selectedJobId);
   const { exportCSV, exporting } = useResultsExport();
+
+  // Get selected job for timestamp display
+  const selectedJob = jobs.find((job) => job.id === selectedJobId);
 
   const handleExport = async () => {
     if (selectedJobId) {
@@ -50,6 +54,34 @@ export default function Results() {
             {exporting ? 'Exporting...' : 'Export CSV'}
           </Button>
         </div>
+
+        {/* Job Timestamps */}
+        {selectedJob && (
+          <div className="mb-4 px-4 py-3 bg-muted/50 rounded-md text-sm space-y-1">
+            <div className="flex gap-2">
+              <span className="font-semibold text-muted-foreground">Run started:</span>
+              <span>{formatDateTime(selectedJob.startedAt)}</span>
+            </div>
+            {selectedJob.completedAt && (
+              <>
+                <div className="flex gap-2">
+                  <span className="font-semibold text-muted-foreground">Completed:</span>
+                  <span>{formatDateTime(selectedJob.completedAt)}</span>
+                </div>
+                <div className="flex gap-2">
+                  <span className="font-semibold text-muted-foreground">Duration:</span>
+                  <span>{formatDuration(selectedJob.startedAt, selectedJob.completedAt)}</span>
+                </div>
+              </>
+            )}
+            {!selectedJob.completedAt && selectedJob.status === 'running' && (
+              <div className="flex gap-2">
+                <span className="font-semibold text-muted-foreground">Duration:</span>
+                <span>In progress</span>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Results Table */}
         {resultsLoading ? (

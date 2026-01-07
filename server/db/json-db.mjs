@@ -19,6 +19,10 @@ const db = {
   jobs: [],
   results: [],
   tickerRegistry: [], // Tiingo ticker metadata
+  lastSyncState: { // Last sync timestamps
+    yfinance: null,
+    tiingo: null,
+  },
 };
 
 let nextId = {
@@ -186,5 +190,35 @@ export const jsonDb = {
         );
       })
       .slice(0, 10); // Limit to 10 results
+  },
+
+  // Missing metadata detection
+  async getMissingMetadata() {
+    // Find tickers with missing name or description
+    return db.tickerRegistry.filter(t => !t.name || !t.description);
+  },
+
+  // Update ticker metadata (for enrichment)
+  async updateTickerMetadata(ticker, metadata) {
+    const record = db.tickerRegistry.find(t => t.ticker === ticker);
+    if (record) {
+      Object.assign(record, metadata);
+      await save();
+      return record;
+    }
+    return null;
+  },
+
+  // Last sync state persistence
+  async getLastSyncState() {
+    return db.lastSyncState || { yfinance: null, tiingo: null };
+  },
+
+  async setLastSyncState(source, syncData) {
+    if (!db.lastSyncState) {
+      db.lastSyncState = { yfinance: null, tiingo: null };
+    }
+    db.lastSyncState[source] = syncData;
+    await save();
   },
 };

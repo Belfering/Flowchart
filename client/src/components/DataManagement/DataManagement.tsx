@@ -8,9 +8,10 @@ import {
   useSyncProgress,
   useTiingoKeyManagement,
   useSyncSettings,
-  useTickerSearch,
-  useTickerDatabase,
   useTickerRegistry,
+  useDownloadQueue,
+  useMissingMetadata,
+  useTickerDatabaseTable,
 } from '@/hooks';
 
 export default function DataManagement() {
@@ -43,11 +44,15 @@ export default function DataManagement() {
 
 // Data Downloads Panel (Tab 1) - Refactored to use custom hooks
 function DataDownloadsPanel({ activeTab }: { activeTab: string }) {
+  const [fillGaps, setFillGaps] = useState(false);
+
   const downloadManager = useDataDownloadManager(activeTab);
   const syncProgress = useSyncProgress(downloadManager.syncSchedule);
   const tiingoKey = useTiingoKeyManagement();
   const syncSettings = useSyncSettings();
   const tickerRegistry = useTickerRegistry();
+  const downloadQueue = useDownloadQueue(fillGaps);
+  const missingMetadata = useMissingMetadata();
 
   const currentJob = downloadManager.syncSchedule?.status?.currentJob;
   const isRunning = downloadManager.syncSchedule?.status?.isRunning;
@@ -155,8 +160,8 @@ function DataDownloadsPanel({ activeTab }: { activeTab: string }) {
 
       {/* Action Buttons */}
       <div className="grid grid-cols-4 gap-3">
-        <Button onClick={() => downloadManager.startYFinanceDownload(false)} disabled={isRunning} className="h-12">
-          {currentJob?.source === 'yfinance' ? 'yFinance Running' : 'yFinance Download'}
+        <Button onClick={() => downloadManager.startYFinanceDownload(fillGaps)} disabled={isRunning} className="h-12">
+          {currentJob?.source === 'yfinance' ? 'yFinance Running' : fillGaps ? 'yFinance Fill Gaps' : 'yFinance Download'}
         </Button>
         <Button onClick={downloadManager.startTiingoDownload} disabled={isRunning || !tiingoKey.hasKey} className="h-12">
           {currentJob?.source === 'tiingo' ? 'Tiingo Running' : 'Tiingo Download'}
@@ -172,6 +177,18 @@ function DataDownloadsPanel({ activeTab }: { activeTab: string }) {
       {/* Configuration Settings */}
       <Card className="p-6">
         <h3 className="text-lg font-semibold mb-4">Download Settings</h3>
+        <div className="mb-4">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={fillGaps}
+              onChange={(e) => setFillGaps(e.target.checked)}
+              className="w-4 h-4"
+            />
+            <span className="text-sm font-medium">Fill Gaps Mode</span>
+            <span className="text-xs text-muted-foreground">(Download only missing tickers)</span>
+          </label>
+        </div>
         <div className="grid grid-cols-3 gap-4">
           <div>
             <label className="text-sm font-medium">Batch Size</label>
@@ -260,18 +277,55 @@ function DataDownloadsPanel({ activeTab }: { activeTab: string }) {
             <summary className={`cursor-pointer font-medium ${tickerRegistry.missing.count > 0 ? 'text-orange-600' : ''}`}>
               Missing Tickers ({tickerRegistry.missing.count.toLocaleString()})
             </summary>
-            <div className="mt-3 space-y-2">
+            <div className="mt-3 space-y-3">
               <div className="text-sm text-muted-foreground">
                 Registry: {tickerRegistry.missing.registryTotal.toLocaleString()} tickers |
                 Parquet: {tickerRegistry.missing.parquetTotal.toLocaleString()} files |
                 Missing: {tickerRegistry.missing.count.toLocaleString()}
               </div>
+
+              {/* Missing Tickers Table */}
+              <div className="border rounded-lg overflow-hidden bg-muted/30">
+                <div className="max-h-80 overflow-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-muted sticky top-0">
+                      <tr>
+                        <th className="text-left px-3 py-2 font-semibold">Ticker</th>
+                        <th className="text-left px-3 py-2 font-semibold">Name</th>
+                        <th className="text-left px-3 py-2 font-semibold">Asset Type</th>
+                        <th className="text-left px-3 py-2 font-semibold">Exchange</th>
+                        <th className="text-left px-3 py-2 font-semibold">Start Date</th>
+                        <th className="text-left px-3 py-2 font-semibold">End Date</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {tickerRegistry.missing.missing.slice(0, 100).map((ticker) => (
+                        <tr key={ticker.ticker} className="border-t border-muted hover:bg-muted/50">
+                          <td className="px-3 py-2 font-mono font-semibold">{ticker.ticker}</td>
+                          <td className="px-3 py-2 text-muted-foreground">{ticker.name || '—'}</td>
+                          <td className="px-3 py-2 text-muted-foreground">{ticker.assetType || '—'}</td>
+                          <td className="px-3 py-2 text-muted-foreground text-xs">{ticker.exchange || '—'}</td>
+                          <td className="px-3 py-2 text-muted-foreground text-xs">{ticker.startDate || '—'}</td>
+                          <td className="px-3 py-2 text-muted-foreground text-xs">{ticker.endDate || '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {tickerRegistry.missing.count > 100 && (
+                  <div className="px-3 py-2 bg-muted/70 text-xs text-muted-foreground text-center border-t">
+                    Showing first 100 of {tickerRegistry.missing.count.toLocaleString()} missing tickers
+                  </div>
+                )}
+              </div>
+
               <Button
                 onClick={() => downloadManager.startYFinanceDownload(true)}
                 disabled={isRunning}
                 variant="default"
+                className="w-full"
               >
-                Download Missing ({tickerRegistry.missing.count.toLocaleString()})
+                Download All Missing ({tickerRegistry.missing.count.toLocaleString()})
               </Button>
             </div>
           </details>
@@ -283,6 +337,113 @@ function DataDownloadsPanel({ activeTab }: { activeTab: string }) {
           </div>
         )}
       </Card>
+
+      {/* Download Queue */}
+      <Card className="p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-semibold">
+            Download Queue {fillGaps ? '(Fill Gaps Mode)' : '(Full Download)'}
+          </h3>
+          <Button
+            onClick={downloadQueue.refresh}
+            disabled={downloadQueue.loading || isRunning}
+            variant="outline"
+            size="sm"
+          >
+            {downloadQueue.loading ? 'Loading...' : 'Refresh Queue'}
+          </Button>
+        </div>
+
+        {downloadQueue.error ? (
+          <p className="text-sm text-red-600">Error: {downloadQueue.error}</p>
+        ) : downloadQueue.loading ? (
+          <p className="text-sm text-muted-foreground">Loading queue...</p>
+        ) : (
+          <>
+            <div className="mb-3">
+              <p className="text-sm text-muted-foreground">
+                {downloadQueue.queuedTickers.length.toLocaleString()} tickers will be downloaded
+              </p>
+            </div>
+            {downloadQueue.queuedTickers.length > 0 && (
+              <details className="border-t pt-4">
+                <summary className="cursor-pointer font-medium text-sm mb-2">
+                  View Queue ({downloadQueue.queuedTickers.length.toLocaleString()} tickers)
+                </summary>
+                <div className="mt-2 max-h-60 overflow-auto border rounded p-3 bg-muted/30">
+                  <div className="grid grid-cols-1 gap-1">
+                    {downloadQueue.queuedTickers.slice(0, 50).map((ticker) => (
+                      <div key={ticker.ticker} className="text-xs flex justify-between py-1 border-b border-muted">
+                        <span className="font-mono font-semibold">{ticker.ticker}</span>
+                        <span className="text-muted-foreground">{ticker.name || 'No name'}</span>
+                        <span className="text-muted-foreground text-[10px]">{ticker.assetType || ''}</span>
+                      </div>
+                    ))}
+                    {downloadQueue.queuedTickers.length > 50 && (
+                      <p className="text-xs text-muted-foreground italic mt-2">
+                        ... and {(downloadQueue.queuedTickers.length - 50).toLocaleString()} more
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </details>
+            )}
+          </>
+        )}
+      </Card>
+
+      {/* Missing Metadata */}
+      {missingMetadata.missingMetadata.length > 0 && (
+        <Card className="p-6 border-orange-200">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold text-orange-600">
+              Missing Metadata ({missingMetadata.missingMetadata.length})
+            </h3>
+            <Button
+              onClick={missingMetadata.enrichAll}
+              disabled={missingMetadata.enriching || !tiingoKey.hasKey}
+              variant="default"
+              size="sm"
+            >
+              {missingMetadata.enriching ? 'Enriching...' : 'Enrich All from Tiingo'}
+            </Button>
+          </div>
+
+          {!tiingoKey.hasKey && (
+            <p className="text-sm text-orange-600 mb-3">⚠️ Tiingo API key required for enrichment</p>
+          )}
+
+          {missingMetadata.enrichError && (
+            <p className="text-sm text-red-600 mb-3">Error: {missingMetadata.enrichError}</p>
+          )}
+
+          <p className="text-sm text-muted-foreground mb-3">
+            These tickers are missing name or description metadata
+          </p>
+
+          <details>
+            <summary className="cursor-pointer font-medium text-sm mb-2">
+              View Tickers ({missingMetadata.missingMetadata.length})
+            </summary>
+            <div className="mt-2 max-h-60 overflow-auto border rounded p-3 bg-orange-50">
+              <div className="grid grid-cols-1 gap-1">
+                {missingMetadata.missingMetadata.slice(0, 30).map((ticker) => (
+                  <div key={ticker.ticker} className="text-xs flex justify-between py-1 border-b border-orange-100">
+                    <span className="font-mono font-semibold">{ticker.ticker}</span>
+                    <span className="text-muted-foreground">{ticker.name || '(no name)'}</span>
+                    <span className="text-muted-foreground text-[10px]">{ticker.assetType || ''}</span>
+                  </div>
+                ))}
+                {missingMetadata.missingMetadata.length > 30 && (
+                  <p className="text-xs text-muted-foreground italic mt-2">
+                    ... and {missingMetadata.missingMetadata.length - 30} more
+                  </p>
+                )}
+              </div>
+            </div>
+          </details>
+        </Card>
+      )}
 
       {/* Tiingo API Key */}
       <details className="group">
@@ -343,88 +504,138 @@ function DataDownloadsPanel({ activeTab }: { activeTab: string }) {
 
 // Ticker Database Panel (Tab 2) - Refactored to use custom hooks
 function TickerDatabasePanel() {
-  const tickerSearch = useTickerSearch();
-  const tickerDb = useTickerDatabase();
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showActiveOnly, setShowActiveOnly] = useState(false);
+  const databaseTable = useTickerDatabaseTable();
+
+  // Filter tickers based on search and active status
+  const filteredTickers = databaseTable.tickers.filter(ticker => {
+    const matchesSearch = !searchQuery ||
+      ticker.ticker.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      ticker.name.toLowerCase().includes(searchQuery.toLowerCase());
+
+    const matchesActive = !showActiveOnly || ticker.isActive;
+
+    return matchesSearch && matchesActive;
+  });
+
+  // Format last synced date
+  const formatLastSynced = (isoDate: string | null) => {
+    if (!isoDate) return '—';
+    try {
+      return new Date(isoDate).toLocaleString('en-US', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    } catch {
+      return '—';
+    }
+  };
 
   return (
     <>
-      <Card className="p-6">
-        <h3 className="text-lg font-semibold mb-4">Ticker Search</h3>
-        <div className="relative">
-          <Input
-            placeholder="Search by ticker or name..."
-            value={tickerSearch.searchQuery}
-            onChange={(e) => tickerSearch.setSearchQuery(e.target.value)}
-            onFocus={() => tickerSearch.searchResults.length > 0 && tickerSearch.setSearchOpen(true)}
-            onBlur={() => setTimeout(() => tickerSearch.setSearchOpen(false), 200)}
-          />
-          {tickerSearch.searchOpen && tickerSearch.searchResults.length > 0 && (
-            <div className="absolute top-full left-0 right-0 mt-1 bg-white border rounded-lg shadow-lg max-h-64 overflow-y-auto z-10">
-              {tickerSearch.searchResults.map((result) => (
-                <div
-                  key={result.ticker}
-                  className="p-3 hover:bg-secondary cursor-pointer border-b last:border-b-0"
-                  onClick={() => {
-                    tickerDb.setSelected(result.ticker);
-                    tickerSearch.setSearchQuery('');
-                    tickerSearch.setSearchOpen(false);
-                  }}
-                >
-                  <div className="font-semibold">{result.ticker}</div>
-                  {result.name && <div className="text-sm text-muted-foreground">{result.name}</div>}
-                </div>
-              ))}
-            </div>
-          )}
+      {/* Summary Stats */}
+      <div className="grid grid-cols-3 gap-4">
+        <Card className="p-4">
+          <p className="text-sm text-muted-foreground mb-1">Total Tickers in Registry</p>
+          <p className="text-3xl font-bold">{databaseTable.total}</p>
+        </Card>
+
+        <Card className="p-4">
+          <p className="text-sm text-muted-foreground mb-1">Tickers with Data</p>
+          <p className="text-3xl font-bold">{databaseTable.withData}</p>
+          <p className="text-xs text-muted-foreground mt-1">
+            {((databaseTable.withData / databaseTable.total) * 100).toFixed(1)}% coverage
+          </p>
+        </Card>
+
+        <Card className="p-4">
+          <p className="text-sm text-muted-foreground mb-1">Filtered Results</p>
+          <p className="text-3xl font-bold">{filteredTickers.length}</p>
+        </Card>
+      </div>
+
+      {/* Search and Filters */}
+      <Card className="p-4">
+        <div className="flex items-center gap-4">
+          <div className="flex-1">
+            <Input
+              placeholder="Search by ticker or name..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+          </div>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={showActiveOnly}
+              onChange={(e) => setShowActiveOnly(e.target.checked)}
+              className="w-4 h-4"
+            />
+            <span className="text-sm font-medium">Active only</span>
+          </label>
+          <Button onClick={databaseTable.refresh} disabled={databaseTable.loading}>
+            {databaseTable.loading ? 'Loading...' : 'Refresh'}
+          </Button>
         </div>
       </Card>
 
+      {/* Ticker Database Table */}
       <Card className="p-6">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h3 className="text-lg font-semibold">Selected Ticker</h3>
-            <p className="text-2xl font-mono font-bold mt-1">{tickerDb.selected || 'None'}</p>
-          </div>
-          <Button onClick={tickerDb.loadPreview} disabled={!tickerDb.selected || tickerDb.loading}>
-            {tickerDb.loading ? 'Loading...' : 'Refresh'}
-          </Button>
-        </div>
+        <h3 className="text-lg font-semibold mb-4">
+          Ticker Database ({filteredTickers.length} of {databaseTable.total})
+        </h3>
 
-        {tickerDb.preview.length > 0 ? (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-secondary sticky top-0">
-                <tr>
-                  <th className="p-2 text-left">Date</th>
-                  <th className="p-2 text-right">Open</th>
-                  <th className="p-2 text-right">High</th>
-                  <th className="p-2 text-right">Low</th>
-                  <th className="p-2 text-right">Close</th>
-                </tr>
-              </thead>
-              <tbody className="max-h-80 overflow-y-auto">
-                {tickerDb.preview.map((row, i) => (
-                  <tr key={i} className="border-b hover:bg-secondary/50">
-                    <td className="p-2">{row.Date}</td>
-                    <td className="p-2 text-right font-mono">{row.Open?.toFixed(2)}</td>
-                    <td className="p-2 text-right font-mono">{row.High?.toFixed(2)}</td>
-                    <td className="p-2 text-right font-mono">{row.Low?.toFixed(2)}</td>
-                    <td className="p-2 text-right font-mono">{row.Close?.toFixed(2)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : tickerDb.loading ? (
-          <p className="text-center text-muted-foreground py-8">Loading...</p>
+        {databaseTable.loading ? (
+          <p className="text-center text-muted-foreground py-8">Loading ticker database...</p>
+        ) : databaseTable.error ? (
+          <p className="text-center text-red-600 py-8">{databaseTable.error}</p>
         ) : (
-          <p className="text-center text-muted-foreground py-8">
-            {tickerDb.selected ? 'No data available' : 'Select a ticker to view data'}
-          </p>
+          <div className="border rounded-lg overflow-hidden">
+            <div className="max-h-[600px] overflow-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-muted sticky top-0">
+                  <tr>
+                    <th className="text-left px-3 py-2 font-semibold">Ticker</th>
+                    <th className="text-left px-3 py-2 font-semibold">Name</th>
+                    <th className="text-left px-3 py-2 font-semibold">Asset Type</th>
+                    <th className="text-left px-3 py-2 font-semibold">Exchange</th>
+                    <th className="text-center px-3 py-2 font-semibold">Active</th>
+                    <th className="text-left px-3 py-2 font-semibold">Last Synced</th>
+                    <th className="text-left px-3 py-2 font-semibold">Start Date</th>
+                    <th className="text-left px-3 py-2 font-semibold">End Date</th>
+                    <th className="text-left px-3 py-2 font-semibold">Currency</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredTickers.map((ticker) => (
+                    <tr key={ticker.ticker} className="border-t border-muted hover:bg-muted/50">
+                      <td className="px-3 py-2 font-mono font-semibold">{ticker.ticker}</td>
+                      <td className="px-3 py-2 text-muted-foreground">{ticker.name}</td>
+                      <td className="px-3 py-2 text-muted-foreground">{ticker.assetType}</td>
+                      <td className="px-3 py-2 text-muted-foreground text-xs">{ticker.exchange}</td>
+                      <td className="px-3 py-2 text-center">
+                        <span className={`inline-block w-2 h-2 rounded-full ${ticker.isActive ? 'bg-green-500' : 'bg-red-500'}`} />
+                      </td>
+                      <td className="px-3 py-2 text-muted-foreground text-xs">{formatLastSynced(ticker.lastSynced)}</td>
+                      <td className="px-3 py-2 text-muted-foreground text-xs">{ticker.startDate}</td>
+                      <td className="px-3 py-2 text-muted-foreground text-xs">{ticker.endDate}</td>
+                      <td className="px-3 py-2 text-muted-foreground text-xs">{ticker.currency}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
         )}
 
-        {tickerDb.error && (
-          <p className="text-sm text-red-600 mt-4">{tickerDb.error}</p>
+        {!databaseTable.loading && filteredTickers.length === 0 && (
+          <p className="text-center text-muted-foreground py-8">
+            No tickers match your search criteria
+          </p>
         )}
       </Card>
     </>
