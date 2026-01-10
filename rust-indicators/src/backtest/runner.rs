@@ -683,14 +683,15 @@ pub fn run_backtest(
     let node: FlowNode = serde::de::Deserialize::deserialize(&mut deserializer)
         .map_err(|e| format!("Failed to parse strategy: {}", e))?;
 
-    // Collect all tickers
-    let tickers = collect_all_tickers(&node);
-    if tickers.is_empty() {
+    // Collect indicator tickers (for date intersection) and all tickers
+    let indicator_tickers = collect_indicator_tickers(&node);
+    let all_tickers = collect_all_tickers(&node);
+    if all_tickers.is_empty() {
         return Err("No tickers found in strategy".to_string());
     }
 
-    // Build price database
-    let db = build_price_db(parquet_dir, &tickers)?;
+    // Build price database using date intersection (matches Node.js behavior)
+    let db = build_price_db_with_date_filter(parquet_dir, &indicator_tickers, &all_tickers)?;
     if db.len() < 3 {
         return Err("Not enough price data".to_string());
     }
