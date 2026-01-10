@@ -23,6 +23,7 @@ serde = { version = "1.0", features = ["derive"] }
 parquet = "54"
 arrow = "54"
 chrono = "0.4"
+once_cell = "1.21"
 polars = { version = "0.46", features = ["lazy", "parquet", "dtype-struct", "dtype-datetime", "rolling_window", "cum_agg", "ewma"] }
 
 [[bin]]

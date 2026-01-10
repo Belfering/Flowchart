@@ -3,17 +3,52 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::RwLock;
 
 use chrono::Datelike;
+use once_cell::sync::Lazy;
 use crate::backtest::context::{DecisionPrice, EvalContext, IndicatorCache, PriceDb};
 use crate::backtest::indicators::get_indicator_lookback;
 use crate::backtest::metrics::{calculate_metrics, calculate_turnover};
 use crate::backtest::nodes::evaluate_node;
 use crate::backtest::types::*;
 
-/// Read OHLCV data from a parquet file using Arrow
+// ============================================================================
+// GLOBAL TICKER CACHE
+// ============================================================================
+// Cache parsed parquet data so files are only read once per server lifetime.
+// This dramatically speeds up subsequent backtests.
+
+type TickerData = (Vec<String>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>);
+static TICKER_CACHE: Lazy<RwLock<HashMap<String, TickerData>>> = Lazy::new(|| {
+    RwLock::new(HashMap::new())
+});
+
+/// Read OHLCV data with caching - checks global cache first
+fn read_parquet_cached(path: &Path, ticker: &str) -> Option<TickerData> {
+    // Check cache first (read lock)
+    {
+        let cache = TICKER_CACHE.read().ok()?;
+        if let Some(data) = cache.get(ticker) {
+            return Some(data.clone());
+        }
+    }
+
+    // Not in cache, read from file
+    let data = read_parquet_file_uncached(path)?;
+
+    // Store in cache (write lock)
+    if let Ok(mut cache) = TICKER_CACHE.write() {
+        cache.insert(ticker.to_string(), data.clone());
+        eprintln!("[Cache] Added ticker {} (total cached: {})", ticker, cache.len());
+    }
+
+    Some(data)
+}
+
+/// Read OHLCV data from a parquet file using Arrow (uncached)
 /// Parquet schema: Date (timestamp), ticker (string), Open, High, Low, Close, Adj Close, Volume
-fn read_parquet_file(path: &Path) -> Option<(Vec<String>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>)> {
+fn read_parquet_file_uncached(path: &Path) -> Option<(Vec<String>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>)> {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
     use arrow::array::{Array, Float64Array, Int64Array, TimestampNanosecondArray};
     use std::fs::File;
@@ -100,7 +135,7 @@ pub fn build_price_db_with_date_filter(
             continue;
         }
 
-        if let Some((dates, opens, highs, lows, closes, volumes)) = read_parquet_file(&path) {
+        if let Some((dates, opens, highs, lows, closes, volumes)) = read_parquet_cached(&path, ticker) {
             let mut date_map: HashMap<String, (f64, f64, f64, f64, f64)> = HashMap::new();
             for (i, date) in dates.iter().enumerate() {
                 date_map.insert(date.clone(), (
@@ -230,7 +265,7 @@ pub fn build_price_db(
             continue;
         }
 
-        if let Some((dates, opens, highs, lows, closes, volumes)) = read_parquet_file(&path) {
+        if let Some((dates, opens, highs, lows, closes, volumes)) = read_parquet_cached(&path, ticker) {
             let mut date_map: HashMap<String, (f64, f64, f64, f64, f64)> = HashMap::new();
             for (i, date) in dates.iter().enumerate() {
                 all_dates_set.insert(date.clone());
