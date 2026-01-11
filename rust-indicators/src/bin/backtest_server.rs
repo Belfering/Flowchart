@@ -7,6 +7,7 @@
 
 use axum::{routing::{get, post}, Router, Json, extract::{Path, State, Query, DefaultBodyLimit}};
 use axum::http::StatusCode;
+use tower_http::compression::CompressionLayer;
 use arrow::array::{Float64Array, StringArray, Array};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde::{Deserialize, Serialize};
@@ -591,6 +592,7 @@ async fn main() {
         .route("/api/backtest", post(run_full_backtest))
         .route("/compute-indicators", post(compute_indicators))
         .layer(DefaultBodyLimit::max(50 * 1024 * 1024)) // 50MB limit for large strategies
+        .layer(CompressionLayer::new()) // Gzip compression for responses
         .with_state(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 3030));
