@@ -1172,7 +1172,7 @@ const SERVER_CACHE_TTL = 30 * 60 * 1000  // 30 minutes
 let preloadInProgress = false
 const PRELOAD_BATCH_SIZE = parseInt(process.env.PRELOAD_BATCH_SIZE || '50', 10)
 const PRELOAD_BATCH_DELAY = parseInt(process.env.PRELOAD_BATCH_DELAY || '100', 10)
-const PRELOAD_LIMIT = 1500  // Standard candle limit for preloading
+const PRELOAD_LIMIT = 20000  // Full history for preloading (~33 years of daily data)
 
 async function preloadAllTickersIntoCache() {
   if (DISABLE_TICKER_CACHE) {
