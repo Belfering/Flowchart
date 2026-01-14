@@ -508,6 +508,14 @@ async function runTickerSync(config, tickerDataRoot, parquetDir, pythonCmd, data
         // Evict any tickers unused for 30+ days to free RAM
         evictStaleTickers()
 
+        // Reload all tickers into RAM with fresh data
+        console.log(`[scheduler] Triggering full ticker preload...`)
+        try {
+          await fetch('http://localhost:8787/api/internal/preload-cache', { method: 'POST' })
+        } catch (e) {
+          console.warn(`[scheduler] Failed to trigger preload:`, e.message)
+        }
+
         // Run post-sync prewarm jobs (Redis cache population)
         await runPrewarmJobs(database)
       } else {

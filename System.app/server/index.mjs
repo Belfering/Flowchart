@@ -4413,10 +4413,14 @@ app.listen(PORT, async () => {
   // Seed admin user if ADMIN_EMAIL and ADMIN_PASSWORD are set
   await seedAdminUser()
 
-  // NOTE: Full memory preload disabled - we now query parquet files directly from disk
-  // However, we pre-cache common tickers (SPY, QQQ, etc.) for instant access
-  // This uses minimal memory while dramatically speeding up common operations
+  // Pre-cache common tickers for instant access (SPY, QQQ, etc.)
   initTickerCache().catch(err => console.warn('[api] Failed to pre-cache tickers:', err.message))
+
+  // Preload ALL tickers into RAM for fast backtests (runs in background)
+  if (!DISABLE_TICKER_CACHE) {
+    console.log('[api] Starting full ticker preload into RAM...')
+    preloadAllTickersIntoCache().catch(err => console.warn('[api] Preload error:', err.message))
+  }
 
   // Start the ticker sync scheduler (default: 6pm EST daily)
   await ensureDbInitialized()
