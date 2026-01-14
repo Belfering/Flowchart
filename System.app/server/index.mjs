@@ -47,7 +47,10 @@ if (isProduction) {
 // ============================================================================
 
 // Helmet for security headers (CSP configured for SPA)
+// Note: HSTS and upgrade-insecure-requests disabled for HTTP-only deployments
+// Enable these when SSL is configured
 app.use(helmet({
+  hsts: false, // Disable HSTS for HTTP-only deployment
   contentSecurityPolicy: isProduction ? {
     directives: {
       defaultSrc: ["'self'"],
@@ -57,7 +60,8 @@ app.use(helmet({
       connectSrc: ["'self'"],
       fontSrc: ["'self'"],
       objectSrc: ["'none'"],
-      frameAncestors: ["'none'"]
+      frameAncestors: ["'none'"],
+      upgradeInsecureRequests: null // Disable upgrade-insecure-requests for HTTP
     }
   } : false
 }))
@@ -1156,6 +1160,8 @@ app.get('/api/candles/:ticker', async (req, res) => {
 })
 
 // Server-side memory cache for ticker data (much faster than re-querying parquet files)
+// Set DISABLE_TICKER_CACHE=1 to disable caching and save RAM
+const DISABLE_TICKER_CACHE = process.env.DISABLE_TICKER_CACHE === '1' || process.env.DISABLE_TICKER_CACHE === 'true'
 const serverTickerCache = new Map()  // ticker -> { data, timestamp }
 const SERVER_CACHE_TTL = 30 * 60 * 1000  // 30 minutes
 
@@ -1169,6 +1175,11 @@ const PRELOAD_BATCH_DELAY = parseInt(process.env.PRELOAD_BATCH_DELAY || '100', 1
 const PRELOAD_LIMIT = 1500  // Standard candle limit for preloading
 
 async function preloadAllTickersIntoCache() {
+  if (DISABLE_TICKER_CACHE) {
+    console.log('[Preload] Skipped - ticker cache disabled (DISABLE_TICKER_CACHE=1)')
+    return { skipped: true, reason: 'cache_disabled' }
+  }
+
   if (preloadInProgress) {
     console.log('[Preload] Already in progress, skipping')
     return { skipped: true, reason: 'already_in_progress' }
@@ -1328,6 +1339,10 @@ app.post('/api/candles/batch', async (req, res) => {
   // Check server cache first, separate cached from uncached tickers
   const tickersToFetch = []
   for (const ticker of validTickers) {
+    if (DISABLE_TICKER_CACHE) {
+      tickersToFetch.push(ticker)
+      continue
+    }
     const cached = serverTickerCache.get(ticker)
     if (cached && cached.limit >= limit && now - cached.timestamp < SERVER_CACHE_TTL) {
       // Serve from cache (slice if needed)
@@ -1375,8 +1390,10 @@ app.post('/api/candles/batch', async (req, res) => {
             adjClose: Number(r.adjClose),
           }))
           results[ticker] = data
-          // Store in server cache
-          serverTickerCache.set(ticker, { data, limit, timestamp: now })
+          // Store in server cache (if enabled)
+          if (!DISABLE_TICKER_CACHE) {
+            serverTickerCache.set(ticker, { data, limit, timestamp: now })
+          }
         } else {
           errors.push(`${ticker}: no data`)
         }
@@ -2116,6 +2133,36 @@ app.use('/api/auth', passwordResetRoutes)
 app.use('/api/oauth', oauthRoutes)
 app.use('/api/admin/invites', adminInviteRoutes)
 app.use('/api/admin', liveRoutes)
+
+// Deploy webhook - triggered by GitHub Actions
+app.post('/api/deploy', async (req, res) => {
+  const secret = req.query.secret || req.headers['x-deploy-secret']
+
+  if (secret !== process.env.DEPLOY_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+
+  console.log('[Deploy] Webhook triggered, starting deployment...')
+  res.json({ status: 'deploying' })
+
+  // Run deployment in background
+  const { exec } = await import('child_process')
+  exec(`
+    cd /home/deploy/quantnexus && \
+    git pull origin dev && \
+    cd System.app && \
+    npm ci --production && \
+    npm run build && \
+    pm2 restart quantnexus
+  `, (error, stdout, stderr) => {
+    if (error) {
+      console.error('[Deploy] Failed:', error.message)
+      console.error(stderr)
+    } else {
+      console.log('[Deploy] Success:', stdout)
+    }
+  })
+})
 
 // Initialize database on startup
 let dbInitialized = false

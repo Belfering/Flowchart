@@ -73,6 +73,9 @@ let cacheInitialized = false
 const LRU_EVICTION_DAYS = 30
 const LRU_EVICTION_MS = LRU_EVICTION_DAYS * 24 * 60 * 60 * 1000
 
+// Disable in-memory ticker cache (set DISABLE_TICKER_CACHE=1 to save RAM)
+const DISABLE_TICKER_CACHE = process.env.DISABLE_TICKER_CACHE === '1' || process.env.DISABLE_TICKER_CACHE === 'true'
+
 // Track cache stats for monitoring
 const cacheStats = {
   hits: 0,
@@ -82,6 +85,13 @@ const cacheStats = {
 
 async function initTickerCache() {
   if (cacheInitialized) return
+
+  if (DISABLE_TICKER_CACHE) {
+    console.log('[Backtest] Ticker cache DISABLED (DISABLE_TICKER_CACHE=1)')
+    cacheInitialized = true
+    return
+  }
+
   console.log('[Backtest] Pre-caching common tickers for instant access...')
   const startTime = Date.now()
 
@@ -200,6 +210,11 @@ async function fetchOhlcSeriesUncached(ticker, limit = 20000) {
 }
 
 async function fetchOhlcSeries(ticker, limit = 20000) {
+  // Skip cache entirely if disabled
+  if (DISABLE_TICKER_CACHE) {
+    return fetchOhlcSeriesUncached(ticker, limit)
+  }
+
   // Check cache first (instant access for ANY previously loaded ticker)
   const cached = tickerDataCache.get(ticker)
   if (cached) {
